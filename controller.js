@@ -2,9 +2,9 @@
  * Alarm cascade editor — CA-2 pattern-B widget (ALARMING.md §5, FRONTEND.md).
  *
  * Runs as a "terrySense" library widget built on ThingsBoard's stock HTML
- * Container widget type (Plain HTML mode). Two runtime API points confirmed
- * against ThingsBoard PE's own docs (thingsboard.io/docs/pe/reference/widgets
- * /html-widgets/html-container/) after two wrong guesses each:
+ * Container widget type (Plain HTML mode). Three runtime API points, each
+ * confirmed against ThingsBoard PE's docs (thingsboard.io/docs/pe/reference
+ * /widgets/html-widgets/html-container/) or its source rather than guessed:
  *
  * - This script is the BODY of a function called with two arguments: `ctx`
  *   (the WidgetContext) and `container` (the widget's DOM element, Plain HTML
@@ -17,6 +17,11 @@
  *   dashboard's own Add/Edit/Delete asset actions already use live on this
  *   tenant (`terrysense/operations/widget_deploy.py`'s module docstring has
  *   the fuller trail).
+ * - HTML Container is a **`static`**-type widget, so it gets no automatic
+ *   data subscription: `ctx.datasources` is undefined and the configured
+ *   datasource's entity alias is never resolved, even though
+ *   `ctx.widget.config.datasources` carries it. `resolveOriginatorDatasource()`
+ *   below does that resolution via `ctx.aliasController`.
  *
  * This is a JS port of `logr-cloud-tool/terrysense/operations/config_resolver.py`
  * (ConfigResolver._ancestors_nearest_first / _attrs_of / _first_set /
@@ -30,16 +35,18 @@
  * warning/minor/major is additive — fields are already severity-namespaced
  * here and in the Python resolver.
  *
- * Packaging: this file is uploaded as ONE ThingsBoard JS resource (Resources
- * library, EXTENSION sub-type — a classic script, not an ES module, so a
- * top-level `var`/`function` here would otherwise leak into the global scope
- * shared with every other loaded resource). Wrapping the whole thing in one
- * function assigned to `window.TerrySenseAlarmCascadeEditor` keeps everything
- * else private and gives the widget's own tiny `settings.js` stub
- * (`window.TerrySenseAlarmCascadeEditor(ctx, container);`) one call to make.
- * `terrysense/operations/widget_deploy.py` uploads/updates this resource and
- * wires the widget type's descriptor `resources` to load it — this file is
- * the single source of truth; nowhere else embeds a copy of the logic.
+ * Packaging: this file is served to the browser as ONE classic script (not an
+ * ES module) from a public CDN mirror, and referenced by the widget type's
+ * descriptor `resources`. Because a classic script's top-level `var`/`function`
+ * would leak into the global scope shared with every other loaded resource,
+ * the whole thing is wrapped in one function assigned to
+ * `window.TerrySenseAlarmCascadeEditor` — everything else stays private and
+ * the widget's own `settings.js` is a one-line stub
+ * (`window.TerrySenseAlarmCascadeEditor(ctx, container);`).
+ * `terrysense/operations/widget_deploy.py` wires that up and documents why
+ * neither ThingsBoard's own Resources library nor a git host's raw-file URL
+ * can serve it. This file is the single source of truth; nowhere else embeds
+ * a copy of the logic.
  */
 
 window.TerrySenseAlarmCascadeEditor = function (ctx, container) {
@@ -256,7 +263,6 @@ var els = {
 };
 
 var currentOriginator = null;
-var currentChain = null;
 var currentStations = [];
 
 function setMessage(text, cls) {
@@ -316,29 +322,47 @@ function updateSaveEnabled() {
 
 // -- Load / resolve / render ---------------------------------------------
 
+// The widget runs on ThingsBoard's `static`-type HTML Container, which gets
+// no automatic data subscription: `ctx.datasources` stays undefined and the
+// configured datasource's entity alias is never resolved (confirmed live —
+// `ctx.widget.config.datasources` carries the alias, `ctx.datasources` and
+// `ctx.defaultSubscription` do not exist). `resolveDatasources` is the same
+// call the platform makes for a subscribing widget, and fills in
+// entityId/entityType/entityName. The config array is deep-copied because
+// resolution writes into the datasources it is given.
+function resolveOriginatorDatasource() {
+  var live = ctx.datasources && ctx.datasources[0];
+  if (live && live.entityId) { return Promise.resolve(live); }
+
+  var configured = ctx.widget && ctx.widget.config && ctx.widget.config.datasources;
+  if (!configured || !configured.length) { return Promise.resolve(null); }
+
+  return toPromise(ctx.aliasController.resolveDatasources(JSON.parse(JSON.stringify(configured)), true))
+    .then(function (resolved) {
+      return (resolved || []).filter(function (d) { return d && d.entityId; })[0] || null;
+    });
+}
+
 function load() {
   els.loading.hidden = false;
   els.table.hidden = true;
   setMessage('');
 
-  var ds = ctx.datasources && ctx.datasources[0];
-  if (!ds || !ds.entityId) {
-    // Diagnostic dump — html_container is a "static"-type widget, so a
-    // configured `config.datasources` entry may not be auto-subscribed the
-    // way it would be on a "latest"/"timeseries" widget. Show exactly what
-    // ctx carries so the fix is read off this instead of guessed again.
-    var diag = {
-      'ctx.datasources': ctx.datasources,
-      'ctx.defaultSubscription': ctx.defaultSubscription,
-      'ctx.widget.config.datasources': ctx.widget && ctx.widget.config && ctx.widget.config.datasources,
-      'has ctx.subscriptionApi': !!ctx.subscriptionApi
-    };
-    els.loading.textContent = 'No entity bound to this widget. ' + JSON.stringify(diag);
-    return;
-  }
+  resolveOriginatorDatasource().then(function (ds) {
+    if (!ds) {
+      els.loading.textContent =
+        'No entity bound to this widget — bind one in the widget\'s Data tab.';
+      return;
+    }
+    return loadForDatasource(ds);
+  }).catch(function (err) {
+    els.loading.textContent = 'Failed to resolve the bound entity: ' + (err && err.message ? err.message : err);
+  });
+}
 
+function loadForDatasource(ds) {
   var originator = { id: ds.entityId, entityType: ds.entityType, name: ds.entityName, subType: ds.entityType };
-  getAsset(ds.entityId).then(function (asset) {
+  return getAsset(ds.entityId).then(function (asset) {
     originator.subType = asset.type || 'Asset';
     originator.name = asset.name;
     els.title.textContent = originator.subType + ' · ' + originator.name;
@@ -351,7 +375,6 @@ function load() {
     ]);
   }).then(function (results) {
     var chain = results[0], discovery = results[1], ownAttrs = results[2];
-    currentChain = chain;
     currentStations = discovery.stations;
     els.status.textContent = chain.map(levelDisplay).join(' → ');
 
