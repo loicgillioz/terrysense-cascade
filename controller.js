@@ -110,9 +110,11 @@ function getAsset(id) {
   return toPromise(getService('assetService').getAsset(id));
 }
 
+// `ctx.currentUser` is a WidgetContext getter returning AuthUser, whose ids
+// are plain UUID strings (not EntityId objects). The injected `userService`
+// has no current-user accessor — that state lives in the auth store.
 function getTenantId() {
-  var user = getService('userService').getCurrentUser();
-  return Promise.resolve(user.tenantId.id);
+  return ctx.currentUser.tenantId;
 }
 
 // -- Cascade walk (port of config_resolver.py lines 335-381) ----------------
