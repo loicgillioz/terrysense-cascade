@@ -323,7 +323,17 @@ function load() {
 
   var ds = ctx.datasources && ctx.datasources[0];
   if (!ds || !ds.entityId) {
-    els.loading.textContent = 'No entity bound to this widget.';
+    // Diagnostic dump — html_container is a "static"-type widget, so a
+    // configured `config.datasources` entry may not be auto-subscribed the
+    // way it would be on a "latest"/"timeseries" widget. Show exactly what
+    // ctx carries so the fix is read off this instead of guessed again.
+    var diag = {
+      'ctx.datasources': ctx.datasources,
+      'ctx.defaultSubscription': ctx.defaultSubscription,
+      'ctx.widget.config.datasources': ctx.widget && ctx.widget.config && ctx.widget.config.datasources,
+      'has ctx.subscriptionApi': !!ctx.subscriptionApi
+    };
+    els.loading.textContent = 'No entity bound to this widget. ' + JSON.stringify(diag);
     return;
   }
 
