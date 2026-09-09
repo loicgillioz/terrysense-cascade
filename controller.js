@@ -208,17 +208,46 @@ function resolveField(chain, channel, kind, field) {
 // descendant Station assets (reversed port of descendant_stations(), lines
 // 308-331 — there it fans out to WRITE; here it only discovers to READ).
 
+// Port of ConfigResolver._measured_keys_and_kinds: a channel's kind comes
+// from `config.channelMap`'s nested `channels` object, and when a station has
+// no map at all (every station migrated from v1 — they never went through the
+// v2 onboarding wizard) the channel list falls back to the station's live
+// timeseries keys, with the kind parsed out of a raw `p<N>.<kind>` key or
+// left null for a plain channel name.
+var RAW_KEY_KIND = /^p\d+\.([a-z][A-Za-z0-9]*)/;
+
 function channelMapOf(stationId) {
   return getAttrsMap('ASSET', stationId).then(function (attrs) {
     var raw = attrs['config.channelMap'];
-    if (!raw) { return {}; }
-    try {
-      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    var parsed = null;
+    if (raw) {
+      try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { parsed = null; }
+    }
+    var channels = parsed && parsed.channels;
+    if (channels && Object.keys(channels).length) {
       var out = {};
-      Object.keys(parsed).forEach(function (channel) { out[channel] = (parsed[channel] || {}).kind || null; });
+      Object.keys(channels).forEach(function (channel) {
+        out[channel] = (channels[channel] || {}).kind || null;
+      });
       return out;
-    } catch (e) { return {}; }
+    }
+    return timeseriesChannelsOf(stationId);
   });
+}
+
+function timeseriesChannelsOf(stationId) {
+  // AttributeService has no "list keys" call; asking for latest values with no
+  // key filter returns every key, which is the enumeration.
+  return toPromise(getService('attributeService').getEntityTimeseriesLatest(entityIdObj('ASSET', stationId)))
+    .then(function (latest) {
+      var out = {};
+      Object.keys(latest || {}).forEach(function (key) {
+        var match = RAW_KEY_KIND.exec(key);
+        out[key] = match ? match[1] : null;
+      });
+      return out;
+    })
+    .catch(function () { return {}; });
 }
 
 function findDescendantStations(rootId) {
@@ -234,7 +263,12 @@ function findDescendantStations(rootId) {
     (relations || []).forEach(function (r) { ids[r.to.id] = true; });
     return Promise.all(Object.keys(ids).map(function (id) { return getAsset(id); }));
   }).then(function (assets) {
-    return assets.filter(function (a) { return (a.type || '').toLowerCase() === 'station'; });
+    // Normalised to the same shape the station-originator path produces: an
+    // Asset's own `.id` is an EntityId object, and passing that where a plain
+    // id string belongs puts "[object Object]" in the request URL.
+    return assets
+      .filter(function (a) { return (a.type || '').toLowerCase() === 'station'; })
+      .map(function (a) { return { id: a.id.id, name: a.name, subType: a.type }; });
   });
 }
 
@@ -378,7 +412,9 @@ function loadForDatasource(ds) {
   }).then(function (results) {
     var chain = results[0], discovery = results[1], ownAttrs = results[2];
     currentStations = discovery.stations;
-    els.status.textContent = chain.map(levelDisplay).join(' → ');
+    // The originator is already named in the title; the status line is what it
+    // inherits from.
+    els.status.textContent = 'inherits: ' + chain.slice(1).map(levelDisplay).join(' → ');
 
     var channelNames = Object.keys(discovery.channels);
     var resolvedKeys = [];
@@ -442,7 +478,7 @@ function save() {
 }
 
 function resolveAndApply(station) {
-  return ancestorsNearestFirst('ASSET', station.id, station.name, station.type || 'Station')
+  return ancestorsNearestFirst('ASSET', station.id, station.name, station.subType || 'Station')
     .then(function (chain) {
       return channelMapOf(station.id).then(function (channels) {
         var keys = [];
