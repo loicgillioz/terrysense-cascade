@@ -423,10 +423,14 @@ function resolveStation(station, io, cache) {
 
 /** What to write/delete on `station` to bring its `effective.*` block in
  * line with `resolved` — pure, no I/O: the caller writes `toWrite` and
- * deletes `toDelete`. */
+ * deletes `toDelete`. Unchanged values are left out: every attribute write
+ * re-triggers `station_entry`. */
 function effectiveDiff(currentAttrs, resolved) {
-  var toWrite = resolved.effective;
-  var produced = Object.keys(toWrite);
+  var toWrite = {};
+  Object.keys(resolved.effective).forEach(function (k) {
+    if (JSON.stringify((currentAttrs || {})[k]) !== JSON.stringify(resolved.effective[k])) { toWrite[k] = resolved.effective[k]; }
+  });
+  var produced = Object.keys(resolved.effective);
   var toDelete = Object.keys(currentAttrs || {}).filter(function (k) {
     return k.indexOf(EFFECTIVE_PREFIX) === 0 && produced.indexOf(k) < 0;
   });
