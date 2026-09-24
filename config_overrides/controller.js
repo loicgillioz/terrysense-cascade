@@ -183,6 +183,7 @@ var state = {
   origin: null,        // {entityType, id, name, kind}
   ownAttrs: {},
   channelKinds: {},     // {channel: wireKind}
+  dictionaryKinds: [],  // wire kinds named in the channel-name dictionary
   editingKey: null      // set when the dialog is editing an existing row, else null (adding)
 };
 
@@ -302,11 +303,12 @@ function load() {
       return Promise.all([
         io.fetchAttrs(origin),
         resolver.discoverChannels(origin, io),
-        origin.entityType === 'CUSTOMER' ? io.fetchDefaults().then(function (d) { return d ? io.fetchAttrs(d) : {}; }) : Promise.resolve({})
+        io.fetchDefaults().then(function (d) { return d ? io.fetchAttrs(d) : {}; })
       ]).then(function (results) {
         state.ownAttrs = results[0];
         state.channelKinds = results[1].channels;
         var defaultsAttrs = results[2];
+        state.dictionaryKinds = dictionaryKinds(defaultsAttrs['config.channelNames']);
 
         return resolver.buildChain(origin, io).then(function (chain) {
           els.status.textContent = 'inherits from: ' + chain.slice(1).map(resolver.levelDisplay).join(' → ') || 'nothing above this level';
@@ -403,20 +405,25 @@ function confirmDialog(text) {
 function availableCategories() {
   var isCustomer = state.origin.entityType === 'CUSTOMER';
   return resolver.CATEGORIES.filter(function (c) {
-    // A per-measurement category needs at least one target to offer, unless
-    // we're at CUSTOMER level where the target is always "a kind" and the
-    // kind list comes from every kind ever measured downstream.
     if (!c.perMeasurement) { return true; }
-    return isCustomer || Object.keys(state.channelKinds).length > 0;
+    return isCustomer ? kindOptions().length > 0 : Object.keys(state.channelKinds).length > 0 || kindOptions().length > 0;
   });
 }
 
+function dictionaryKinds(channelNames) {
+  if (typeof channelNames === 'string') {
+    try { channelNames = JSON.parse(channelNames); } catch (e) { return []; }
+  }
+  return Object.keys(channelNames || {}).map(function (name) { return channelNames[name].kind; }).filter(Boolean);
+}
+
+// Kinds offered as a target: the tenant vocabulary plus whatever the stations below actually measure.
 function kindOptions() {
   var seen = {};
   var out = [];
-  Object.keys(state.channelKinds).forEach(function (channel) {
-    var wireKind = state.channelKinds[channel];
-    if (!wireKind || resolver.NEVER_KIND_TARGETS.indexOf(wireKind) >= 0) { return; }
+  var wireKinds = state.dictionaryKinds.concat(Object.keys(state.channelKinds).map(function (ch) { return state.channelKinds[ch]; }));
+  wireKinds.forEach(function (wireKind) {
+    if (!wireKind || resolver.NEVER_KIND_TARGETS.indexOf(resolver.wireKind(wireKind)) >= 0) { return; }
     var camel = resolver.camelKind(wireKind);
     if (!seen[camel]) { seen[camel] = true; out.push(camel); }
   });
