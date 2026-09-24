@@ -397,7 +397,9 @@ function selectDevice(device, opts) {
     state.activeSources = activeSourcesFromAttrs(attrs);
     if (state.activeSources.length || state.topology.length) { return; }
     return httpGet('/api/plugins/telemetry/DEVICE/' + state.device.id + '/keys/timeseries').then(function (keys) {
-      state.activeSources = familySourcesFromKeys(keys, state.dictionary);
+      // A LOGR that has not reported its topology yet is not a family device.
+      var isLogr = (keys || []).some(function (k) { return SOURCE_KEY_RE.test(k); });
+      state.activeSources = isLogr ? [] : familySourcesFromKeys(keys, state.dictionary);
     });
   }).then(function () {
     state.names = {};
