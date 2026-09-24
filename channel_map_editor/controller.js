@@ -27,16 +27,8 @@
  * this widget does not load the peripheral catalog client-side (no
  * `logr-peripheral-catalog/catalog.json` fetch, no extra CDN dependency): a
  * device's active sources are read straight off its own
- * `subscriptions.<sourceKey>.enabled` attributes, which already carry
- * position and (camelCased) kind in the key
- * (`terrysense/utils/keys.py::source_key`). The one cost is that
- * `config.channelMap`'s `kind` field ends up stored camelCased (`"ph"`)
- * rather than the catalog's wire spelling (`"PH"`) that
- * `app/lib/catalog.py::channel_entry` writes — harmless for every reader,
- * since `camelKind()`/`camel_kind()` are idempotent and every consumer
- * (`config_resolver.py`, `resolver.js`) only ever passes the stored kind
- * through that function, never compares it verbatim. Flagged in the deploy
- * report as one to confirm live.
+ * `subscriptions.<sourceKey>.enabled` attributes, and each source key is
+ * exactly the `config.channelMap` value (CHANNEL_MAP.md §1).
  */
 
 window.TerrySenseChannelMapEditor = function (ctx, container) {
@@ -226,13 +218,6 @@ function activeSourcesFromAttrs(attrs) {
   }).filter(Boolean).sort(function (a, b) { return a.position - b.position || a.sourceKey.localeCompare(b.sourceKey); });
 }
 
-function sourceKeyOfMapEntry(spec) {
-  var key = 'p' + spec.position + '.' + resolver.camelKind(spec.kind);
-  if (spec.group) { key += '.g' + spec.group; }
-  if (spec.index !== undefined && spec.index !== null) { key += '.i' + spec.index; }
-  return key;
-}
-
 function channelsOfAttrValue(raw) {
   var parsed = null;
   if (raw) { try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { parsed = null; } }
@@ -364,8 +349,7 @@ function load() {
           state.savedChannelMap = channelsOfAttrValue(ownAttrs['config.channelMap']);
           state.savedNamesBySourceKey = {};
           Object.keys(state.savedChannelMap).forEach(function (name) {
-            var spec = state.savedChannelMap[name];
-            try { state.savedNamesBySourceKey[sourceKeyOfMapEntry(spec)] = name; } catch (e) { /* malformed entry, skip */ }
+            state.savedNamesBySourceKey[state.savedChannelMap[name]] = name;
           });
           var savedDeviceId = (function () {
             var raw = ownAttrs['config.channelMap'];
@@ -499,15 +483,7 @@ function buildChannelMap() {
   state.activeSources.forEach(function (s) {
     var name = state.names[s.sourceKey];
     if (!name) { return; }
-    // `s.kind` is parsed off the device's own subscription key, already
-    // camelCased (source_key() in terrysense/utils/keys.py camelCases before
-    // building it). Store the catalog wire spelling instead, so this write
-    // path and app/lib/catalog.py::channel_entry produce the identical
-    // `config.channelMap` schema — see resolver.js's `wireKind` docstring.
-    var entry = { position: s.position, kind: resolver.wireKind(s.kind) };
-    if (s.group) { entry.group = s.group; }
-    if (s.indexed) { entry.index = s.index; }
-    channels[name] = entry;
+    channels[name] = s.sourceKey;
   });
   return { sourceDeviceId: state.device ? state.device.id : null, channels: channels };
 }

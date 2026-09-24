@@ -157,7 +157,6 @@ var els = {
   dialogTitle: root.querySelector('.co-dialog-title'),
   category: root.querySelector('.co-category'),
   stepTarget: root.querySelector('.co-step-target'),
-  targetMode: root.querySelector('.co-target-mode'),
   targetValue: root.querySelector('.co-target-value'),
   stepValue: root.querySelector('.co-step-value'),
   valueLabel: root.querySelector('.co-value-label'),
@@ -182,8 +181,8 @@ var els = {
 var state = {
   origin: null,        // {entityType, id, name, kind}
   ownAttrs: {},
-  channelKinds: {},     // {channel: wireKind}
-  dictionaryKinds: [],  // wire kinds named in the channel-name dictionary
+  channelKinds: {},     // {channel: kind} mapped on the stations below
+  dictionary: {},       // {name: kind} from the channel-name dictionary
   editingKey: null      // set when the dialog is editing an existing row, else null (adding)
 };
 
@@ -205,8 +204,7 @@ function formatValue(category, value) {
 
 function descriptorFromParsed(parsed) {
   if (parsed.axis === 'config') { return { axis: 'config', field: parsed.field }; }
-  if (parsed.axis === 'channel') { return { axis: 'channel', channel: parsed.target, kind: state.channelKinds[parsed.target], field: parsed.field }; }
-  return { axis: 'kind', kind: parsed.target, field: parsed.field };
+  return { axis: 'channel', channel: parsed.target, kind: kindOf(parsed.target), field: parsed.field };
 }
 
 // -- render: existing overrides -------------------------------------------
@@ -310,7 +308,7 @@ function load() {
         state.ownAttrs = results[0];
         state.channelKinds = results[1].channels;
         var defaultsAttrs = results[2];
-        state.dictionaryKinds = dictionaryKinds(defaultsAttrs['config.channelNames']);
+        state.dictionary = dictionaryOf(defaultsAttrs['config.channelNames']);
 
         return resolver.buildChain(origin, io).then(function (chain) {
           els.status.textContent = 'inherits from: ' + chain.slice(1).map(resolver.levelDisplay).join(' → ') || 'nothing above this level';
@@ -318,10 +316,10 @@ function load() {
           // `_ancestors_nearest_first` raises if it is missing entirely); its
           // absence *here* means this customer has no read access to it yet
           // (the "Shared defaults" entity group was never shared with them) —
-          // worth surfacing since every kind-axis fallback silently stops
-          // working, not just the greyed CUSTOMER-level rows.
+          // worth surfacing since every tenant default and the channel
+          // dictionary silently stop resolving, not just the greyed rows.
           if (!chain.some(function (l) { return l.role === 'defaults'; })) {
-            setMessage('The in-terra defaults are not shared with this customer yet — kind-wide fallbacks will not resolve until a tenant admin shares them.', 'co-error');
+            setMessage('The in-terra defaults are not shared with this customer yet — tenant defaults will not resolve until a tenant admin shares them.', 'co-error');
           }
         }).then(function () {
           return renderOwnRows();
@@ -405,35 +403,29 @@ function confirmDialog(text) {
 // -- add/edit dialog ------------------------------------------------------
 
 function availableCategories() {
-  var isCustomer = state.origin.entityType === 'CUSTOMER';
-  return resolver.CATEGORIES.filter(function (c) {
-    if (!c.perMeasurement) { return true; }
-    return isCustomer ? kindOptions().length > 0 : Object.keys(state.channelKinds).length > 0 || kindOptions().length > 0;
-  });
+  return resolver.CATEGORIES.filter(function (c) { return !c.perMeasurement || targetOptions().length > 0; });
 }
 
-function dictionaryKinds(channelNames) {
+function dictionaryOf(channelNames) {
   if (typeof channelNames === 'string') {
-    try { channelNames = JSON.parse(channelNames); } catch (e) { return []; }
+    try { channelNames = JSON.parse(channelNames); } catch (e) { return {}; }
   }
-  return Object.keys(channelNames || {}).map(function (name) { return channelNames[name].kind; }).filter(Boolean);
+  var out = {};
+  Object.keys(channelNames || {}).forEach(function (name) { out[name] = (channelNames[name] || {}).kind || null; });
+  return out;
 }
 
-// Kinds offered as a target: the tenant vocabulary plus whatever the stations below actually measure.
-function kindOptions() {
-  var seen = {};
-  var out = [];
-  var wireKinds = state.dictionaryKinds.concat(Object.keys(state.channelKinds).map(function (ch) { return state.channelKinds[ch]; }));
-  wireKinds.forEach(function (wireKind) {
-    if (!wireKind || resolver.NEVER_KIND_TARGETS.indexOf(resolver.wireKind(wireKind)) >= 0) { return; }
-    var camel = resolver.camelKind(wireKind);
-    if (!seen[camel]) { seen[camel] = true; out.push(camel); }
-  });
-  return out.sort();
+function kindOf(channel) {
+  return state.channelKinds[channel] || state.dictionary[channel] || null;
 }
 
-function channelOptions() {
-  return Object.keys(state.channelKinds).sort();
+// Channel names offered as a target: every dictionary name on CUSTOMER and the
+// Defaults asset, which sit above every station; the channels mapped on the
+// stations below otherwise.
+function targetOptions() {
+  var aboveStations = state.origin.entityType === 'CUSTOMER'
+    || String(state.origin.kind || '').toLowerCase() === 'defaults';
+  return Object.keys(aboveStations ? state.dictionary : state.channelKinds).sort();
 }
 
 function currentCategory() {
@@ -443,22 +435,16 @@ function currentCategory() {
 
 function refreshTargetStep() {
   var cat = currentCategory();
-  var isCustomer = state.origin.entityType === 'CUSTOMER';
   els.stepTarget.hidden = !cat || !cat.perMeasurement;
   if (!cat || !cat.perMeasurement) { refreshValueStep(); return; }
-
-  els.targetMode.hidden = isCustomer;
-  if (isCustomer) { els.targetMode.value = 'kind'; }
 
   fillTargetValues();
   refreshValueStep();
 }
 
 function fillTargetValues() {
-  var mode = els.targetMode.value;
-  var options = mode === 'channel' ? channelOptions() : kindOptions();
   els.targetValue.innerHTML = '';
-  options.forEach(function (opt) {
+  targetOptions().forEach(function (opt) {
     var o = document.createElement('option'); o.value = opt; o.textContent = opt;
     els.targetValue.appendChild(o);
   });
@@ -530,20 +516,15 @@ function descriptorForDialog() {
   if (!cat) { return null; }
   if (cat.scalarField) { return { axis: 'config', field: cat.scalarField }; }
   if (!cat.perMeasurement) { return null; }
-  var mode = els.targetMode.value;
   var target = els.targetValue.value;
   if (!target) { return null; }
-  if (mode === 'channel') { return { axis: 'channel', channel: target, kind: state.channelKinds[target], field: cat.field }; }
-  return { axis: 'kind', kind: target, field: cat.field };
+  return { axis: 'channel', channel: target, kind: kindOf(target), field: cat.field };
 }
 
 function keyForDialog() {
   var cat = currentCategory();
   if (cat.scalarField) { return resolver.CONFIG_PREFIX + cat.scalarField; }
-  var mode = els.targetMode.value;
-  var target = els.targetValue.value;
-  if (mode === 'channel') { return resolver.CHANNEL_PREFIX + target + '.' + cat.field; }
-  return resolver.KIND_PREFIX + resolver.camelKind(target) + '.' + cat.field;
+  return resolver.CHANNEL_PREFIX + els.targetValue.value + '.' + cat.field;
 }
 
 function valueForDialog() {
@@ -598,8 +579,6 @@ function openDialog(existingKey) {
     els.category.disabled = true;
     refreshTargetStep();
     if (parsed.axis !== 'config') {
-      els.targetMode.value = parsed.axis;
-      els.targetMode.disabled = true;
       fillTargetValues();
       els.targetValue.value = parsed.target;
       els.targetValue.disabled = true;
@@ -607,7 +586,6 @@ function openDialog(existingKey) {
   } else {
     els.dialogTitle.textContent = 'Add override';
     els.category.disabled = false;
-    els.targetMode.disabled = false;
     els.targetValue.disabled = false;
     refreshTargetStep();
   }
@@ -621,7 +599,6 @@ function closeDialog() {
 }
 
 els.category.addEventListener('change', refreshTargetStep);
-els.targetMode.addEventListener('change', function () { fillTargetValues(); refreshValueStep(); });
 els.targetValue.addEventListener('change', refreshValueStep);
 els.valueInput.addEventListener('input', updateSaveEnabled);
 els.valueBool.addEventListener('change', updateSaveEnabled);

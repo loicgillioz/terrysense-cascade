@@ -6,12 +6,8 @@
  * (`window.TerrySenseResolver`) or in Node (`module.exports`, see
  * `tests/test_resolver.js`).
  *
- * Port of `logr-cloud-tool/terrysense/operations/config_resolver.py`, extended
- * per `logr-product-docs/cloud/CONFIG_CASCADE.md` with the CUSTOMER and
- * DEFAULTS rungs the Python resolver does not have yet (another change is
- * adding those there separately — keep this in sync by hand meanwhile, the
- * same trade-off `alarm_cascade_editor/controller.js` already lived with for
- * the STATION/LOCATION/PROJECT/TENANT chain).
+ * Port of `logr-cloud-tool/terrysense/operations/config_resolver.py` — keep
+ * the two in sync by hand (`logr-product-docs/cloud/CONFIG_CASCADE.md`).
  *
  * Chain (nearest first): STATION -> (LOCATION) -> PROJECT, via `Contains`,
  * then CUSTOMER (the top asset's owner, skipped when tenant-owned), then the
@@ -27,15 +23,12 @@
  *   fetchChildren(entity)  -> [{entityType:'ASSET', id, name, kind}]
  *   fetchCustomer(entity)  -> {entityType:'CUSTOMER', id, name} | null
  *   fetchDefaults()        -> {entityType:'ASSET', id, name} | null
- *   fetchTimeseriesKinds(entity) -> {channel: kind|null}   optional
  *
  * `entity` / level objects carry `{entityType, id, name, kind}` — `kind` is
  * the ThingsBoard asset *type* string ("Station", "Project", "Defaults", …),
  * never the measurement kind. A resolved chain level also carries `role`:
  * `"chain"` for an ordinary Contains-linked asset (Station/Location/Project),
- * `"customer"` for the CUSTOMER rung, `"defaults"` for the DEFAULTS asset —
- * that role, not the TB type string, is what decides channel-axis eligibility
- * below, so the chain walk works whatever a tenant calls its asset types.
+ * `"customer"` for the CUSTOMER rung, `"defaults"` for the DEFAULTS asset.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -48,7 +41,6 @@
 
 var CONFIG_PREFIX = 'config.';
 var CHANNEL_PREFIX = 'channel.';
-var KIND_PREFIX = 'kind.';
 var EFFECTIVE_PREFIX = 'effective.';
 
 var PER_KEY_FIELDS = ['unit', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
@@ -56,22 +48,17 @@ var SEVERITIES = ['warning', 'minor', 'major', 'critical'];
 var ALARM_FIELDS = ['thresholdMax', 'thresholdMin', 'state', 'debounce'];
 var ALARM_TEXT_EVENTS = ['created', 'cleared'];
 
-// Axis-less scalars beyond ttlDays, which is handled apart (the only one the
+// Entity scalars beyond ttlDays, which is handled apart (the only one the
 // hot path consumes as a unit — CONFIG_RESOLVER.md §3).
 var SCALAR_KEYS = ['language', 'url', 'sms.recipients', 'sms.enabled', 'email.recipients', 'email.enabled']
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }));
 
-// Decoder SI units per kind — CONFIG_CASCADE.md §1, mirrors config_resolver.py.
+// Decoder SI units per kind, the `unit` fallback — mirrors config_resolver.py.
 var DECODER_UNITS = {
   temperature: '°C', humidity: '%', pressure: 'hPa', ph: 'pH', conductivity: 'µS/cm',
   distance: 'm', flow: 'm³/h', volume: 'm³', angle: '°', voltage: 'V', current: 'A',
   power: 'W', percent: '%', duration: 's'
 };
-
-// CONFIG_CASCADE.md §4: derived channels sharing one kind across incompatible
-// scales, deliberately left off the kind axis — never offered as an
-// "Add override" target.
-var NEVER_KIND_TARGETS = ['ANGLE', 'DISTANCE'];
 
 // -- kind spelling ------------------------------------------------------
 // Wire kind (SNAKE_CASE / UPPER) -> cloud kind (camelCase). Idempotent, mirrors
@@ -92,24 +79,11 @@ function camelKind(kind) {
   }).join('');
 }
 
-/** Cloud kind -> catalog wire spelling: the inverse of `camelKind`, so a
- * `config.channelMap` entry written from a device's own (already-camelCased)
- * `subscriptions.<sourceKey>` uses the exact same `kind` string
- * `app/lib/catalog.py::channel_entry` writes for a v2-onboarding-built map —
- * one schema for both write paths, not two. Splits at each lower-to-upper
- * boundary, matching every kind in `logr-peripheral-catalog/catalog.json`
- * today (verified by round-trip against the full catalog kind list, see
- * `tests/test_resolver.js`); idempotent on an already-wire-spelled input,
- * same as `camelKind`. */
-function wireKind(kind) {
-  return String(kind || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
-}
-
 // -- override key categories --------------------------------------------
 // The vocabulary the `config_overrides` widget's "Add override" stepper and
 // list grouping both read from, so the two never drift apart. `field` names
-// the channel/kind-axis field; `scalarField` names the axis-less `config.`
-// field. Exactly one of the two is set.
+// the per-channel field; `scalarField` names the `config.` scalar. Exactly one
+// of the two is set.
 
 var CATEGORIES = [
   { id: 'alarmMax', label: 'Alarm limit · max', perMeasurement: true, numeric: true, field: 'alarm.critical.thresholdMax' },
@@ -153,12 +127,6 @@ function parseOverrideKey(key) {
     if (cdot < 0) { return null; }
     return { axis: 'channel', target: crest.slice(0, cdot), field: crest.slice(cdot + 1) };
   }
-  if (key.indexOf(KIND_PREFIX) === 0) {
-    var krest = key.slice(KIND_PREFIX.length);
-    var kdot = krest.indexOf('.');
-    if (kdot < 0) { return null; }
-    return { axis: 'kind', target: krest.slice(0, kdot), field: krest.slice(kdot + 1) };
-  }
   if (key.indexOf(CONFIG_PREFIX) === 0) {
     return { axis: 'config', target: null, field: key.slice(CONFIG_PREFIX.length) };
   }
@@ -176,9 +144,6 @@ function describeOverride(key) {
   }
   var cat = categoryByField(parsed.field);
   var base = cat ? cat.label : parsed.field;
-  if (parsed.axis === 'kind') {
-    return { label: base + ' · ' + parsed.target + ' (all ' + parsed.target + ' sensors)', group: base, category: cat };
-  }
   return { label: base + ' · ' + parsed.target, group: base, category: cat };
 }
 
@@ -263,8 +228,6 @@ function appendDefaults(chain, io) {
   });
 }
 
-function chainEligible(level) { return level.role === 'chain'; }
-
 // -- attribute reads, cached per entity --------------------------------
 
 function createCache() { return {}; }
@@ -291,32 +254,20 @@ function firstSet(chain, attrKey, io, cache) {
 }
 
 // -- field resolution -----------------------------------------------------
-// Specificity-major, two passes (CONFIG_CASCADE.md §1): channel axis nearest-
-// set on the chain-eligible rungs only, else kind axis nearest-set on the
-// WHOLE chain (including CUSTOMER/DEFAULTS), else the decoder SI unit.
-
-function resolveKindAxis(chain, kind, field, io, cache) {
-  var camel = camelKind(kind);
-  if (!camel) { return Promise.resolve(null); }
-  var kindKey = KIND_PREFIX + camel + '.' + field;
-  return firstSet(chain, kindKey, io, cache).then(function (hit) {
-    if (hit) {
-      return { value: hit.value, level: hit.level, source: levelDisplay(hit.level) + ' · kind ' + camel, overrideKey: kindKey };
-    }
-    if (field === 'unit' && DECODER_UNITS[camel]) {
-      return { value: DECODER_UNITS[camel], level: null, source: 'Decoder default (SI, ' + camel + ')', overrideKey: kindKey };
-    }
-    return null;
-  });
-}
+// Nearest-set `channel.<channel>.<field>` on the whole chain, else the decoder
+// SI unit for `unit` (CONFIG_CASCADE.md §1).
 
 function resolveField(chain, channel, kind, field, io, cache) {
   var chanKey = CHANNEL_PREFIX + channel + '.' + field;
-  return firstSet(chain.filter(chainEligible), chanKey, io, cache).then(function (hit) {
+  return firstSet(chain, chanKey, io, cache).then(function (hit) {
     if (hit) {
-      return { value: hit.value, level: hit.level, source: levelDisplay(hit.level) + ' · channel', overrideKey: chanKey };
+      return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: chanKey };
     }
-    return resolveKindAxis(chain, kind, field, io, cache);
+    var camel = camelKind(kind);
+    if (field === 'unit' && DECODER_UNITS[camel]) {
+      return { value: DECODER_UNITS[camel], level: null, source: 'Decoder default (SI, ' + camel + ')', overrideKey: chanKey };
+    }
+    return null;
   });
 }
 
@@ -350,29 +301,36 @@ function resolveScalars(chain, io, cache) {
 }
 
 // -- channel discovery ------------------------------------------------------
-// Station: its own config.channelMap. Location/Project: union across
-// descendant stations (mirrors the read side of descendant_stations()).
+// Station: its own config.channelMap, each channel's kind from the tenant
+// dictionary (`config.channelNames` on the DEFAULTS asset). Location/Project:
+// union across descendant stations. A station without a map has no channels.
 
-function channelsFromAttrs(attrs) {
-  var raw = attrs && attrs[CONFIG_PREFIX + 'channelMap'];
-  var parsed = null;
-  if (raw) {
-    try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { parsed = null; }
-  }
+function parseJson(raw) {
+  if (!raw) { return null; }
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+}
+
+function channelNamesOf(io, cache) {
+  return io.fetchDefaults().then(function (defaults) {
+    if (!defaults) { return {}; }
+    return attrsOf({ entityType: 'ASSET', id: defaults.id }, io, cache).then(function (attrs) {
+      return parseJson(attrs && attrs[CONFIG_PREFIX + 'channelNames']) || {};
+    });
+  });
+}
+
+function channelsFromAttrs(attrs, names) {
+  var parsed = parseJson(attrs && attrs[CONFIG_PREFIX + 'channelMap']);
   var channels = parsed && parsed.channels;
   var out = {};
   if (channels) {
-    Object.keys(channels).forEach(function (c) { out[c] = (channels[c] || {}).kind || null; });
+    Object.keys(channels).forEach(function (c) { out[c] = (names[c] || {}).kind || null; });
   }
   return out;
 }
 
-function channelMapOf(entity, io) {
-  return io.fetchAttrs(entity).then(function (attrs) {
-    var channels = channelsFromAttrs(attrs);
-    if (Object.keys(channels).length) { return channels; }
-    return io.fetchTimeseriesKinds ? Promise.resolve(io.fetchTimeseriesKinds(entity)).then(function (m) { return m || {}; }) : {};
-  });
+function channelMapOf(entity, names, io) {
+  return io.fetchAttrs(entity).then(function (attrs) { return channelsFromAttrs(attrs, names); });
 }
 
 function descendantAssets(entity, io, maxDepth) {
@@ -413,8 +371,9 @@ function affectedStations(entity, io) {
 /** `{channel: kind}` reachable from `entity`: its own map at STATION level,
  * the union of descendant stations' maps otherwise. */
 function discoverChannels(entity, io) {
-  return affectedStations(entity, io).then(function (stations) {
-    return Promise.all(stations.map(function (s) { return channelMapOf(s, io); })).then(function (maps) {
+  return Promise.all([affectedStations(entity, io), channelNamesOf(io, createCache())]).then(function (got) {
+    var stations = got[0], names = got[1];
+    return Promise.all(stations.map(function (s) { return channelMapOf(s, names, io); })).then(function (maps) {
       var union = {};
       maps.forEach(function (m) {
         Object.keys(m).forEach(function (c) { if (!(c in union)) { union[c] = m[c]; } });
@@ -430,13 +389,8 @@ function discoverChannels(entity, io) {
 function resolveStation(station, io, cache) {
   cache = cache || createCache();
   return buildChain(station, io).then(function (chain) {
-    return attrsOf(chain[0], io, cache).then(function (ownAttrs) {
-      var measuredKeys = channelsFromAttrs(ownAttrs);
-      var measuredKeysWork = Object.keys(measuredKeys).length || !io.fetchTimeseriesKinds
-        ? Promise.resolve(measuredKeys)
-        : Promise.resolve(io.fetchTimeseriesKinds(station)).then(function (m) { return m || {}; });
-
-      return measuredKeysWork.then(function (keys) {
+    return Promise.all([attrsOf(chain[0], io, cache), channelNamesOf(io, cache)]).then(function (got) {
+      return Promise.resolve(channelsFromAttrs(got[0], got[1])).then(function (keys) {
         var channelEntries = [];
         var fields = channelFields();
         var work = Promise.resolve();
@@ -485,8 +439,8 @@ function effectiveDiff(currentAttrs, resolved) {
  * its own — i.e. the same resolution `resolveField`/scalar lookup would
  * produce, walking from entity's PARENT upward. Used for the override
  * widget's "replaces <value> from <level>" line and to prefill the "Add
- * override" stepper. `descriptor` is `{axis:'channel', channel, kind, field}`,
- * `{axis:'kind', kind, field}` or `{axis:'config', field}`. */
+ * override" stepper. `descriptor` is `{axis:'channel', channel, kind, field}`
+ * or `{axis:'config', field}`. */
 function inheritedValue(entity, descriptor, io, cache) {
   cache = cache || createCache();
   return buildChain(entity, io).then(function (chain) {
@@ -496,23 +450,19 @@ function inheritedValue(entity, descriptor, io, cache) {
         return hit ? { value: hit.value, level: hit.level, source: levelDisplay(hit.level) } : null;
       });
     }
-    if (descriptor.axis === 'channel') {
-      return resolveField(ancestors, descriptor.channel, descriptor.kind, descriptor.field, io, cache);
-    }
-    return resolveKindAxis(ancestors, descriptor.kind, descriptor.field, io, cache);
+    return resolveField(ancestors, descriptor.channel, descriptor.kind, descriptor.field, io, cache);
   });
 }
 
 return {
-  CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX, KIND_PREFIX: KIND_PREFIX,
+  CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX,
   EFFECTIVE_PREFIX: EFFECTIVE_PREFIX,
   SEVERITIES: SEVERITIES, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
   ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS, ALARM_TEXT_TOKENS: ALARM_TEXT_TOKENS,
-  DECODER_UNITS: DECODER_UNITS, NEVER_KIND_TARGETS: NEVER_KIND_TARGETS,
+  DECODER_UNITS: DECODER_UNITS,
   CATEGORIES: CATEGORIES,
 
   camelKind: camelKind,
-  wireKind: wireKind,
   channelFields: channelFields,
   levelDisplay: levelDisplay,
   buildChain: buildChain,
