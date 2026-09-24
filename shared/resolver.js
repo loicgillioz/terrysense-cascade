@@ -116,7 +116,7 @@ var CATEGORIES = [
   { id: 'alarmMin', label: 'Alarm limit · min', perMeasurement: true, numeric: true, field: 'alarm.critical.thresholdMin' },
   { id: 'unit', label: 'Unit', perMeasurement: true, numeric: false, field: 'unit' },
   { id: 'hysteresis', label: 'Hysteresis', perMeasurement: true, numeric: true, field: 'hysteresis' },
-  { id: 'retention', label: 'Retention', perMeasurement: false, numeric: true, scalarField: 'ttlDays' },
+  { id: 'retention', label: 'Retention', perMeasurement: false, numeric: true, scalarField: 'ttlDays', suffix: 'day' },
   { id: 'alarmTextCreated', label: 'Alarm text · created', perMeasurement: false, scalarField: 'alarmText.created' },
   { id: 'alarmTextCleared', label: 'Alarm text · cleared', perMeasurement: false, scalarField: 'alarmText.cleared' },
   { id: 'language', label: 'Language', perMeasurement: false, scalarField: 'language' },
@@ -182,17 +182,13 @@ function describeOverride(key) {
   return { label: base + ' · ' + parsed.target, group: base, category: cat };
 }
 
-/** Every override key set on `attrs` — `kind.*` / `channel.*` / `config.*`,
- * excluding the two structural keys the override widget never lists
- * (`config.channelMap` is per-station routing, `config.channelNames` is the
- * non-cascading tenant vocabulary — ATTRIBUTES.md §7). */
+/** Every override key set on `attrs` that maps to an editable category —
+ * structural keys (`config.channelMap`, `config.channelNames`), `config.url`
+ * and unknown fields are never listed. */
 function listOverrides(attrs) {
   var out = [];
   Object.keys(attrs || {}).forEach(function (key) {
-    if (key === CONFIG_PREFIX + 'channelMap' || key === CONFIG_PREFIX + 'channelNames') { return; }
-    if (key.indexOf(CHANNEL_PREFIX) === 0 || key.indexOf(KIND_PREFIX) === 0 || key.indexOf(CONFIG_PREFIX) === 0) {
-      out.push({ key: key, value: attrs[key] });
-    }
+    if (describeOverride(key).category) { out.push({ key: key, value: attrs[key] }); }
   });
   out.sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
   return out;

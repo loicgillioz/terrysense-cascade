@@ -198,7 +198,9 @@ function setMessage(text, cls) {
 function formatValue(category, value) {
   if (category && category.list && Array.isArray(value)) { return value.join(', '); }
   if (category && category.boolean) { return value === true || value === 'true' ? 'On' : 'Off'; }
-  return value === null || value === undefined ? '—' : String(value);
+  if (value === null || value === undefined) { return '—'; }
+  if (category && category.suffix) { return value + ' ' + category.suffix + (Number(value) === 1 ? '' : 's'); }
+  return String(value);
 }
 
 function descriptorFromParsed(parsed) {
