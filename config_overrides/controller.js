@@ -3,12 +3,10 @@
  * PROJECT, LOCATION and STATION level: lists the cascade overrides set on the
  * bound entity, shows what each one replaces, and adds/edits/removes them.
  *
- * Same runtime shape as `alarm_cascade_editor/controller.js` (html_container,
- * Plain-HTML mode, `window.<fn>(ctx, container)`, services reached through
- * `ctx.$scope.$injector.get(ctx.servicesMap.get('<name>'))`) — see that
- * file's header and `terrysense/operations/widget_deploy.py`'s module
- * docstring for the ThingsBoard quirks behind that shape. This widget adds
- * one more resource dependency: `resources/widgets/shared/resolver.js` must
+ * Runtime shape (html_container, Plain-HTML mode, `window.<fn>(ctx, container)`,
+ * services reached through `ctx.$scope.$injector.get(ctx.servicesMap.get('<name>'))`)
+ * and the ThingsBoard rules behind it: logr-product-docs/cloud/FRONTEND.md *Custom widget delivery*.
+ * This widget adds one more resource dependency: `resources/widgets/shared/resolver.js` must
  * be loaded first (the deploy script lists it before this file), since all
  * cascade logic here is `window.TerrySenseResolver`, not reimplemented.
  *

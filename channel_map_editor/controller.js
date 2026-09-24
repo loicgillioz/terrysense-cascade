@@ -1,8 +1,7 @@
 /*
  * Channel map editor — the CA-1 widget. An always-rendered panel (not a
- * click-triggered dialog): every other widget in this bundle
- * (`alarm_cascade_editor`, `config_overrides`) is a `static`/`latest`
- * html_container bound to a dashboard entity via its Data tab, and a panel
+ * click-triggered dialog): the other widget in this bundle
+ * (`config_overrides`) is a `latest` html_container bound to a dashboard entity via its Data tab, and a panel
  * keeps this one on the same model — one mount point, one `ctx`/`container`
  * pair, no extra open/close plumbing on top of what html_container already
  * gives for free. A dialog would only pay for itself if the same dashboard
@@ -19,8 +18,7 @@
  * Same runtime shape as the sibling widgets (html_container, Plain-HTML,
  * `window.<fn>(ctx, container)`, services via
  * `ctx.$scope.$injector.get(ctx.servicesMap.get('<name>'))` — see
- * `alarm_cascade_editor/controller.js`'s header and `widget_deploy.py`'s
- * module docstring) and depends on `resources/widgets/shared/resolver.js`
+ * logr-product-docs/cloud/FRONTEND.md *Custom widget delivery*) and depends on `resources/widgets/shared/resolver.js`
  * being loaded first, exactly like `config_overrides/controller.js`.
  *
  * Unlike the v2-onboarding Streamlit flow (`app/app_pages/onboarding.py`),
