@@ -224,7 +224,21 @@ function channelsOfAttrValue(raw) {
   return (parsed && parsed.channels) || {};
 }
 
+// A family device has no topology or subscriptions: its sources are its own
+// telemetry keys, named by the converter. Such a key carries no kind, so it
+// takes the kind of the dictionary name it matches, if any.
+var DEVICE_WIDE_KEYS = ['uplinkCause', 'uplinkLatest'];
+
+function familySourcesFromKeys(keys, dictionary) {
+  return (keys || []).filter(function (k) {
+    return DEVICE_WIDE_KEYS.indexOf(k) < 0 && !/\.status$/.test(k);
+  }).sort().map(function (k) {
+    return { sourceKey: k, position: null, kind: (dictionary[k] || {}).kind || null };
+  });
+}
+
 function namesForKind(dictionary, kind) {
+  if (!kind) { return Object.keys(dictionary || {}).sort(); }
   var camel = resolver.camelKind(kind);
   return Object.keys(dictionary || {}).filter(function (name) {
     return resolver.camelKind(dictionary[name].kind) === camel;
@@ -379,6 +393,11 @@ function selectDevice(device, opts) {
     state.clientAttrs = attrs;
     state.topology = topologyFromAttrs(attrs);
     state.activeSources = activeSourcesFromAttrs(attrs);
+    if (state.activeSources.length || state.topology.length) { return; }
+    return httpGet('/api/plugins/telemetry/DEVICE/' + state.device.id + '/keys/timeseries').then(function (keys) {
+      state.activeSources = familySourcesFromKeys(keys, state.dictionary);
+    });
+  }).then(function () {
     state.names = {};
     state.activeSources.forEach(function (s) {
       var preferred = state.savedNamesBySourceKey[s.sourceKey];
@@ -410,6 +429,10 @@ function renderTopology() {
   els.topology.innerHTML = '';
   if (!state.device) {
     els.topology.innerHTML = '<p class="cme-map-empty">Pick a device above.</p>';
+    return;
+  }
+  if (!state.topology.length && state.activeSources.length) {
+    els.topology.innerHTML = '<p class="cme-map-empty">No bus topology — a converter-named device. Its sources are its telemetry keys below.</p>';
     return;
   }
   if (!state.topology.length) {
@@ -451,8 +474,8 @@ function renderMapRows() {
     var options = namesForKind(state.dictionary, s.kind);
     var tr = document.createElement('tr');
     var tdSrc = document.createElement('td'); tdSrc.textContent = s.sourceKey;
-    var tdKind = document.createElement('td'); tdKind.textContent = s.kind;
-    var tdPos = document.createElement('td'); tdPos.textContent = String(s.position);
+    var tdKind = document.createElement('td'); tdKind.textContent = s.kind || '—';
+    var tdPos = document.createElement('td'); tdPos.textContent = s.position === null ? '—' : String(s.position);
     var tdName = document.createElement('td');
     var select = document.createElement('select');
     select.innerHTML = '<option value="">(select a name)</option>';
