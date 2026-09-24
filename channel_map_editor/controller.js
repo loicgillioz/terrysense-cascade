@@ -233,7 +233,8 @@ function familySourcesFromKeys(keys, dictionary) {
   return (keys || []).filter(function (k) {
     return DEVICE_WIDE_KEYS.indexOf(k) < 0 && !/\.status$/.test(k);
   }).sort().map(function (k) {
-    return { sourceKey: k, position: null, kind: (dictionary[k] || {}).kind || null };
+    var entry = dictionary[k];
+    return { sourceKey: k, position: null, kind: (entry || {}).kind || null, offDictionary: !entry };
   });
 }
 
@@ -271,6 +272,7 @@ var els = {
 
   mapBody: root.querySelector('.cme-map-body'),
   mapEmpty: root.querySelector('.cme-map-empty'),
+  dictWarning: root.querySelector('.cme-dict-warning'),
 
   previewJson: root.querySelector('.cme-preview-json'),
 
@@ -467,14 +469,30 @@ function renderStationPicker() {
   els.stationName.hidden = state.stationMode !== 'new';
 }
 
+// A converter key that is no dictionary name has no kind, so its name picker
+// cannot be narrowed — surfaced loudly so the dictionary gets fixed.
+function renderDictWarning() {
+  var off = state.activeSources.filter(function (s) { return s.offDictionary; });
+  els.dictWarning.hidden = !off.length;
+  if (!off.length) { return; }
+  els.dictWarning.textContent = '⚠️ ' + off.length + ' source' + (off.length === 1 ? '' : 's')
+    + ' match no channel-dictionary name: ' + off.map(function (s) { return s.sourceKey; }).join(', ')
+    + '. Their kind is unknown, so every dictionary name is offered for them. '
+    + 'Fix: a tenant admin adds each as a name (with its kind) on the Channel dictionary page, '
+    + 'or corrects the converter key in cloud-integrations.';
+}
+
 function renderMapRows() {
   els.mapBody.innerHTML = '';
   els.mapEmpty.hidden = !!state.activeSources.length;
+  renderDictWarning();
   state.activeSources.forEach(function (s) {
     var options = namesForKind(state.dictionary, s.kind);
     var tr = document.createElement('tr');
+    if (s.offDictionary) { tr.className = 'cme-row-warn'; }
     var tdSrc = document.createElement('td'); tdSrc.textContent = s.sourceKey;
-    var tdKind = document.createElement('td'); tdKind.textContent = s.kind || '—';
+    var tdKind = document.createElement('td'); tdKind.className = 'cme-kind';
+    tdKind.textContent = s.offDictionary ? '⚠️ not in dictionary' : (s.kind || '—');
     var tdPos = document.createElement('td'); tdPos.textContent = s.position === null ? '—' : String(s.position);
     var tdName = document.createElement('td');
     var select = document.createElement('select');
