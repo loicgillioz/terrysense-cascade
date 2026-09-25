@@ -161,7 +161,7 @@ root.TerrySenseTbIo = function (ctx) {
       if (me.authority === 'TENANT_ADMIN') { return true; }
       if (me.authority !== 'CUSTOMER_USER' || !perms) { return false; }
       var generic = (perms.userPermissions || {}).genericPermissions || {};
-      var resource = entity.entityType === 'CUSTOMER' ? 'CUSTOMER' : 'ASSET';
+      var resource = entity.entityType === 'CUSTOMER' || entity.entityType === 'DEVICE' ? entity.entityType : 'ASSET';
       var ops = (generic[resource] || []).concat(generic.ALL || []);
       var writes = ops.indexOf('ALL') >= 0 || ops.indexOf('WRITE_ATTRIBUTES') >= 0;
       var owner = perms.userOwnerId && (perms.userOwnerId.id || perms.userOwnerId);

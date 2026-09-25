@@ -35,7 +35,18 @@ var TERMS = {
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
   inUse: 'Measurements mapped on at least one station below this level.',
   uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
+  commands: 'A command reaches the LOGR after its next uplink (LoRaWAN Class A), so it waits here until the device answers. With no answer after a day, or two uplink intervals when longer, it is shown as unanswered.',
   peripheralFault: 'Sources the LOGR reported a failed read for, and that have not sent a value since. The device states the fault; nothing is guessed from missing data.'
+};
+
+// What a LOGR answers a command with, when it is not OK (TRX_NANO.md §10.2).
+var COMMAND_STATUS = {
+  ERR_UNKNOWN_OP: 'The device does not know this command',
+  ERR_BAD_TARGET: 'No such source or position on the device',
+  ERR_BAD_PARAMS: 'A parameter is out of range',
+  ERR_UNSUPPORTED: 'Not supported by this device',
+  ERR_BUSY: 'The device was busy: retry later',
+  ERR_FAILED: 'The device tried and failed'
 };
 
 // The status codes a LOGR sends instead of a value, as a technician reads them
@@ -88,7 +99,7 @@ function smsInfo(text) {
 }
 
 root.TerrySenseGlossary = {
-  TERMS: TERMS, STATUS_CODES: STATUS_CODES, SEVERITIES: SEVERITIES, TOKENS: TOKENS, LANGUAGES: LANGUAGES,
+  TERMS: TERMS, STATUS_CODES: STATUS_CODES, COMMAND_STATUS: COMMAND_STATUS, SEVERITIES: SEVERITIES, TOKENS: TOKENS, LANGUAGES: LANGUAGES,
   SMS_MAX_PARTS: SMS_MAX_PARTS, smsInfo: smsInfo,
   severity: function (id) { return SEVERITIES.filter(function (s) { return s.id === id; })[0] || { id: id, label: id, desc: '' }; },
   rank: function (id) { for (var i = 0; i < SEVERITIES.length; i++) { if (SEVERITIES[i].id === id) { return i; } } return -1; }
