@@ -1,9 +1,10 @@
 /*
- * terrySense widget vocabulary — tooltip wording, severities and alarm-text
- * fields, shared by every config widget (`window.TerrySenseGlossary`).
+ * terrySense widget vocabulary — tooltip wording, severities, alarm-text
+ * fields and status codes, shared by every terrySense widget (`window.TerrySenseGlossary`).
  *
  * Wording only: the severity definitions are ALARMING.md's, the alarm-text
- * fields are the token table of terrysense_v2/rulechains/alarm_notify.md.
+ * fields are the token table of terrysense_v2/rulechains/alarm_notify.md, the
+ * status codes are interface/TRX_NANO.md §5.
  * Change them there first.
  */
 (function (root) {
@@ -32,7 +33,20 @@ var TERMS = {
   device: 'The device that sends the data for this station. Change it after a hardware swap; the history stays intact.',
   station: 'The measuring point the measurements belong to, shown on dashboards.',
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
-  inUse: 'Measurements mapped on at least one station below this level.'
+  inUse: 'Measurements mapped on at least one station below this level.',
+  uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
+  peripheralFault: 'Sources the LOGR reported a failed read for, and that have not sent a value since. The device states the fault; nothing is guessed from missing data.'
+};
+
+// The status codes a LOGR sends instead of a value, as a technician reads them
+// (TRX_NANO.md §5).
+var STATUS_CODES = {
+  ERROR: 'Logger-side error, not the sensor',
+  TIMEOUT: 'No reply: the sensor is silent',
+  SENSOR_ERROR: 'The sensor replies but reports its own error',
+  BUS_ERROR: 'Corrupted reply: check wiring and termination',
+  INVALID_DATA: 'Read cleanly, but the value is not realistic',
+  NOT_PRESENT: 'Expected but not connected'
 };
 
 // Low -> high, the resolvers' order.
@@ -74,7 +88,7 @@ function smsInfo(text) {
 }
 
 root.TerrySenseGlossary = {
-  TERMS: TERMS, SEVERITIES: SEVERITIES, TOKENS: TOKENS, LANGUAGES: LANGUAGES,
+  TERMS: TERMS, STATUS_CODES: STATUS_CODES, SEVERITIES: SEVERITIES, TOKENS: TOKENS, LANGUAGES: LANGUAGES,
   SMS_MAX_PARTS: SMS_MAX_PARTS, smsInfo: smsInfo,
   severity: function (id) { return SEVERITIES.filter(function (s) { return s.id === id; })[0] || { id: id, label: id, desc: '' }; },
   rank: function (id) { for (var i = 0; i < SEVERITIES.length; i++) { if (SEVERITIES[i].id === id) { return i; } } return -1; }
