@@ -29,7 +29,7 @@ var TERMS = {
   noPhone: 'No phone number in this user’s profile. Add one in the user settings to send SMS.',
   channelName: 'The name a measurement is stored under. It stays the same when the LOGR or sensor is replaced, so the history is continuous.',
   position: 'The connector on the LOGR bus the sensor is plugged into. Position 0 is the LOGR itself.',
-  device: 'The LOGR that sends the data for this station. Change it after a hardware swap; the history stays intact.',
+  device: 'The device that sends the data for this station. Change it after a hardware swap; the history stays intact.',
   station: 'The measuring point the measurements belong to, shown on dashboards.',
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
   inUse: 'Measurements mapped on at least one station below this level.'

@@ -148,7 +148,8 @@ function load() {
       var levels = chain.slice(1);
       return Promise.all(levels.map(function (l) { return io.fetchAttrs(l); })).then(function (attrs) {
         state.ancestors = levels.map(function (l, i) { return { level: l, attrs: attrs[i] || {} }; });
-        var defaults = state.ancestors.filter(function (a) { return a.level.role === 'defaults'; })[0];
+        var defaults = chain[0].role === 'defaults' ? { level: chain[0], attrs: state.own }
+          : state.ancestors.filter(function (a) { return a.level.role === 'defaults'; })[0];
         state.defaultsShared = !!defaults;
         state.names = parseVal((defaults || { attrs: {} }).attrs['config.channelNames']) || {};
         state.kinds = parseVal((defaults || { attrs: {} }).attrs['config.kinds']) || {};

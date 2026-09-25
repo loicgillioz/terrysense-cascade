@@ -24,6 +24,11 @@
  *   fetchCustomer(entity)  -> {entityType:'CUSTOMER', id, name} | null
  *   fetchDefaults()        -> {entityType:'ASSET', id, name} | null
  *
+ * Optional, for fan-out from the levels `Contains` does not reach:
+ *
+ *   fetchCustomerStations(customer) -> [station]      stations the customer owns
+ *   fetchAllStations()              -> [station]      every station, for DEFAULTS
+ *
  * `entity` / level objects carry `{entityType, id, name, kind}` — `kind` is
  * the ThingsBoard asset *type* string ("Station", "Project", "Defaults", …),
  * never the measurement kind. A resolved chain level also carries `role`:
@@ -335,14 +340,17 @@ function descendantAssets(entity, io, maxDepth) {
 
 /** Every STATION reached by `Contains` under `entity` — itself, if it already
  * is one. The fan-out target for a PROJECT/LOCATION/CUSTOMER config change
- * (CONFIG_RESOLVER.md §5). CUSTOMER is not itself `Contains`-linked to
- * anything (ownership is the orthogonal axis, ENTITY_MODEL.md §1), so that
- * case goes through the optional `io.fetchCustomerStations` instead of the
- * `Contains` walk. */
+ * (CONFIG_RESOLVER.md §5). Neither CUSTOMER nor DEFAULTS is `Contains`-linked
+ * to anything (ownership is the orthogonal axis, ENTITY_MODEL.md §1), so they
+ * go through the optional `io.fetchCustomerStations` / `io.fetchAllStations`. */
 function affectedStations(entity, io) {
-  if (String(entity.kind || '').toLowerCase() === 'station') { return Promise.resolve([entity]); }
+  var kind = String(entity.kind || '').toLowerCase();
+  if (kind === 'station') { return Promise.resolve([entity]); }
   if (entity.entityType === 'CUSTOMER') {
     return io.fetchCustomerStations ? Promise.resolve(io.fetchCustomerStations(entity)) : Promise.resolve([]);
+  }
+  if (kind === 'defaults') {
+    return io.fetchAllStations ? Promise.resolve(io.fetchAllStations()) : Promise.resolve([]);
   }
   return descendantAssets(entity, io).then(function (all) {
     return all.filter(function (e) { return String(e.kind || '').toLowerCase() === 'station'; });

@@ -5,7 +5,7 @@
  * (logr-product-docs/cloud/FRONTEND.md *Custom widget delivery*).
  *
  * `io` is the resolver's contract (shared/resolver.js header), plus
- * `fetchCustomerStations` and `fetchUser`.
+ * `fetchUser`.
  */
 (function (root) {
 'use strict';
@@ -24,6 +24,18 @@ root.TerrySenseTbIo = function (ctx) {
   function get(url, params) { return toPromise(getService('http').get(url, { params: params || {} })); }
   function post(url, body) { return toPromise(getService('http').post(url, body || {})); }
   function del(url, params) { return toPromise(getService('http').delete(url, { params: params || {} })); }
+
+  /** Every item of a paged listing, page after page. */
+  function getAll(url, params) {
+    var items = [];
+    function page(n) {
+      return get(url, Object.assign({}, params, { pageSize: '500', page: String(n) })).then(function (p) {
+        items = items.concat((p && p.data) || []);
+        return p && p.hasNext ? page(n + 1) : items;
+      });
+    }
+    return page(0);
+  }
 
   function idObj(entity) { return { entityType: entity.entityType, id: entity.id }; }
 
@@ -101,9 +113,12 @@ root.TerrySenseTbIo = function (ctx) {
     // Ownership is orthogonal to `Contains` (ENTITY_MODEL.md §1): a customer's
     // stations are found by ownership, not by walking relations.
     fetchCustomerStations: function (customer) {
-      return get('/api/customer/' + customer.id + '/assets', { type: 'Station', pageSize: '1000', page: '0' }).then(function (page) {
-        return ((page && page.data) || []).map(assetLevel);
-      });
+      return getAll('/api/customer/' + customer.id + '/assets', { type: 'Station' }).then(function (list) { return list.map(assetLevel); });
+    },
+    // Every station the user can see: all of them for a tenant admin, the only
+    // user who can write the DEFAULTS asset.
+    fetchAllStations: function () {
+      return getAll('/api/user/assets', { type: 'Station' }).then(function (list) { return list.map(assetLevel); });
     },
     fetchUser: function (id) { return get('/api/user/' + id).catch(function () { return null; }); }
   };
@@ -156,8 +171,7 @@ root.TerrySenseTbIo = function (ctx) {
 
   /** Platform users a contact can be picked from: the customer's, else the tenant's. */
   function listUsers(customerId) {
-    var url = customerId ? '/api/customer/' + customerId + '/users' : '/api/users';
-    return get(url, { pageSize: '500', page: '0' }).then(function (page) { return (page && page.data) || []; });
+    return getAll(customerId ? '/api/customer/' + customerId + '/users' : '/api/user/users');
   }
 
   /** Re-resolve `stations` and write only what changed (every attribute write
@@ -172,7 +186,7 @@ root.TerrySenseTbIo = function (ctx) {
   }
 
   return {
-    io: io, get: get, post: post, del: del, attrsMap: attrsMap, saveAttrs: saveAttrs, deleteAttrs: deleteAttrs,
+    io: io, get: get, getAll: getAll, post: post, del: del, attrsMap: attrsMap, saveAttrs: saveAttrs, deleteAttrs: deleteAttrs,
     getAsset: getAsset, assetLevel: assetLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations
   };

@@ -1,9 +1,9 @@
 /*
  * Channel map — the CA-1 widget, also the EU-2 hardware swap.
  *
- * Bound to a PROJECT or LOCATION: "Deploy a LOGR" — pick a LOGR, pick or create
+ * Bound to a PROJECT or LOCATION: "Deploy a device" — pick a device, pick or create
  * a station under the entity, name each active source. Bound to a STATION: its
- * own `config.channelMap`, where changing the LOGR moves the STATION -> DEVICE
+ * own `config.channelMap`, where changing the device moves the STATION -> DEVICE
  * relation instead of adding a second one. Map semantics:
  * logr-product-docs/cloud/CHANNEL_MAP.md; this widget:
  * logr-product-docs/cloud/CHANNEL_MAP_EDITOR.md.
@@ -132,8 +132,7 @@ function fail(text) {
 // -- load ---------------------------------------------------------------------------------
 
 function listDevices() {
-  var url = state.customer ? '/api/customer/' + state.customer.id + '/devices' : '/api/tenant/devices';
-  return tb.get(url, { pageSize: '200', page: '0' }).then(function (p) { return (p && p.data) || []; });
+  return tb.getAll(state.customer ? '/api/customer/' + state.customer.id + '/devices' : '/api/tenant/devices');
 }
 
 function stationOfDevice(deviceId) {
@@ -192,7 +191,7 @@ function load() {
 
 function selectDevice(device) {
   state.device = device;
-  bodyEl.innerHTML = '<div class="ts-loading">Reading the LOGR…</div>';
+  bodyEl.innerHTML = '<div class="ts-loading">Reading the device…</div>';
   return Promise.all([
     tb.attrsMap({ entityType: 'DEVICE', id: device.id }, 'CLIENT_SCOPE'),
     tb.attrsMap({ entityType: 'DEVICE', id: device.id }, 'SERVER_SCOPE')
@@ -237,10 +236,10 @@ function prefill() {
 // -- render --------------------------------------------------------------------------------
 
 function renderHead() {
-  cardEl.querySelector('.ts-title span').textContent = state.swap ? 'Channel map' : 'Deploy a LOGR';
+  cardEl.querySelector('.ts-title span').textContent = state.swap ? 'Channel map' : 'Deploy a device';
   cardEl.querySelector('.ts-subtitle').textContent = state.swap
     ? 'Which sensor feeds which measurement of ' + state.origin.name
-    : 'Connect a LOGR to a station in ' + state.origin.name;
+    : 'Connect a device to a station in ' + state.origin.name;
   var chip = cardEl.querySelector('.ts-chip.level');
   chip.hidden = false;
   chip.textContent = state.origin.kind;
@@ -259,7 +258,7 @@ function statusHtml() {
 function render() {
   bodyEl.innerHTML = '';
   if (state.readOnly && !state.swap) {
-    bodyEl.appendChild(h('<div class="ts-empty">Deploying a LOGR needs configuration rights on ' + esc(state.origin.name) + '.</div>'));
+    bodyEl.appendChild(h('<div class="ts-empty">Deploying a device needs configuration rights on ' + esc(state.origin.name) + '.</div>'));
     footEl.hidden = true;
     return;
   }
@@ -268,24 +267,30 @@ function render() {
   }
 
   // device
-  var devRow = h('<div class="ts-kv"><div class="ts-kv-label">LOGR ' + info('device') + '</div><div class="ts-kv-value"></div></div>');
+  var devRow = h('<div class="ts-kv"><div class="ts-kv-label">Device ' + info('device') + '</div><div class="ts-kv-value"></div></div>');
   var dv = devRow.querySelector('.ts-kv-value');
   if (state.readOnly) {
     dv.appendChild(h('<b></b>')).textContent = state.device ? state.device.name : 'none';
   } else {
     var sel = h('<select class="ts-select ts-grow"></select>');
-    var none = h('<option value="">Pick a LOGR</option>');
-    var free = h('<optgroup label="Not on a station"></optgroup>'), onStation = h('<optgroup label="Already on a station"></optgroup>');
-    state.devices.forEach(function (d) {
-      var o = document.createElement('option');
-      o.value = d.id;
-      var here = d.station && d.station.id === state.origin.id;
-      o.textContent = (d.label || d.name) + (d.station && !here ? ' — ' + d.station.name : '');
-      (d.station && !here ? onStation : free).appendChild(o);
+    sel.appendChild(h('<option value="">Pick a device</option>'));
+    // One group per device type; in each, devices on no station come first.
+    var byType = {};
+    state.devices.forEach(function (d) { (byType[d.type || 'Other'] = byType[d.type || 'Other'] || []).push(d); });
+    Object.keys(byType).sort().forEach(function (type) {
+      var group = document.createElement('optgroup');
+      group.label = type;
+      byType[type].map(function (d) {
+        var elsewhere = !!d.station && d.station.id !== state.origin.id;
+        return { d: d, elsewhere: elsewhere, text: (d.label || d.name) + (elsewhere ? ' — ' + d.station.name : '') };
+      }).sort(function (a, b) { return a.elsewhere - b.elsewhere || a.text.localeCompare(b.text); }).forEach(function (x) {
+        var o = document.createElement('option');
+        o.value = x.d.id;
+        o.textContent = x.text;
+        group.appendChild(o);
+      });
+      sel.appendChild(group);
     });
-    sel.appendChild(none);
-    if (free.children.length) { sel.appendChild(free); }
-    if (onStation.children.length) { sel.appendChild(onStation); }
     sel.value = state.device ? state.device.id : '';
     sel.addEventListener('change', function () {
       var d = state.devices.filter(function (x) { return x.id === sel.value; })[0];
@@ -319,18 +324,18 @@ function render() {
   }
 
   if (state.swap && state.savedMap && state.device && state.savedMap.sourceDeviceId && state.savedMap.sourceDeviceId !== state.device.id) {
-    bodyEl.appendChild(h('<div class="ts-banner">' + ICON.info + '<span>Hardware swap: the station keeps its measurement names and history. Map the new LOGR’s sensors to the same names.</span></div>'));
+    bodyEl.appendChild(h('<div class="ts-banner">' + ICON.info + '<span>Hardware swap: the station keeps its measurement names and history. Map the new device’s sensors to the same names.</span></div>'));
   }
   if (state.deviceStatus && !state.deviceStatus.active && state.device) {
-    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>This LOGR has not reported recently. Its sensor list may be out of date.</span></div>'));
+    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>This device has not reported recently. Its sensor list may be out of date.</span></div>'));
   }
 
   // sources
   var sec = h('<div class="ts-section"><div class="ts-section-head">Sensors ' + info('position') + '</div></div>');
   if (!state.device) {
-    sec.appendChild(h('<div class="ts-empty">Pick a LOGR above.</div>'));
+    sec.appendChild(h('<div class="ts-empty">Pick a device above.</div>'));
   } else if (!state.sources.length) {
-    sec.appendChild(h('<div class="ts-empty">No active sensor reported by this LOGR yet.</div>'));
+    sec.appendChild(h('<div class="ts-empty">No active sensor reported by this device yet.</div>'));
   }
   var hidden = 0;
   var groups = state.topology.length
@@ -501,7 +506,7 @@ saveBtn.addEventListener('click', function () {
     }).then(function () {
       return tb.resolveStations([station]);
     }).then(function () {
-      ui.toast(state.swap ? 'Channel map saved' : creating ? 'Station created, LOGR connected' : 'LOGR connected');
+      ui.toast(state.swap ? 'Channel map saved' : creating ? 'Station created, device connected' : 'Device connected');
       state.stationName = '';
       return load();
     }).catch(function (err) {
