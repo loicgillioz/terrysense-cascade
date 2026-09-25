@@ -151,6 +151,19 @@ function appendDefaults(chain, io) {
   });
 }
 
+// -- channel keys ----------------------------------------------------------
+// A station channel key is a name, or `<name>-<n>` for instance n of a
+// repeatable name (measurement/vocabulary.md §3). Mirrors split_channel_key()
+// in keys.py.
+
+var CHANNEL_KEY_RE = /^([a-z][A-Za-z0-9]*)(?:-([1-9][0-9]*))?$/;
+
+/** `"tiltX-7"` -> `{name: "tiltX", instance: 7}`; `"ph"` -> `{name: "ph", instance: null}`. */
+function splitChannelKey(key) {
+  var m = CHANNEL_KEY_RE.exec(key || '');
+  return m ? { name: m[1], instance: m[2] ? Number(m[2]) : null } : { name: key, instance: null };
+}
+
 // -- attribute reads, cached per entity --------------------------------
 
 function createCache() { return {}; }
@@ -161,15 +174,19 @@ function attrsOf(level, io, cache) {
   return cache[key];
 }
 
-/** Nearest level in `chain` whose attribute `attrKey` is set (not null/undefined). */
+/** Nearest level in `chain` whose attribute `attrKey` is set (not null/undefined).
+ * `attrKey` may be a list: each level is asked for them in order. */
 function firstSet(chain, attrKey, io, cache) {
+  var keys = Array.isArray(attrKey) ? attrKey : [attrKey];
   var i = 0;
   function next() {
     if (i >= chain.length) { return Promise.resolve(null); }
     var level = chain[i++];
     return attrsOf(level, io, cache).then(function (attrs) {
-      var value = attrs ? attrs[attrKey] : undefined;
-      if (value !== undefined && value !== null) { return { value: value, level: level }; }
+      for (var k = 0; k < keys.length; k++) {
+        var value = attrs ? attrs[keys[k]] : undefined;
+        if (value !== undefined && value !== null) { return { value: value, level: level, key: keys[k] }; }
+      }
       return next();
     });
   }
@@ -178,7 +195,8 @@ function firstSet(chain, attrKey, io, cache) {
 
 // -- field resolution -----------------------------------------------------
 // Nearest-set `channel.<channel>.<field>` on the whole chain, else the kind's
-// cloud unit from `config.kinds` for `unit` (CONFIG_CASCADE.md §1).
+// cloud unit from `config.kinds` for `unit` (CONFIG_CASCADE.md §1). For an
+// instance key each level is asked for the instance key, then the name.
 
 /** The `config.kinds` entry for `kind`, matched in either spelling. */
 function kindSpec(kind, kinds) {
@@ -192,14 +210,25 @@ function kindSpec(kind, kinds) {
 
 function resolveField(chain, channel, kind, field, io, cache) {
   cache = cache || createCache();
+  var split = splitChannelKey(channel);
   var chanKey = CHANNEL_PREFIX + channel + '.' + field;
-  return firstSet(chain, chanKey, io, cache).then(function (hit) {
+  if (split.instance && field === 'label') {
+    // An instance keeps its number unless it has a label of its own.
+    return firstSet(chain, chanKey, io, cache).then(function (hit) {
+      if (hit) { return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: chanKey }; }
+      return resolveField(chain, split.name, kind, field, io, cache).then(function (base) {
+        return base ? { value: base.value + ' ' + split.instance, level: base.level, source: base.source, overrideKey: chanKey } : null;
+      });
+    });
+  }
+  var keys = split.instance ? [chanKey, CHANNEL_PREFIX + split.name + '.' + field] : [chanKey];
+  return firstSet(chain, keys, io, cache).then(function (hit) {
     if (hit) {
-      return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: chanKey };
+      return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: hit.key };
     }
     if (field === 'label') {
       return defaultsJson('channelNames', io, cache).then(function (names) {
-        var label = (names[channel] || {}).label;
+        var label = (names[split.name] || {}).label;
         return label ? { value: label, level: null, source: 'Channel dictionary', overrideKey: chanKey } : null;
       });
     }
@@ -310,7 +339,7 @@ function channelsFromAttrs(attrs, names) {
   var channels = parsed && parsed.channels;
   var out = {};
   if (channels) {
-    Object.keys(channels).forEach(function (c) { out[c] = (names[c] || {}).kind || null; });
+    Object.keys(channels).forEach(function (c) { out[c] = (names[splitChannelKey(c).name] || {}).kind || null; });
   }
   return out;
 }
@@ -454,6 +483,7 @@ return {
   ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS,
 
   camelKind: camelKind,
+  splitChannelKey: splitChannelKey,
   expandContacts: expandContacts,
   kindSpec: kindSpec,
   defaultsJson: defaultsJson,

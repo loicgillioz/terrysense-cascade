@@ -60,10 +60,17 @@ function levelLabel(level) { return resolver.levelDisplay(level); }
 function ownVal(key) { return parseVal(state.own[key]); }
 function isOwn(key) { return state.own[key] !== undefined && state.own[key] !== null; }
 
-function channelKind(ch) { return (state.names[ch] || {}).kind || state.channelKinds[ch] || null; }
+// A channel is a station key: a name, or `<name>-<n>` for one instance of a
+// repeatable name. Its dictionary entry is the name's (measurement/vocabulary.md §3).
+function entryOf(ch) { return state.names[resolver.splitChannelKey(ch).name] || {}; }
+function channelKind(ch) { return entryOf(ch).kind || state.channelKinds[ch] || null; }
 function kindSpec(ch) { return resolver.kindSpec(channelKind(ch), state.kinds) || {}; }
 function alarmClass(ch) { return kindSpec(ch).alarm || 'numeric'; }
-function chLabel(ch) { return (state.names[ch] || {}).label || ch; }
+function chLabel(ch) {
+  var split = resolver.splitChannelKey(ch);
+  var label = entryOf(ch).label || split.name;
+  return split.instance ? label + ' ' + split.instance : label;
+}
 function kindLabel(ch) { return kindSpec(ch).label || channelKind(ch) || 'Unknown kind'; }
 
 function unitOf(ch, draftUnit) {
@@ -80,7 +87,7 @@ function stateText(ch, v) {
     var hit = inherited(f);
     return hit ? hit.value : String(v === true || v === 'true' || v === 1);
   }
-  var states = (state.names[ch] || {}).states || {};
+  var states = entryOf(ch).states || {};
   return states[String(v)] !== undefined ? states[String(v)] : String(v);
 }
 
@@ -349,10 +356,22 @@ function openMeasurementPicker(fromAdd) {
     names: state.names,
     kinds: state.kinds,
     allowKind: function (spec) { return !spec || spec.alarm !== 'none'; },
-    inUse: Object.keys(state.channelKinds),
+    inUse: Object.keys(state.channelKinds).map(function (k) { return resolver.splitChannelKey(k).name; }),
     badge: function (n) { return own[n] ? '<span class="ts-chip">set here</span>' : ''; },
     onPick: function (n) { openChannel(n, fromAdd); }
   }));
+  // A name sets every instance at once; an instance key overrides one of them.
+  var instances = Object.keys(state.channelKinds).filter(function (k) { return resolver.splitChannelKey(k).instance; })
+    .sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
+  if (instances.length) {
+    dr.body.appendChild(h('<div class="ts-subhead">One instance only</div>'));
+    instances.forEach(function (k) {
+      var o = ui.nameOption(k, { label: chLabel(k), description: 'Overrides ' + chLabel(resolver.splitChannelKey(k).name) + ' for this instance' },
+        own[k] ? '<span class="ts-chip">set here</span>' : '', '');
+      o.addEventListener('click', function () { openChannel(k, fromAdd); });
+      dr.body.appendChild(o);
+    });
+  }
 }
 
 function openChannel(ch, fromAdd) {
@@ -531,7 +550,7 @@ function conditionEditor(ch, dr, isBool) {
 
   function values() {
     if (isBool) { return [true, false]; }
-    return Object.keys((state.names[ch] || {}).states || {}).map(Number).sort(function (a, b) { return a - b; });
+    return Object.keys(entryOf(ch).states || {}).map(Number).sort(function (a, b) { return a - b; });
   }
   function label(v) {
     if (!isBool) { return stateText(ch, v); }

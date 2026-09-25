@@ -80,8 +80,53 @@ var state = {
   names: {}, kinds: {}, peripherals: {},
   devices: [], device: null, deviceStatus: null, topology: [], sources: [],
   stations: [], stationName: '',
-  savedMap: null, map: {}, savedJson: '', showDiag: false
+  savedMap: null, map: {}, savedKeys: {}, savedJson: '', showDiag: false
 };
+
+// state.map is {sourceKey: station channel key}. A key is a name, or
+// `<name>-<n>` for an instance of a repeatable name (measurement/vocabulary.md §3).
+function nameOf(key) { return resolver.splitChannelKey(key).name; }
+
+function keyLabel(key) {
+  var split = resolver.splitChannelKey(key);
+  var label = (state.names[split.name] || {}).label || split.name;
+  return split.instance ? label + ' ' + split.instance : label;
+}
+
+function repeatable(name) { return !!(state.names[name] || {}).repeatable; }
+
+// Turn the picked names into keys: a name picked once is its own key; a
+// repeatable name picked several times becomes numbered instances. A key the
+// station already saved stays with its source, so its history keeps its key.
+function assignKeys() {
+  var byName = {};
+  Object.keys(state.map).forEach(function (src) {
+    var name = nameOf(state.map[src]);
+    (byName[name] = byName[name] || []).push(src);
+  });
+  Object.keys(byName).forEach(function (name) {
+    var srcs = byName[name];
+    var kept = srcs.filter(function (src) { return state.savedKeys[src] && nameOf(state.savedKeys[src]) === name; });
+    if (srcs.length === 1) { state.map[srcs[0]] = kept.length ? state.savedKeys[srcs[0]] : name; return; }
+    var taken = {};
+    kept.forEach(function (src) {
+      state.map[src] = state.savedKeys[src];
+      taken[resolver.splitChannelKey(state.savedKeys[src]).instance || 1] = true;
+    });
+    var n = 1;
+    srcs.filter(function (src) { return kept.indexOf(src) < 0; }).sort(bySourceKey).forEach(function (src) {
+      while (taken[n]) { n++; }
+      taken[n] = true;
+      state.map[src] = name + '-' + n;
+    });
+  });
+}
+
+// p2.angle before p10.angle: instances follow the bus order.
+function bySourceKey(a, b) {
+  var pa = /^p(\d+)/.exec(a), pb = /^p(\d+)/.exec(b);
+  return (pa && pb && Number(pa[1]) - Number(pb[1])) || a.localeCompare(b);
+}
 
 function kindLabel(kind) { return (resolver.kindSpec(kind, state.kinds) || {}).label || kind || 'Unknown kind'; }
 
@@ -177,7 +222,8 @@ function load() {
         state.savedMap = state.swap ? parseJson(own['config.channelMap']) : null;
         state.map = {};
         var channels = (state.savedMap && state.savedMap.channels) || {};
-        Object.keys(channels).forEach(function (name) { state.map[channels[name]] = name; });
+        Object.keys(channels).forEach(function (key) { state.map[channels[key]] = key; });
+        state.savedKeys = JSON.parse(JSON.stringify(state.map));
         state.savedJson = JSON.stringify(state.map);
         var savedDevice = state.savedMap && state.savedMap.sourceDeviceId;
         var first = savedDevice ? devices.filter(function (x) { return x.id === savedDevice; })[0] : null;
@@ -221,16 +267,18 @@ function selectDevice(device) {
 }
 
 // New deployment: each non-diagnostic source gets its catalog default name
-// (a family device's key when it is a dictionary name), once per name.
+// (a family device's key when it is a dictionary name) -- once per name, or on
+// every source for a repeatable name.
 function prefill() {
   var used = {};
-  Object.keys(state.map).forEach(function (k) { used[state.map[k]] = true; });
+  Object.keys(state.map).forEach(function (k) { used[nameOf(state.map[k])] = true; });
   state.sources.forEach(function (s) {
     if (state.map[s.sourceKey] || isDiagnostic(s)) { return; }
     var m = measureOf(s);
     var name = m ? m.defaultName : (state.names[s.sourceKey] ? s.sourceKey : null);
-    if (name && state.names[name] && !used[name]) { state.map[s.sourceKey] = name; used[name] = true; }
+    if (name && state.names[name] && (!used[name] || repeatable(name))) { state.map[s.sourceKey] = name; used[name] = true; }
   });
+  assignKeys();
 }
 
 // -- render --------------------------------------------------------------------------------
@@ -372,18 +420,17 @@ function sourceRow(s) {
   row.querySelector('.ts-row-label').textContent = s.offDictionary ? s.sourceKey : sourceLabel(s);
   row.querySelector('.ts-mono').textContent = s.offDictionary ? 'not in the dictionary, kind unknown' : s.sourceKey;
   var target = row.lastChild;
-  var name = state.map[s.sourceKey];
-  var entry = name ? state.names[name] || {} : null;
+  var key = state.map[s.sourceKey];
   if (state.readOnly) {
-    target.innerHTML = name ? '<div class="ts-row-label"></div><div class="ts-mono"></div>' : '<span class="ts-empty">not mapped</span>';
-    if (name) { target.firstChild.textContent = entry.label || name; target.lastChild.textContent = name; }
+    target.innerHTML = key ? '<div class="ts-row-label"></div><div class="ts-mono"></div>' : '<span class="ts-empty">not mapped</span>';
+    if (key) { target.firstChild.textContent = keyLabel(key); target.lastChild.textContent = key; }
     return row;
   }
-  var btn = h('<button type="button" class="ts-name-btn' + (name ? '' : ' unmapped') + '"><span class="ts-grow"></span><span class="ts-chev">' + ICON.down + '</span></button>');
+  var btn = h('<button type="button" class="ts-name-btn' + (key ? '' : ' unmapped') + '"><span class="ts-grow"></span><span class="ts-chev">' + ICON.down + '</span></button>');
   var label = btn.querySelector('.ts-grow');
-  if (name) {
-    label.appendChild(h('<div></div>')).textContent = entry.label || name;
-    label.appendChild(h('<div class="ts-mono"></div>')).textContent = name;
+  if (key) {
+    label.appendChild(h('<div></div>')).textContent = keyLabel(key);
+    label.appendChild(h('<div class="ts-mono"></div>')).textContent = key;
   } else {
     label.textContent = 'Not mapped';
   }
@@ -393,12 +440,24 @@ function sourceRow(s) {
 }
 
 function openNamePicker(anchor, src) {
-  var taken = {};
-  Object.keys(state.map).forEach(function (k) { if (k !== src.sourceKey) { taken[state.map[k]] = true; } });
+  // A repeatable name is never taken: picking it again adds an instance.
+  var taken = {}, count = {};
+  Object.keys(state.map).forEach(function (k) {
+    if (k === src.sourceKey) { return; }
+    var n = nameOf(state.map[k]);
+    count[n] = (count[n] || 0) + 1;
+    if (!repeatable(n)) { taken[n] = true; }
+  });
+  var current = state.map[src.sourceKey] ? nameOf(state.map[src.sourceKey]) : '';
+  function sideChip(n) {
+    if (taken[n]) { return '<span class="ts-chip">used</span>'; }
+    return count[n] ? '<span class="ts-chip">' + (count[n] + (current === n ? 1 : 0)) + ' in use</span>' : '';
+  }
   var content = h('<div></div>');
   var pop;
   function pick(name) {
     if (name) { state.map[src.sourceKey] = name; } else { delete state.map[src.sourceKey]; }
+    assignKeys();
     pop.close();
     render();
   }
@@ -409,7 +468,7 @@ function openNamePicker(anchor, src) {
   if (!src.kind) {
     content.appendChild(ui.namePicker({
       names: state.names, kinds: state.kinds,
-      badge: function (n) { return taken[n] ? '<span class="ts-chip">used</span>' : ''; },
+      badge: sideChip,
       onPick: function (n) { if (!taken[n]) { pick(n); } }
     }));
   } else {
@@ -417,8 +476,8 @@ function openNamePicker(anchor, src) {
     var names = namesForKind(src.kind);
     names.forEach(function (n) {
       var e = state.names[n];
-      var side = (taken[n] ? '<span class="ts-chip">used</span>' : '') + (e.diagnostic ? '<span class="ts-chip">diagnostic</span>' : '');
-      var o = ui.nameOption(n, e, side, state.map[src.sourceKey] === n ? 'selected' : taken[n] ? 'taken' : '');
+      var side = sideChip(n) + (e.diagnostic ? '<span class="ts-chip">diagnostic</span>' : '');
+      var o = ui.nameOption(n, e, side, current === n ? 'selected' : taken[n] ? 'taken' : '');
       if (!taken[n]) { o.addEventListener('click', function () { pick(n); }); }
       content.appendChild(o);
     });
