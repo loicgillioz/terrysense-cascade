@@ -43,22 +43,20 @@ var CONFIG_PREFIX = 'config.';
 var CHANNEL_PREFIX = 'channel.';
 var EFFECTIVE_PREFIX = 'effective.';
 
-var PER_KEY_FIELDS = ['unit', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
-var SEVERITIES = ['warning', 'minor', 'major', 'critical'];
+// `label` falls back to the dictionary label and fills `${alarmLabel}`.
+var PER_KEY_FIELDS = ['label', 'unit', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
+// Low -> high; INDETERMINATE is a band whose severity nobody chose.
+var SEVERITIES = ['indeterminate', 'warning', 'minor', 'major', 'critical'];
 var ALARM_FIELDS = ['thresholdMax', 'thresholdMin', 'state', 'debounce'];
 var ALARM_TEXT_EVENTS = ['created', 'cleared'];
 
-// Entity scalars beyond ttlDays, which is handled apart (the only one the
-// hot path consumes as a unit — CONFIG_RESOLVER.md §3).
-var SCALAR_KEYS = ['language', 'url', 'sms.recipients', 'sms.enabled', 'email.recipients', 'email.enabled']
-  .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }));
-
-// Decoder SI units per kind, the `unit` fallback — mirrors config_resolver.py.
-var DECODER_UNITS = {
-  temperature: '°C', humidity: '%', pressure: 'hPa', ph: 'pH', conductivity: 'µS/cm',
-  distance: 'm', flow: 'm³/h', volume: 'm³', angle: '°', voltage: 'V', current: 'A',
-  power: 'W', percent: '%', duration: 's'
-};
+// Entity scalars beyond ttlDays (the only one the hot path consumes as a unit —
+// CONFIG_RESOLVER.md §3) and notify.contacts (platform users are expanded to
+// their addresses), which are handled apart.
+var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled']
+  .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }))
+  .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'emailText.' + e; }));
+var CONTACTS_KEY = 'notify.contacts';
 
 // -- kind spelling ------------------------------------------------------
 // Wire kind (SNAKE_CASE / UPPER) -> cloud kind (camelCase). Idempotent, mirrors
@@ -77,86 +75,6 @@ function camelKind(kind) {
     var s = segment(p);
     return s.charAt(0).toUpperCase() + s.slice(1);
   }).join('');
-}
-
-// -- override key categories --------------------------------------------
-// The vocabulary the `config_overrides` widget's "Add override" stepper and
-// list grouping both read from, so the two never drift apart. `field` names
-// the per-channel field; `scalarField` names the `config.` scalar. Exactly one
-// of the two is set.
-
-var CATEGORIES = [
-  { id: 'alarmMax', label: 'Alarm limit · max', perMeasurement: true, numeric: true, field: 'alarm.critical.thresholdMax' },
-  { id: 'alarmMin', label: 'Alarm limit · min', perMeasurement: true, numeric: true, field: 'alarm.critical.thresholdMin' },
-  { id: 'unit', label: 'Unit', perMeasurement: true, numeric: false, field: 'unit' },
-  { id: 'hysteresis', label: 'Hysteresis', perMeasurement: true, numeric: true, field: 'hysteresis' },
-  { id: 'retention', label: 'Retention', perMeasurement: false, numeric: true, scalarField: 'ttlDays', suffix: 'day' },
-  { id: 'alarmTextCreated', label: 'Alarm text · created', perMeasurement: false, scalarField: 'alarmText.created' },
-  { id: 'alarmTextCleared', label: 'Alarm text · cleared', perMeasurement: false, scalarField: 'alarmText.cleared' },
-  { id: 'language', label: 'Language', perMeasurement: false, scalarField: 'language' },
-  { id: 'smsRecipients', label: 'SMS recipients', perMeasurement: false, scalarField: 'sms.recipients', list: true },
-  { id: 'emailRecipients', label: 'E-mail recipients', perMeasurement: false, scalarField: 'email.recipients', list: true },
-  { id: 'smsEnabled', label: 'SMS on/off', perMeasurement: false, scalarField: 'sms.enabled', boolean: true },
-  { id: 'emailEnabled', label: 'E-mail on/off', perMeasurement: false, scalarField: 'email.enabled', boolean: true }
-];
-
-// Alarm-text template tokens (FRONTEND.md / ALARMING.md wording), offered
-// verbatim by the "Add override" stepper next to the created/cleared inputs.
-var ALARM_TEXT_TOKENS = ['${channel}', '${value}', '${unit}', '${threshold}', '${stationName}', '${ssUrl}'];
-
-function categoryByField(field) {
-  for (var i = 0; i < CATEGORIES.length; i++) {
-    if (CATEGORIES[i].field === field) { return CATEGORIES[i]; }
-  }
-  return null;
-}
-
-function categoryByScalarField(field) {
-  for (var i = 0; i < CATEGORIES.length; i++) {
-    if (CATEGORIES[i].scalarField === field) { return CATEGORIES[i]; }
-  }
-  return null;
-}
-
-// -- override key parsing -------------------------------------------------
-
-function parseOverrideKey(key) {
-  if (key.indexOf(CHANNEL_PREFIX) === 0) {
-    var crest = key.slice(CHANNEL_PREFIX.length);
-    var cdot = crest.indexOf('.');
-    if (cdot < 0) { return null; }
-    return { axis: 'channel', target: crest.slice(0, cdot), field: crest.slice(cdot + 1) };
-  }
-  if (key.indexOf(CONFIG_PREFIX) === 0) {
-    return { axis: 'config', target: null, field: key.slice(CONFIG_PREFIX.length) };
-  }
-  return null;
-}
-
-/** Plain-words label + grouping key for one override key, for the list view. */
-function describeOverride(key) {
-  var parsed = parseOverrideKey(key);
-  if (!parsed) { return { label: key, group: key }; }
-  if (parsed.axis === 'config') {
-    var scalarCat = categoryByScalarField(parsed.field);
-    var label = scalarCat ? scalarCat.label : parsed.field;
-    return { label: label, group: label, category: scalarCat };
-  }
-  var cat = categoryByField(parsed.field);
-  var base = cat ? cat.label : parsed.field;
-  return { label: base + ' · ' + parsed.target, group: base, category: cat };
-}
-
-/** Every override key set on `attrs` that maps to an editable category —
- * structural keys (`config.channelMap`, `config.channelNames`), `config.url`
- * and unknown fields are never listed. */
-function listOverrides(attrs) {
-  var out = [];
-  Object.keys(attrs || {}).forEach(function (key) {
-    if (describeOverride(key).category) { out.push({ key: key, value: attrs[key] }); }
-  });
-  out.sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
-  return out;
 }
 
 // -- channel field list ---------------------------------------------------
@@ -254,26 +172,76 @@ function firstSet(chain, attrKey, io, cache) {
 }
 
 // -- field resolution -----------------------------------------------------
-// Nearest-set `channel.<channel>.<field>` on the whole chain, else the decoder
-// SI unit for `unit` (CONFIG_CASCADE.md §1).
+// Nearest-set `channel.<channel>.<field>` on the whole chain, else the kind's
+// cloud unit from `config.kinds` for `unit` (CONFIG_CASCADE.md §1).
+
+/** The `config.kinds` entry for `kind`, matched in either spelling. */
+function kindSpec(kind, kinds) {
+  var wanted = camelKind(kind);
+  var names = Object.keys(kinds || {});
+  for (var i = 0; i < names.length; i++) {
+    if (camelKind(names[i]) === wanted) { return kinds[names[i]]; }
+  }
+  return {};
+}
 
 function resolveField(chain, channel, kind, field, io, cache) {
+  cache = cache || createCache();
   var chanKey = CHANNEL_PREFIX + channel + '.' + field;
   return firstSet(chain, chanKey, io, cache).then(function (hit) {
     if (hit) {
       return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: chanKey };
     }
-    var camel = camelKind(kind);
-    if (field === 'unit' && DECODER_UNITS[camel]) {
-      return { value: DECODER_UNITS[camel], level: null, source: 'Decoder default (SI, ' + camel + ')', overrideKey: chanKey };
+    if (field === 'label') {
+      return defaultsJson('channelNames', io, cache).then(function (names) {
+        var label = (names[channel] || {}).label;
+        return label ? { value: label, level: null, source: 'Channel dictionary', overrideKey: chanKey } : null;
+      });
     }
-    return null;
+    if (field !== 'unit' || !kind) { return null; }
+    return defaultsJson('kinds', io, cache).then(function (kinds) {
+      var unit = kindSpec(kind, kinds).cloudUnit;
+      return unit ? { value: unit, level: null, source: 'Kind default (' + kind + ')', overrideKey: chanKey } : null;
+    });
   });
+}
+
+/** `config.notify.contacts` as the flat list `alarm_notify` sends to — mirrors
+ * `expand_contacts()` in config_resolver.py. A platform user becomes their
+ * current profile name, e-mail and phone, each kept only where the contact
+ * opted in; `io.fetchUser(id)` resolves the user, and a missing one is dropped
+ * like a contact with no address or no severity. */
+function expandContacts(raw, io) {
+  var list = parseJson(raw);
+  if (!Array.isArray(list)) { return Promise.resolve([]); }
+  return Promise.all(list.map(function (c) {
+    if (!c || typeof c !== 'object') { return null; }
+    var severities = (c.severities || []).filter(function (x) { return SEVERITIES.indexOf(x) >= 0; });
+    var user = c.type === 'user'
+      ? (io.fetchUser ? Promise.resolve(io.fetchUser(String(c.userId || ''))).catch(function () { return null; }) : Promise.resolve(null))
+      : Promise.resolve(undefined);
+    return user.then(function (u) {
+      var name, sms, email;
+      if (c.type === 'user') {
+        if (!u) { return null; }
+        name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
+        sms = c.viaSms ? u.phone : null;
+        email = c.viaEmail ? u.email : null;
+      } else {
+        name = c.name; sms = c.sms; email = c.email;
+      }
+      sms = String(sms || '').trim() || null;
+      email = String(email || '').trim() || null;
+      if (!severities.length || !(sms || email)) { return null; }
+      return { name: String(name || ''), sms: sms, email: email, severities: severities };
+    });
+  })).then(function (out) { return out.filter(Boolean); });
 }
 
 function resolveScalars(chain, io, cache) {
   var entries = [];
   var ttlKey = CONFIG_PREFIX + 'ttlDays';
+  var contactsKey = CONFIG_PREFIX + CONTACTS_KEY;
   var work = firstSet(chain, ttlKey, io, cache).then(function (hit) {
     if (!hit) { return; }
     var n = Number(hit.value);
@@ -281,6 +249,16 @@ function resolveScalars(chain, io, cache) {
       effectiveKey: EFFECTIVE_PREFIX + 'ttlDays', overrideKey: ttlKey,
       value: Number.isFinite(n) ? Math.trunc(n) : hit.value,
       source: levelDisplay(hit.level), level: hit.level
+    });
+  }).then(function () {
+    return firstSet(chain, contactsKey, io, cache);
+  }).then(function (hit) {
+    if (!hit) { return; }
+    return expandContacts(hit.value, io).then(function (contacts) {
+      entries.push({
+        effectiveKey: EFFECTIVE_PREFIX + CONTACTS_KEY, overrideKey: contactsKey,
+        value: contacts, source: levelDisplay(hit.level), level: hit.level
+      });
     });
   });
 
@@ -310,14 +288,17 @@ function parseJson(raw) {
   try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
 }
 
-function channelNamesOf(io, cache) {
+/** A JSON attribute of the DEFAULTS asset: `channelNames` or `kinds`. */
+function defaultsJson(name, io, cache) {
   return io.fetchDefaults().then(function (defaults) {
     if (!defaults) { return {}; }
     return attrsOf({ entityType: 'ASSET', id: defaults.id }, io, cache).then(function (attrs) {
-      return parseJson(attrs && attrs[CONFIG_PREFIX + 'channelNames']) || {};
+      return parseJson(attrs && attrs[CONFIG_PREFIX + name]) || {};
     });
   });
 }
+
+function channelNamesOf(io, cache) { return defaultsJson('channelNames', io, cache); }
 
 function channelsFromAttrs(attrs, names) {
   var parsed = parseJson(attrs && attrs[CONFIG_PREFIX + 'channelMap']);
@@ -461,12 +442,13 @@ function inheritedValue(entity, descriptor, io, cache) {
 return {
   CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX,
   EFFECTIVE_PREFIX: EFFECTIVE_PREFIX,
-  SEVERITIES: SEVERITIES, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
-  ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS, ALARM_TEXT_TOKENS: ALARM_TEXT_TOKENS,
-  DECODER_UNITS: DECODER_UNITS,
-  CATEGORIES: CATEGORIES,
+  SEVERITIES: SEVERITIES, SCALAR_KEYS: SCALAR_KEYS, CONTACTS_KEY: CONTACTS_KEY, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
+  ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS,
 
   camelKind: camelKind,
+  expandContacts: expandContacts,
+  kindSpec: kindSpec,
+  defaultsJson: defaultsJson,
   channelFields: channelFields,
   levelDisplay: levelDisplay,
   buildChain: buildChain,
@@ -476,10 +458,7 @@ return {
   effectiveDiff: effectiveDiff,
   affectedStations: affectedStations,
   discoverChannels: discoverChannels,
-  inheritedValue: inheritedValue,
-  parseOverrideKey: parseOverrideKey,
-  describeOverride: describeOverride,
-  listOverrides: listOverrides
+  inheritedValue: inheritedValue
 };
 
 });
