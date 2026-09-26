@@ -35,6 +35,9 @@ var TERMS = {
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
   inUse: 'Measurements mapped on at least one station below this level.',
   uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
+  drycRules: 'The relay controller runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
+  drycRecords: 'The relay controller holds at most 16 records: one per notifying rule, and one per relay a rule switches.',
+  drycSync: 'Saving keeps the rules here. Send puts them on the relay controller, after the logger’s next uplink.',
   commands: 'A command reaches the LOGR after its next uplink (LoRaWAN Class A), so it waits here until the device answers. With no answer after a day, or two uplink intervals when longer, it is shown as unanswered.',
   peripheralFault: 'Sources the LOGR reported a failed read for, and that have not sent a value since. The device states the fault; nothing is guessed from missing data.'
 };

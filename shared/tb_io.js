@@ -49,10 +49,10 @@ root.TerrySenseTbIo = function (ctx) {
       .catch(function () { return {}; });
   }
 
-  function saveAttrs(entity, attrs) {
+  function saveAttrs(entity, attrs, scope) {
     var pairs = Object.keys(attrs || {}).map(function (k) { return { key: k, value: attrs[k] }; });
     if (!pairs.length) { return Promise.resolve(); }
-    return toPromise(getService('attributeService').saveEntityAttributes(idObj(entity), 'SERVER_SCOPE', pairs));
+    return toPromise(getService('attributeService').saveEntityAttributes(idObj(entity), scope || 'SERVER_SCOPE', pairs));
   }
 
   function deleteAttrs(entity, keys) {
