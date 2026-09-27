@@ -531,6 +531,12 @@ function statusSection(srcs) {
   if (lat.rssi) { net.push('Uplink ' + lat.rssi.value + ' dBm, SNR ' + (lat.snr ? lat.snr.value : '?') + ' dB'); }
   var sf = state.server.spreadingFactor !== undefined ? state.server.spreadingFactor : c.spreadingFactor;
   if (sf !== undefined) { net.push('Spreading factor ' + sf); }
+  var gws = parseJson(c.gateways) || [];
+  if (gws.length) {
+    net.push('Heard by ' + gws.length + (gws.length === 1 ? ' gateway: ' : ' gateways, best: ') + gws.slice(0, 3).map(function (g) {
+      return g.id + (g.rssi !== undefined && g.rssi !== null ? ' (' + g.rssi + ' dBm)' : '');
+    }).join(', '));
+  }
   card('Uplink radio', 'network', net.length ? net : ['Nothing from the network server yet']);
   if (hasStatus) {
     card('Downlink radio', 'device', ['RSSI ' + c['status.dlRssi'] + ' dBm, SNR ' + c['status.dlSnr'] + ' dB']);
