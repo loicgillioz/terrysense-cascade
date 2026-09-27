@@ -7,7 +7,8 @@
  * activity, versions and register (ATTRIBUTES.md §3); one alarm query counts
  * the active alarms per device; the `Contains` relations name the stations a
  * device feeds. Versions are what the device reports (`deviceInfo.*`), else
- * the hand-kept `register.*`. A device never heard from sorts last.
+ * the hand-kept `register.*`. A column header sorts by that column; an empty
+ * cell (a device never heard from, on no station) sorts last either way.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
@@ -45,7 +46,7 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], group: 'logr', filter: 'all', search: '', sort: 'uplink', loadedAt: 0 };
+var state = { devices: [], group: 'logr', filter: 'all', search: '', sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
@@ -128,8 +129,25 @@ function version(d, reported, register) {
   return null;
 }
 
+function hwStatusBad(d) { return !FINE_STATUS.test(String(d.attrs['register.hwStatus'] || '')); }
+function dfuImpossible(d) { return d.attrs['register.dfu'] !== undefined && !flag(d.attrs['register.dfu']); }
+
+/** Columns of each list: header, default direction, and the value it sorts by (null sorts last). */
+var COLUMNS = {
+  device: { label: 'Device', dir: 1, value: function (d) { return String(d.name || '').toLowerCase(); } },
+  uplink: { label: 'Last uplink', dir: -1, value: function (d) { return lastTs(d) || null; } },
+  stations: { label: 'Stations', dir: 1, value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
+  versions: { label: 'Versions', dir: 1, value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
+  hardware: { label: 'Hardware', dir: -1, value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
+  type: { label: 'Type', dir: 1, value: function (d) { return d.type || null; } },
+  alarms: { label: 'Alarms', dir: -1, value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
+};
+function columnsOf(logr) {
+  return ['device', 'uplink', 'stations'].concat(logr ? ['versions', 'hardware'] : ['type'], ['alarms']);
+}
+
 function needsLook(d) {
-  return liveness(d) !== 'live' || d.alarms.length > 0 || !FINE_STATUS.test(String(d.attrs['register.hwStatus'] || ''));
+  return liveness(d) !== 'live' || d.alarms.length > 0 || hwStatusBad(d);
 }
 
 function visible() {
@@ -141,15 +159,12 @@ function visible() {
     return [d.name, d.label, d.owner, d.type, d.attrs['register.hwStatus']].concat(d.stations || [])
       .some(function (x) { return x && String(x).toLowerCase().indexOf(q) >= 0; });
   });
-  var cmp = {
-    uplink: function (a, b) { return lastTs(b) - lastTs(a) || String(a.name).localeCompare(String(b.name)); },
-    name: function (a, b) { return String(a.name).localeCompare(String(b.name)); },
-    owner: function (a, b) { return String(a.owner || '').localeCompare(String(b.owner || '')) || String(a.name).localeCompare(String(b.name)); }
-  }[state.sort];
-  // Never heard from sorts last whatever the order: it has nothing to compare.
+  var value = COLUMNS[state.sort].value;
   return list.sort(function (a, b) {
-    var na = !lastTs(a), nb = !lastTs(b);
-    return na !== nb ? (na ? 1 : -1) : cmp(a, b);
+    var va = value(a), vb = value(b);
+    if ((va === null) !== (vb === null)) { return va === null ? 1 : -1; }
+    var c = va === null ? 0 : (va < vb ? -1 : va > vb ? 1 : 0) * state.dir;
+    return c || String(a.name).localeCompare(String(b.name));
   });
 }
 
@@ -163,7 +178,6 @@ var cardEl = h(
   '    <div class="ts-seg" data-bar="group"></div>' +
   '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button></div>' +
   '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, owner, station"></label>' +
-  '    <label class="ts-fleet-sort">Sort <select><option value="uplink">Last uplink</option><option value="name">Name</option><option value="owner">Owner</option></select></label>' +
   '  </div>' +
   '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-fleet-updated"></span><span class="ts-spacer"></span>' +
@@ -182,7 +196,6 @@ cardEl.querySelector('.ts-fleet-bar').addEventListener('click', function (e) {
   render();
 });
 cardEl.querySelector('.ts-fleet-search input').addEventListener('input', function (e) { state.search = e.target.value; render(); });
-cardEl.querySelector('.ts-fleet-sort select').addEventListener('change', function (e) { state.sort = e.target.value; render(); });
 
 function fail(text) {
   bodyEl.innerHTML = '';
@@ -213,9 +226,19 @@ function render() {
   bodyEl.innerHTML = '';
   if (!list.length) { fail(state.search || state.filter !== 'all' ? 'No device matches.' : 'No device here yet.'); return; }
   var logr = state.group === 'logr';
-  var table = h('<div class="ts-fleet-list' + (logr ? ' logr' : '') + '"><div class="ts-fleet-row ts-fleet-headrow">' +
-    '<span>Device</span><span>Last uplink</span><span>Stations</span>' + (logr ? '<span>Versions</span><span>Hardware</span>' : '<span>Type</span>') +
-    '<span>Alarms</span></div></div>');
+  if (columnsOf(logr).indexOf(state.sort) < 0) { state.sort = 'uplink'; state.dir = -1; return render(); }
+  var table = h('<div class="ts-fleet-list' + (logr ? ' logr' : '') + '"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
+  var head = table.firstChild;
+  columnsOf(logr).forEach(function (id) {
+    var on = state.sort === id;
+    var b = head.appendChild(h('<button type="button" class="ts-fleet-sorter" data-sort="' + id + '"></button>'));
+    b.textContent = COLUMNS[id].label + (on ? (state.dir > 0 ? ' ▲' : ' ▼') : '');
+    if (on) { b.classList.add('on'); }
+    b.addEventListener('click', function () {
+      if (on) { state.dir = -state.dir; } else { state.sort = id; state.dir = COLUMNS[id].dir; }
+      render();
+    });
+  });
   list.forEach(function (d) { table.appendChild(row(d, logr)); });
   bodyEl.appendChild(table);
 }
@@ -252,11 +275,9 @@ function row(d, logr) {
       fw ? 'fw ' + esc(fw.value) : '', d.attrs['register.loraFw'] ? 'LoRa ' + esc(d.attrs['register.loraFw']) : '']
       .filter(Boolean).join('<br>');
     var hwEl = el.querySelector('.ts-fleet-hw');
-    var status = d.attrs['register.hwStatus'];
-    if (status) { hwEl.appendChild(h('<span class="ts-chip' + (FINE_STATUS.test(String(status)) ? '' : ' warn') + '"></span>')).textContent = status; }
-    if (d.attrs['register.dfu'] !== undefined) {
-      hwEl.appendChild(h('<span class="ts-row-meta"></span>')).textContent = flag(d.attrs['register.dfu']) ? 'update possible' : 'no update';
-    }
+    // Only the exceptions: a status other than fine, and no firmware update possible.
+    if (hwStatusBad(d)) { hwEl.appendChild(h('<span class="ts-chip warn"></span>')).textContent = d.attrs['register.hwStatus']; }
+    if (dfuImpossible(d)) { hwEl.appendChild(h('<span class="ts-chip warn" title="This unit cannot take a firmware update">DFU impossible</span>')); }
   } else {
     el.querySelector('.ts-fleet-type').textContent = d.type;
   }

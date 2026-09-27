@@ -568,32 +568,40 @@ var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
   { key: 'register.hwStatus', label: 'Hardware status' },
   { key: 'register.loraFw', label: 'LoRa module firmware' },
-  { key: 'register.dfu', label: 'Firmware update', flag: true }
+  { key: 'register.dfu', label: 'Firmware update (DFU)', flag: true }
 ];
 var HOUR_MS = 3600000;
 
 function tenantAdmin() { return !!state.me && state.me.authority === 'TENANT_ADMIN'; }
+
+var FINE_STATUS = /^(all functional|ok|)$/i;
 
 function registerSection() {
   var s = state.server;
   var set = REGISTER.filter(function (f) { return s[f.key] !== undefined && s[f.key] !== ''; });
   var timeout = Number(s.inactivityTimeout);
   if (!set.length && !(timeout > 0) && !tenantAdmin()) { return null; }
-  var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Register ' + info('register') + '</div></div>');
+  var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Register ' + info('register') +
+    '<span class="ts-spacer"></span></div><div class="ts-reg-grid"></div></div>');
+  var grid = sec.querySelector('.ts-reg-grid');
+  function tile(key, label, value, warn) {
+    var el = h('<div class="ts-reg' + (warn ? ' warn' : '') + '"><div class="ts-reg-label"></div><div class="ts-reg-value"></div></div>');
+    el.setAttribute('data-register', key);
+    el.querySelector('.ts-reg-label').textContent = label;
+    el.querySelector('.ts-reg-value').textContent = value;
+    grid.appendChild(el);
+  }
   REGISTER.forEach(function (f) {
-    if (s[f.key] === undefined || s[f.key] === '') { return; }
-    var row = h('<div class="ts-kv" data-register="' + esc(f.key) + '"><div class="ts-kv-label"></div><div class="ts-kv-value"></div></div>');
-    row.querySelector('.ts-kv-label').textContent = f.label;
-    row.querySelector('.ts-kv-value').textContent = f.flag ? (truthyFlag(s[f.key]) ? 'possible' : 'not possible') : String(s[f.key]);
-    sec.appendChild(row);
+    var v = s[f.key];
+    if (v === undefined || v === '') { return; }
+    if (f.flag) { tile(f.key, f.label, truthyFlag(v) ? 'possible' : 'impossible', !truthyFlag(v)); }
+    else { tile(f.key, f.label, String(v), f.key === 'register.hwStatus' && !FINE_STATUS.test(String(v))); }
   });
-  var t = h('<div class="ts-kv" data-register="inactivityTimeout"><div class="ts-kv-label">Inactivity timeout</div><div class="ts-kv-value"></div></div>');
-  t.querySelector('.ts-kv-value').textContent = timeout > 0 ? fmtDuration(timeout / 1000) : 'platform default';
-  sec.appendChild(t);
+  tile('inactivityTimeout', 'Inactivity timeout', timeout > 0 ? fmtDuration(timeout / 1000) : 'platform default', false);
   if (tenantAdmin()) {
-    var edit = h('<button type="button" class="ts-btn" data-a="register">' + ICON.edit + 'Edit register</button>');
+    var edit = h('<button type="button" class="ts-btn ts-reg-edit" data-a="register">' + ICON.edit + 'Edit</button>');
     edit.addEventListener('click', registerDrawer);
-    sec.appendChild(edit);
+    sec.querySelector('.ts-section-head').appendChild(edit);
   }
   return sec;
 }
