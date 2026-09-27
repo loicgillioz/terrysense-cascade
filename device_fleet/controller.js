@@ -87,13 +87,21 @@ function loadStations(devices) {
   }));
 }
 
+/** Devices and alarms first; the stations, one relation lookup per device,
+ * fill in on a second render. */
 function load() {
   return queryDevices().then(function (devices) {
     var byId = {};
     devices.forEach(function (d) { byId[d.id] = d; });
-    return Promise.all([loadAlarms(byId), loadStations(devices)]).then(function () {
+    return loadAlarms(byId).then(function () {
+      devices.forEach(function (d) {
+        var old = state.devices.filter(function (x) { return x.id === d.id; })[0];
+        d.stations = old ? old.stations : null;
+      });
       state.devices = devices;
       state.loadedAt = Date.now();
+      render();
+      return loadStations(devices);
     });
   });
 }
@@ -130,7 +138,7 @@ function visible() {
     if (groupOf(d).id !== state.group) { return false; }
     if (state.filter === 'attention' && !needsLook(d)) { return false; }
     if (!q) { return true; }
-    return [d.name, d.label, d.owner, d.type, d.attrs['register.hwStatus']].concat(d.stations)
+    return [d.name, d.label, d.owner, d.type, d.attrs['register.hwStatus']].concat(d.stations || [])
       .some(function (x) { return x && String(x).toLowerCase().indexOf(q) >= 0; });
   });
   var cmp = {
@@ -230,7 +238,9 @@ function row(d, logr) {
     ? ' · inactive after ' + Math.round(Number(d.attrs.inactivityTimeout) / 360000) / 10 + ' h' : '');
   if (live === 'inactive') { up.classList.add('bad'); }
   var st = el.querySelector('.ts-fleet-st');
-  if (d.stations.length) {
+  if (!d.stations) {
+    st.appendChild(h('<span class="ts-row-meta">…</span>'));
+  } else if (d.stations.length) {
     d.stations.forEach(function (s) { st.appendChild(h('<span class="ts-chip"></span>')).textContent = s; });
   } else {
     st.appendChild(h('<span class="ts-chip warn">on no station</span>'));
