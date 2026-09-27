@@ -62,6 +62,12 @@ var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled']
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }))
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'emailText.' + e; }));
 var CONTACTS_KEY = 'notify.contacts';
+// The DEFAULTS asset's alarm texts per language: {lang: {'alarmText.created': …}}
+// (ALARMING.md §4). A text set below DEFAULTS wins over it.
+var TEXT_CATALOGUE_KEY = 'alarmTextByLanguage';
+var DEFAULT_LANGUAGE = 'en';
+
+function isTextKey(name) { return /^(alarmText|emailText)\./.test(name); }
 
 // -- kind spelling ------------------------------------------------------
 // Wire kind (SNAKE_CASE / UPPER) -> cloud kind (camelCase). Idempotent, mirrors
@@ -296,10 +302,29 @@ function resolveScalars(chain, io, cache) {
     });
   });
 
+  var language = DEFAULT_LANGUAGE;
+  var defaultsLevel = chain.filter(function (l) { return l.role === 'defaults'; })[0] || null;
   SCALAR_KEYS.forEach(function (name) {
     var overrideKey = CONFIG_PREFIX + name;
     work = work.then(function () {
       return firstSet(chain, overrideKey, io, cache).then(function (hit) {
+        if (name === 'language' && hit) { language = String(hit.value); }
+        if (isTextKey(name) && (!hit || hit.level.role === 'defaults') && defaultsLevel) {
+          return attrsOf(defaultsLevel, io, cache).then(function (attrs) {
+            var text = ((parseJson(attrs && attrs[CONFIG_PREFIX + TEXT_CATALOGUE_KEY]) || {})[language] || {})[name];
+            if (text) {
+              entries.push({
+                effectiveKey: EFFECTIVE_PREFIX + name, overrideKey: CONFIG_PREFIX + TEXT_CATALOGUE_KEY,
+                value: text, source: levelDisplay(defaultsLevel) + ' · ' + language, level: defaultsLevel
+              });
+            } else if (hit) {
+              entries.push({
+                effectiveKey: EFFECTIVE_PREFIX + name, overrideKey: overrideKey,
+                value: hit.value, source: levelDisplay(hit.level), level: hit.level
+              });
+            }
+          });
+        }
         if (!hit) { return; }
         entries.push({
           effectiveKey: EFFECTIVE_PREFIX + name, overrideKey: overrideKey,
@@ -480,7 +505,7 @@ return {
   CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX,
   EFFECTIVE_PREFIX: EFFECTIVE_PREFIX,
   SEVERITIES: SEVERITIES, SCALAR_KEYS: SCALAR_KEYS, CONTACTS_KEY: CONTACTS_KEY, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
-  ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS,
+  ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS, TEXT_CATALOGUE_KEY: TEXT_CATALOGUE_KEY, DEFAULT_LANGUAGE: DEFAULT_LANGUAGE,
 
   camelKind: camelKind,
   splitChannelKey: splitChannelKey,

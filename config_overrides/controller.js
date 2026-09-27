@@ -48,12 +48,25 @@ function parseVal(v) {
   return v;
 }
 
-function inherited(key) {
+function nearest(key) {
   for (var i = 0; i < state.ancestors.length; i++) {
     var v = state.ancestors[i].attrs[key];
     if (v !== undefined && v !== null) { return { value: parseVal(v), from: state.ancestors[i].level }; }
   }
   return null;
+}
+
+// An alarm text left to the in-terra defaults comes from their catalogue, in
+// this level's language (ALARMING.md §4); the resolver does the same.
+function inherited(key) {
+  var hit = nearest(key);
+  var m = /^config\.((alarmText|emailText)\..+)$/.exec(key);
+  if (!m || (hit && hit.from.role !== 'defaults')) { return hit; }
+  var defaults = state.ancestors.filter(function (a) { return a.level.role === 'defaults'; })[0];
+  if (!defaults) { return hit; }
+  var lang = ownVal('config.language') || (nearest('config.language') || {}).value || resolver.DEFAULT_LANGUAGE;
+  var text = ((parseVal(defaults.attrs['config.' + resolver.TEXT_CATALOGUE_KEY]) || {})[lang] || {})[m[1]];
+  return text ? { value: text, from: defaults.level } : hit;
 }
 
 function levelLabel(level) { return resolver.levelDisplay(level); }
