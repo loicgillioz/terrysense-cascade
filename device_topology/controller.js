@@ -35,6 +35,10 @@ var FAULT_PREFIX = 'peripheralFault.';
 var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
 var NETWORK_KEYS = ['rssi', 'snr'];
+// A LOGR2 reports its battery under channel names, not source keys (TRX_LIGHT_PATH.md).
+var BATTERY_KEYS = ['batteryVoltage', 'batteryCharging'];
+var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'batteryVoltage'];
+var BATTERY_CHARGING = ['p0.boolean', 'batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var DAY_MS = 86400000;
@@ -123,7 +127,7 @@ function loadDevice(id) {
     ((got[4] && got[4].data) || []).forEach(function (a) {
       if (a.type.indexOf(FAULT_PREFIX) === 0) { state.faults[a.type.slice(FAULT_PREFIX.length)] = a; }
     });
-    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0; });
+    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0 || BATTERY_KEYS.indexOf(k) >= 0; });
     if (!keys.length) { return {}; }
     return tb.get('/api/plugins/telemetry/DEVICE/' + id + '/values/timeseries', { keys: keys.join(',') });
   }).then(function (latest) {
@@ -533,7 +537,11 @@ function statusSection(srcs) {
   }
   var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var batt = [];
+  var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
+  var charging = BATTERY_CHARGING.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   if (soc !== undefined) { batt.push('Charge ' + fmtValue(soc) + ' %'); }
+  if (volt) { batt.push(fmtValue(volt.value) + ' V, ' + ago(volt.ts)); }
+  if (!hasStatus && charging) { batt.push(truthyFlag(charging.value) ? 'Charging' : 'Not charging'); }
   if (Number(c['status.battRuntimeSeconds']) > 0) { batt.push('Lasts about ' + fmtDuration(c['status.battRuntimeSeconds']) + ', the LOGR\u2019s own estimate'); }
   card('Battery', 'device', batt.length ? batt : ['Not reported']);
   if (hasStatus) {
