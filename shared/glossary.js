@@ -34,6 +34,7 @@ var TERMS = {
   station: 'The measuring point the measurements belong to, shown on dashboards.',
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
   inUse: 'Measurements mapped on at least one station below this level.',
+  wiring: 'The stations this device feeds, through their channel maps. A position or a reading feeding no station is stored on the device only and shows on no dashboard.',
   uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
   drycRules: 'The relay controller runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
   drycRecords: 'The relay controller holds at most 16 records: one per notifying rule, and one per relay a rule switches.',

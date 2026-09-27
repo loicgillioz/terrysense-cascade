@@ -79,7 +79,8 @@ function fmtValue(v) {
 
 var state = {
   device: null, client: {}, server: {}, latest: {}, faults: {}, peripherals: {}, kinds: {}, names: {},
-  showBoard: false, loadedAt: 0, writable: false, me: null
+  showBoard: false, loadedAt: 0, writable: false, me: null,
+  stations: [], wiring: {}
 };
 
 function deviceEntity() {
@@ -119,8 +120,39 @@ function loadDevice(id) {
       var p = latest[k] && latest[k][0];
       if (p) { state.latest[k] = { ts: Number(p.ts), value: p.value }; }
     });
+    return loadWiring(id);
+  }).then(function () {
     state.loadedAt = Date.now();
   });
+}
+
+/** Which station channel each source feeds: the channel maps of the Stations
+ * that contain the device (TC-2, CHANNEL_MAP.md). */
+function loadWiring(id) {
+  var query = {
+    parameters: { rootId: id, rootType: 'DEVICE', direction: 'TO', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
+    filters: [{ relationType: 'Contains', entityTypes: ['ASSET'] }]
+  };
+  return tb.post('/api/relations', query).then(function (rels) {
+    return Promise.all((rels || []).map(function (r) { return tb.getAsset(r.from.id); }));
+  }).then(function (assets) {
+    var stations = assets.filter(function (a) { return a && a.type === 'Station'; });
+    return Promise.all(stations.map(function (a) {
+      var level = tb.assetLevel(a);
+      return tb.attrsMap(level).then(function (attrs) { return { station: level, attrs: attrs }; });
+    }));
+  }).then(function (list) {
+    state.stations = list.map(function (x) { return x.station; });
+    state.wiring = {};
+    list.forEach(function (x) {
+      var channels = (parseJson(x.attrs['config.channelMap']) || {}).channels || {};
+      Object.keys(channels).forEach(function (key) {
+        (state.wiring[channels[key]] = state.wiring[channels[key]] || []).push({
+          station: x.station.name, channel: key, label: x.attrs['effective.' + key + '.label'] || ''
+        });
+      });
+    });
+  }).catch(function () { state.stations = []; state.wiring = {}; });
 }
 
 // -- model ------------------------------------------------------------------------------
@@ -394,6 +426,9 @@ function render() {
     : '<span class="ts-status">none</span>');
   var fw = state.client['deviceInfo.fwVersion'], hw = state.client['deviceInfo.hwVersion'];
   if (fw || hw) { kv('Versions', null, '<span class="ts-mono">' + esc(['firmware ' + (fw || '?'), 'hardware ' + (hw || '?')].join(' · ')) + '</span>'); }
+  kv('Stations', 'wiring', state.stations.length
+    ? state.stations.map(function (st) { return '<span class="ts-chip">' + esc(st.name) + '</span>'; }).join(' ')
+    : '<span class="ts-chip warn">on no station</span>');
 
   var sec = h('<div class="ts-section"><div class="ts-section-head">Bus ' + info('position') + '</div></div>');
   var positions = {};
@@ -416,6 +451,9 @@ function render() {
     else if (!p && pos !== 0) { head.appendChild(h('<span class="ts-chip warn">not in the catalog</span>')); }
     var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
     if (bad.length) { head.appendChild(h('<span class="ts-chip fault">' + bad.length + ' faulting</span>')); }
+    if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
+      head.appendChild(h('<span class="ts-chip warn" data-unwired="1">not wired to any station</span>'));
+    }
     if (state.writable && node && unsubscribed(pos, node, own).length) {
       var add = h('<button type="button" class="ts-btn ts-add">' + ICON.plus + 'Add subscription</button>');
       add.addEventListener('click', function () { addDrawer(pos, node, own); });
@@ -449,6 +487,15 @@ function sourceRow(s, node) {
   row.dataset.state = st.state;
   row.querySelector('.ts-row-label').textContent = sourceLabel(s, node);
   row.querySelector('.ts-mono').textContent = s.sourceKey + (s.interval ? ' · every ' + s.interval + ' s' : '');
+  var feeds = state.wiring[s.sourceKey] || [];
+  if (feeds.length || s.position !== 0) {
+    var wire = h('<div class="ts-wire"></div>');
+    wire.dataset.wired = feeds.length ? '1' : '0';
+    wire.textContent = feeds.length
+      ? feeds.map(function (f) { return '→ ' + f.station + ' · ' + (f.label ? f.label + ' (' + f.channel + ')' : f.channel); }).join('   ')
+      : 'not wired to any station';
+    row.firstChild.appendChild(wire);
+  }
   var stateEl = row.querySelector('.ts-tsrc-state'), valueEl = row.querySelector('.ts-tsrc-value');
   if (st.state === 'fault') {
     var code = G.STATUS_CODES[st.code];
