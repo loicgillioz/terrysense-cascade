@@ -34,6 +34,9 @@ var SOURCE_KEY_RE = /^p(\d+)\.([a-z][A-Za-z0-9]*)(?:\.g(\d+))?(?:\.i(\d+))?$/;
 var FAULT_PREFIX = 'peripheralFault.';
 var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
+var NETWORK_KEYS = ['rssi', 'snr'];
+var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
+var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var DAY_MS = 86400000;
 
 function parseSource(key) {
@@ -67,6 +70,15 @@ function ago(ts) {
   if (s < 5400) { return Math.round(s / 60) + ' min ago'; }
   if (s < 129600) { return Math.round(s / 3600) + ' h ago'; }
   return Math.round(s / 86400) + ' days ago';
+}
+
+function fmtDuration(sec) {
+  var s = Number(sec);
+  if (!isFinite(s)) { return String(sec); }
+  if (s < 120) { return Math.round(s) + ' s'; }
+  if (s < 7200) { return Math.round(s / 60) + ' min'; }
+  if (s < 172800) { return Math.round(s / 3600) + ' h'; }
+  return Math.round(s / 86400) + ' days';
 }
 
 function fmtValue(v) {
@@ -111,7 +123,7 @@ function loadDevice(id) {
     ((got[4] && got[4].data) || []).forEach(function (a) {
       if (a.type.indexOf(FAULT_PREFIX) === 0) { state.faults[a.type.slice(FAULT_PREFIX.length)] = a; }
     });
-    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')); });
+    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0; });
     if (!keys.length) { return {}; }
     return tb.get('/api/plugins/telemetry/DEVICE/' + id + '/values/timeseries', { keys: keys.join(',') });
   }).then(function (latest) {
@@ -430,6 +442,8 @@ function render() {
     ? state.stations.map(function (st) { return '<span class="ts-chip">' + esc(st.name) + '</span>'; }).join(' ')
     : '<span class="ts-chip warn">on no station</span>');
 
+  bodyEl.appendChild(statusSection(srcs));
+
   var sec = h('<div class="ts-section"><div class="ts-section-head">Bus ' + info('position') + '</div></div>');
   var positions = {};
   Object.keys(nodes).forEach(function (p) { positions[p] = true; });
@@ -451,6 +465,8 @@ function render() {
     else if (!p && pos !== 0) { head.appendChild(h('<span class="ts-chip warn">not in the catalog</span>')); }
     var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
     if (bad.length) { head.appendChild(h('<span class="ts-chip fault">' + bad.length + ' faulting</span>')); }
+    var more = node && pos !== 0 ? unsubscribed(pos, node, own).length : 0;
+    if (more) { head.appendChild(h('<span class="ts-chip" data-available="' + more + '" title="Measurements this peripheral offers that the LOGR does not subscribe, from the catalog">+' + more + ' available</span>')); }
     if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
       head.appendChild(h('<span class="ts-chip warn" data-unwired="1">not wired to any station</span>'));
     }
@@ -479,6 +495,68 @@ function render() {
   cardEl.classList.toggle('ts-readonly', !state.writable);
   summaryEl.textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
 }
+
+/** TC-6 / TC-7: the unit's operational status, each value tagged with where it
+ * comes from: the LOGR's own STATUS / SUBSCRIPTIONS reports, or the network
+ * server (TRX_NANO_COMPLIANCE.md §3). The cloud computes none of it. */
+function statusSection(srcs) {
+  var c = state.client, lat = state.latest;
+  var sec = h('<div class="ts-section"><div class="ts-section-head">Status ' + info('statusSources') + '</div><div class="ts-stat-grid"></div></div>');
+  var grid = sec.querySelector('.ts-stat-grid');
+  var hasStatus = c['status.baseIntervalSeconds'] !== undefined;
+  function card(title, from, lines) {
+    var el = h('<div class="ts-stat"><div class="ts-stat-head"><span></span><span class="ts-stat-from"></span></div></div>');
+    el.dataset.stat = title;
+    el.querySelector('span').textContent = title;
+    el.querySelector('.ts-stat-from').textContent = from;
+    lines.forEach(function (l) { el.appendChild(h('<div class="ts-stat-line"></div>')).textContent = l; });
+    grid.appendChild(el);
+  }
+  var subs = srcs.filter(function (x) { return x.enabled === true || x.enabled === 'true'; });
+  var intervals = subs.map(function (x) { return Number(x.interval); }).filter(function (n) { return n > 0; });
+  var lo = intervals.length ? Math.min.apply(null, intervals) : 0, hi = intervals.length ? Math.max.apply(null, intervals) : 0;
+  card('Reporting', 'device', [
+    hasStatus ? 'Uplink every ' + fmtDuration(c['status.baseIntervalSeconds']) : 'Uplink interval not reported',
+    subs.length
+      ? subs.length + ' subscription' + (subs.length === 1 ? '' : 's') + (intervals.length ? ', every ' + fmtDuration(lo) + (hi !== lo ? ' to ' + fmtDuration(hi) : '') : '')
+      : 'No subscription reported'
+  ]);
+  var net = [];
+  if (lat.rssi) { net.push('Uplink ' + lat.rssi.value + ' dBm, SNR ' + (lat.snr ? lat.snr.value : '?') + ' dB'); }
+  var sf = state.server.spreadingFactor !== undefined ? state.server.spreadingFactor : c.spreadingFactor;
+  if (sf !== undefined) { net.push('Spreading factor ' + sf); }
+  card('Uplink radio', 'network', net.length ? net : ['Nothing from the network server yet']);
+  if (hasStatus) {
+    card('Downlink radio', 'device', ['RSSI ' + c['status.dlRssi'] + ' dBm, SNR ' + c['status.dlSnr'] + ' dB']);
+  }
+  var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  var batt = [];
+  if (soc !== undefined) { batt.push('Charge ' + fmtValue(soc) + ' %'); }
+  if (Number(c['status.battRuntimeSeconds']) > 0) { batt.push('Lasts about ' + fmtDuration(c['status.battRuntimeSeconds']) + ', the LOGR\u2019s own estimate'); }
+  card('Battery', 'device', batt.length ? batt : ['Not reported']);
+  if (hasStatus) {
+    var present = parseJson(c['status.sourcesPresent']) || [];
+    var power = ['Running on ' + (POWER_SOURCES[c['status.activeSource']] || c['status.activeSource']),
+                 'Connected: ' + (present.length ? present.map(function (x) { return POWER_SOURCES[x] || x; }).join(', ') : 'none')];
+    if (truthyFlag(c['status.charging'])) { power.push('Charging' + (Number(c['status.ttfSeconds']) > 0 ? ', full in ' + fmtDuration(c['status.ttfSeconds']) : '')); }
+    card('Power', 'device', power);
+    var sd = c['status.sdState'];
+    card('SD card', 'device', [sd === 'ready'
+      ? fmtValue(c['status.sdUsedPercent']) + ' % used of ' + c['status.sdTotalGib'] + ' GiB'
+      : (SD_STATES[sd] || String(sd))]);
+  }
+  var fix = lat['p0.gnssFix'] && parseJson(lat['p0.gnssFix'].value);
+  card('Location', 'device', fix && fix.lat !== undefined
+    ? [Number(fix.lat).toFixed(5) + ', ' + Number(fix.lon).toFixed(5) + ' \u00b7 ' + fix.sats + ' satellites']
+    : ['No GNSS fix reported']);
+  if (!hasStatus) {
+    sec.appendChild(h('<div class="ts-field-hint">No STATUS report from this LOGR yet: charge, power, SD card and downlink radio appear after its next one' +
+      (state.writable ? ' (Request reports below asks for it).' : '.') + '</div>'));
+  }
+  return sec;
+}
+
+function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 
 function sourceRow(s, node) {
   var st = sourceState(s);

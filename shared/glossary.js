@@ -34,6 +34,7 @@ var TERMS = {
   station: 'The measuring point the measurements belong to, shown on dashboards.',
   diagnostics: 'Measurements about the LOGR itself (battery, charger, enclosure). Rarely needed on a station.',
   inUse: 'Measurements mapped on at least one station below this level.',
+  statusSources: 'Each value names its source: device values come from the LOGR’s own reports (STATUS, SUBSCRIPTIONS), network values from the network server’s reception of the last uplink. The cloud estimates none of them; the battery runtime is the same number the BLE app shows.',
   wiring: 'The stations this device feeds, through their channel maps. A position or a reading feeding no station is stored on the device only and shows on no dashboard.',
   uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
   drycRules: 'The relay controller runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
