@@ -413,8 +413,40 @@ function channelTextField(ch, field, label, tip, draft, onChange) {
   return el;
 }
 
+// Debounce (ALARMING.md §2.5): consecutive triggering readings before an alarm
+// is announced. One value for the measurement, written to every severity.
+function debKey(ch, sev) { return CH + ch + '.alarm.' + sev + '.debounce'; }
+
+function debounceField(ch, draft, onChange) {
+  G.SEVERITIES.some(function (sv) { if (isOwn(debKey(ch, sv.id))) { draft.debounce = String(ownVal(debKey(ch, sv.id))); return true; } return false; });
+  var hit = null;
+  G.SEVERITIES.some(function (sv) { hit = inherited(debKey(ch, sv.id)); return !!hit; });
+  var el = h('<div class="ts-field ts-debounce"><div class="ts-field-label">Confirm after ' + info('debounce') + '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div>' +
+    '<span><input class="ts-input num" type="number" step="1" min="1"> readings in a row</span><div class="ts-field-hint"></div><div class="ts-field-error"></div></div>');
+  var input = el.querySelector('input'), reset = el.querySelector('.ts-reset');
+  input.value = draft.debounce || '';
+  input.placeholder = hit ? String(hit.value) : '1';
+  el.querySelector('.ts-field-hint').textContent = hit ? 'Inherited: ' + hit.value + ' from ' + levelLabel(hit.from) : 'Not set above: the first reading alarms';
+  reset.hidden = !draft.debounce;
+  function check() {
+    var bad = draft.debounce !== '' && !(Number(draft.debounce) >= 1 && Math.floor(Number(draft.debounce)) === Number(draft.debounce));
+    el.querySelector('.ts-field-error').textContent = bad ? 'A whole number of readings, 1 or more.' : '';
+    return !bad;
+  }
+  input.addEventListener('input', function () { draft.debounce = input.value; reset.hidden = draft.debounce === ''; onChange(); });
+  reset.addEventListener('click', function () { draft.debounce = ''; input.value = ''; reset.hidden = true; onChange(); });
+  el.valid = check;
+  return el;
+}
+
+function debounceWrites(ch, draft, write, remove) {
+  G.SEVERITIES.forEach(function (sv) {
+    if (draft.debounce !== '' && draft.debounce !== undefined) { write[debKey(ch, sv.id)] = Number(draft.debounce); } else { remove.push(debKey(ch, sv.id)); }
+  });
+}
+
 function numericEditor(ch, dr) {
-  var draft = { conds: [], unit: '', hysteresis: '', label: '' };
+  var draft = { conds: [], unit: '', hysteresis: '', label: '', debounce: '' };
   G.SEVERITIES.forEach(function (s) { ['above', 'below'].forEach(function (dir) {
     var k = condKey(ch, s.id, dir);
     if (isOwn(k)) { draft.conds.push({ sev: s.id, dir: dir, value: String(ownVal(k)) }); }
@@ -428,6 +460,8 @@ function numericEditor(ch, dr) {
   dr.body.appendChild(thr);
   dr.body.appendChild(channelTextField(ch, 'unit', 'Display unit', 'unit', draft, function () { renderList(); hyst.querySelector('.ts-thr-unit').textContent = unitOf(ch, draft.unit); }));
   dr.body.appendChild(hyst);
+  var deb = debounceField(ch, draft, function () { validate(); });
+  dr.body.appendChild(deb);
   dr.body.appendChild(channelTextField(ch, 'label', 'Name in messages', 'label', draft));
 
   var hystKey = CH + ch + '.hysteresis', hystHit = inherited(hystKey);
@@ -538,7 +572,7 @@ function numericEditor(ch, dr) {
     var hystErr = draft.hysteresis !== '' && !(Number(draft.hysteresis) >= 0) ? 'Hysteresis is an absolute margin: zero or positive.' : '';
     msg.textContent = err;
     hyst.querySelector('.ts-field-error').textContent = hystErr;
-    save.disabled = !!(err || hystErr);
+    save.disabled = !!(err || hystErr) || !deb.valid();
   }
 
   save.addEventListener('click', function () {
@@ -548,13 +582,14 @@ function numericEditor(ch, dr) {
     if (draft.unit) { write[CH + ch + '.unit'] = draft.unit; } else { remove.push(CH + ch + '.unit'); }
     if (draft.hysteresis !== '') { write[hystKey] = Number(draft.hysteresis); } else { remove.push(hystKey); }
     if (draft.label) { write[CH + ch + '.label'] = draft.label; } else { remove.push(CH + ch + '.label'); }
+    debounceWrites(ch, draft, write, remove);
     commit(write, remove.filter(function (k) { return !(k in write); }), chLabel(ch), save);
   });
   renderList();
 }
 
 function conditionEditor(ch, dr, isBool) {
-  var draft = { conds: [], textWhenTrue: '', textWhenFalse: '', label: '' };
+  var draft = { conds: [], textWhenTrue: '', textWhenFalse: '', label: '', debounce: '' };
   G.SEVERITIES.forEach(function (s) {
     var k = condKey(ch, s.id, 'is');
     if (isOwn(k)) { draft.conds.push({ sev: s.id, value: ownVal(k) }); }
@@ -596,6 +631,8 @@ function conditionEditor(ch, dr, isBool) {
     });
     dr.body.appendChild(ws);
   }
+  var deb = debounceField(ch, draft, function () { validate(); });
+  dr.body.appendChild(deb);
   dr.body.appendChild(channelTextField(ch, 'label', 'Name in messages', 'label', draft));
   var save = ui.drawerActions(dr);
 
@@ -651,7 +688,7 @@ function conditionEditor(ch, dr, isBool) {
       seen[d.sev] = true;
     });
     msg.textContent = err;
-    save.disabled = !!err;
+    save.disabled = !!err || !deb.valid();
   }
 
   save.addEventListener('click', function () {
@@ -661,6 +698,7 @@ function conditionEditor(ch, dr, isBool) {
     ['textWhenTrue', 'textWhenFalse', 'label'].forEach(function (f) {
       if (draft[f]) { write[CH + ch + '.' + f] = draft[f]; } else { remove.push(CH + ch + '.' + f); }
     });
+    debounceWrites(ch, draft, write, remove);
     commit(write, remove.filter(function (k) { return !(k in write); }), chLabel(ch), save);
   });
   renderList();
