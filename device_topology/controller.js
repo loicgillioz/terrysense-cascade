@@ -1,5 +1,5 @@
 /*
- * Device — one LOGR: is it live, what is on its bus (TC-1, TC-3, TC-4, TC-5),
+ * Device — one LOGR3 or LOGR4: is it live, what is on its bus (TC-1, TC-3, TC-4, TC-5),
  * and, for a user who may write the device, the commands to reconfigure it
  * (CA-4, TC-8/9). Read-only for anyone else.
  *
@@ -12,8 +12,8 @@
  * yet still shows what arrives. A source's state is its latest reading: a value
  * newer than its `<sourceKey>.status` is OK, otherwise the status code is the
  * fault the device stated (HEALTH.md §1). Faults counted in the header are the
- * device's active `peripheralFault.*` alarms. Widget:
- * logr-product-docs/cloud/DEVICE_VIEW.md.
+ * device's active `peripheralFault.*` alarms. Any other device opens in the
+ * simple device view. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -35,10 +35,8 @@ var FAULT_PREFIX = 'peripheralFault.';
 var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
 var NETWORK_KEYS = ['rssi', 'snr'];
-// A LOGR2 reports its battery under channel names, not source keys (TRX_LIGHT_PATH.md).
-var BATTERY_KEYS = ['batteryVoltage', 'batteryCharging'];
-var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'batteryVoltage'];
-var BATTERY_CHARGING = ['p0.boolean', 'batteryCharging'];
+var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0'];
+var BATTERY_CHARGING = ['p0.boolean'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var DAY_MS = 86400000;
@@ -127,7 +125,7 @@ function loadDevice(id) {
     ((got[4] && got[4].data) || []).forEach(function (a) {
       if (a.type.indexOf(FAULT_PREFIX) === 0) { state.faults[a.type.slice(FAULT_PREFIX.length)] = a; }
     });
-    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0 || BATTERY_KEYS.indexOf(k) >= 0; });
+    var keys = (got[3] || []).filter(function (k) { return parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0; });
     if (!keys.length) { return {}; }
     return tb.get('/api/plugins/telemetry/DEVICE/' + id + '/values/timeseries', { keys: keys.join(',') });
   }).then(function (latest) {
@@ -446,8 +444,6 @@ function render() {
     ? state.stations.map(function (st) { return '<span class="ts-chip">' + esc(st.name) + '</span>'; }).join(' ')
     : '<span class="ts-chip warn">on no station</span>');
 
-  var reg = registerSection();
-  if (reg) { bodyEl.appendChild(reg); }
   bodyEl.appendChild(statusSection(srcs));
 
   var sec = h('<div class="ts-section"><div class="ts-section-head">Bus ' + info('position') + '</div></div>');
@@ -574,99 +570,6 @@ function statusSection(srcs) {
 
 function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 
-// -- register -------------------------------------------------------------------------------
-
-/** Hand-kept facts the device cannot report (ATTRIBUTES.md §3): shown to every
- * reader, edited by whoever may write the device. A LOGR3 or LOGR4 reports them
- * itself and keeps no register. */
-var REPORTING = ['logr3', 'logr4'];
-var REGISTER = [
-  { key: 'register.hwVersion', label: 'Hardware version' },
-  { key: 'register.hwStatus', label: 'Hardware status' },
-  { key: 'register.loraFw', label: 'LoRa module firmware' },
-  { key: 'register.dfu', label: 'Firmware update (DFU)', flag: true }
-];
-var HOUR_MS = 3600000;
-
-var FINE_STATUS = /^(all functional|ok|)$/i;
-
-function registerSection() {
-  if (REPORTING.indexOf(state.device.type) >= 0) { return null; }
-  var s = state.server;
-  var set = REGISTER.filter(function (f) { return s[f.key] !== undefined && s[f.key] !== ''; });
-  var timeout = Number(s.inactivityTimeout);
-  if (!set.length && !(timeout > 0) && !state.writable) { return null; }
-  var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Register ' + info('register') +
-    '<span class="ts-spacer"></span></div><div class="ts-reg-grid"></div></div>');
-  var grid = sec.querySelector('.ts-reg-grid');
-  function tile(key, label, value, warn) {
-    var el = h('<div class="ts-reg' + (warn ? ' warn' : '') + '"><div class="ts-reg-label"></div><div class="ts-reg-value"></div></div>');
-    el.setAttribute('data-register', key);
-    el.querySelector('.ts-reg-label').textContent = label;
-    el.querySelector('.ts-reg-value').textContent = value;
-    grid.appendChild(el);
-  }
-  REGISTER.forEach(function (f) {
-    var v = s[f.key];
-    if (v === undefined || v === '') { return; }
-    if (f.flag) { tile(f.key, f.label, truthyFlag(v) ? 'possible' : 'impossible', !truthyFlag(v)); }
-    else { tile(f.key, f.label, String(v), f.key === 'register.hwStatus' && !FINE_STATUS.test(String(v))); }
-  });
-  tile('inactivityTimeout', 'Inactivity timeout', timeout > 0 ? fmtDuration(timeout / 1000) : 'platform default', false);
-  if (state.writable) {
-    var edit = h('<button type="button" class="ts-btn ts-reg-edit" data-a="register">' + ICON.edit + 'Edit</button>');
-    edit.addEventListener('click', registerDrawer);
-    sec.querySelector('.ts-section-head').appendChild(edit);
-  }
-  return sec;
-}
-
-function registerDrawer() {
-  var s = state.server;
-  var dr = ui.openDrawer('Register', esc(state.device.name));
-  REGISTER.forEach(function (f) {
-    var field = h('<div class="ts-field"><div class="ts-field-label"><span></span></div><div class="ts-ctl"></div></div>');
-    field.querySelector('span').textContent = f.label;
-    var input = f.flag
-      ? h('<label><input type="checkbox"> possible on this unit</label>')
-      : h('<input class="ts-input" type="text">');
-    var el = f.flag ? input.querySelector('input') : input;
-    el.setAttribute('data-key', f.key);
-    if (f.flag) { el.checked = truthyFlag(s[f.key]); } else { el.value = s[f.key] === undefined ? '' : s[f.key]; }
-    field.querySelector('.ts-ctl').appendChild(input);
-    dr.body.appendChild(field);
-  });
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Inactivity timeout</span></div>' +
-    '<div class="ts-ctl"><span><input class="ts-input num" type="number" min="0" step="0.5" data-key="inactivityTimeout"> h</span></div>' +
-    '<div class="ts-field-hint">Empty: the platform default. The device turns inactive after this long without an uplink.</div></div>'));
-  var hours = dr.body.querySelector('[data-key=inactivityTimeout]');
-  hours.value = Number(s.inactivityTimeout) > 0 ? Number(s.inactivityTimeout) / HOUR_MS : '';
-  var save = ui.drawerActions(dr, 'Save');
-  save.addEventListener('click', function () {
-    var write = {}, drop = [];
-    dr.body.querySelectorAll('[data-key]').forEach(function (el) {
-      var key = el.getAttribute('data-key');
-      if (key === 'inactivityTimeout') {
-        var v = Number(el.value);
-        if (el.value === '') { if (s.inactivityTimeout !== undefined) { drop.push(key); } } else { write[key] = Math.round(v * HOUR_MS); }
-      } else if (el.type === 'checkbox') {
-        write[key] = el.checked;
-      } else if (el.value.trim()) {
-        write[key] = el.value.trim();
-      } else if (s[key] !== undefined) {
-        drop.push(key);
-      }
-    });
-    if (write.inactivityTimeout !== undefined && !(write.inactivityTimeout > 0)) { ui.toast('A timeout is a positive number of hours', 'error'); return; }
-    var dev = deviceEntity();
-    tb.saveAttrs(dev, write).then(function () { return tb.deleteAttrs(dev, drop); }).then(function () {
-      ui.toast('Register saved');
-      ui.closeDrawer();
-      return refresh();
-    }).catch(function (err) { ui.toast('Not saved: ' + (err && err.message ? err.message : err), 'error'); });
-  });
-}
-
 function sourceRow(s, node) {
   var st = sourceState(s);
   var row = h('<div class="ts-tsrc"><div><div class="ts-row-label"></div><div class="ts-mono"></div></div><div class="ts-tsrc-state"></div><div class="ts-tsrc-value"></div></div>');
@@ -728,8 +631,13 @@ tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'DEVICE') { fail('No device bound — bind a device in the widget\'s Data tab.'); return; }
   return Promise.all([loadDefaults(), loadDevice(ds.entityId), tb.currentUser()]).then(function (got) {
     state.me = got[2];
+    if (!tb.isComplexDevice(state.device.type)) {
+      if (!tb.openDeviceView(state.device)) { fail('This widget covers LOGR3 and LOGR4. A ' + (state.device.type || 'device') + ' opens in the simple device view.'); }
+      return null;
+    }
     return tb.canWrite(deviceEntity());
   }).then(function (writable) {
+    if (writable === null) { return; }
     state.writable = writable;
     render();
     timer = setInterval(refresh, REFRESH_MS);

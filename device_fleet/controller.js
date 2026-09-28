@@ -27,7 +27,6 @@ var GROUPS = [
   { id: 'logr', label: 'LOGR', profiles: ['logr2', 'logr3', 'logr4'] },
   { id: 'other', label: 'Other devices', profiles: ['gsaa', 'gsaa2', 'whtr', 'zc-tilt', 'default'] }
 ];
-var REPORTING = ['logr3', 'logr4'];
 var ATTRS = ['active', 'lastActivityTime', 'inactivityTimeout', 'deviceInfo.hwVersion', 'deviceInfo.fwVersion',
   'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu'];
 var FINE_STATUS = /^(all functional|ok|)$/i;
@@ -130,7 +129,7 @@ function worstAlarm(d) {
     .sort(function (a, b) { return G.rank(b.toLowerCase()) - G.rank(a.toLowerCase()); })[0] || null;
 }
 
-function reports(d) { return REPORTING.indexOf(d.type) >= 0; }
+function reports(d) { return tb.isComplexDevice(d.type); }
 
 function version(d, reported, register) {
   if (d.attrs[reported]) { return { value: d.attrs[reported], from: 'reported' }; }
@@ -217,7 +216,7 @@ function fail(text) {
 
 function openDevice(d) {
   var sc = ctx.stateController;
-  if (sc) { sc.openState('device', { entityId: { entityType: 'DEVICE', id: d.id }, entityName: d.name }, false); }
+  if (sc) { sc.openState(tb.deviceView(d.type), { entityId: { entityType: 'DEVICE', id: d.id }, entityName: d.name }, false); }
 }
 
 // -- render -----------------------------------------------------------------------------

@@ -185,10 +185,25 @@ root.TerrySenseTbIo = function (ctx) {
     }));
   }
 
+  /** A LOGR3 or LOGR4 has a bus and remote configuration; every other device is
+   * simple (DEVICE_VIEW.md §2, §3). */
+  function isComplexDevice(type) { return type === 'logr3' || type === 'logr4'; }
+  function deviceView(type) { return isComplexDevice(type) ? 'device' : 'simpleDevice'; }
+
+  /** Replace the current dashboard view with the one `device` belongs in.
+   * False when this dashboard has no such view. */
+  function openDeviceView(device) {
+    var sc = ctx.stateController, view = deviceView(device.type);
+    if (!sc || !sc.states || !sc.states[view]) { return false; }
+    sc.updateState(view, { entityId: { entityType: 'DEVICE', id: device.id.id }, entityName: device.name }, false);
+    return true;
+  }
+
   return {
     io: io, get: get, getAll: getAll, post: post, del: del, attrsMap: attrsMap, saveAttrs: saveAttrs, deleteAttrs: deleteAttrs,
     getAsset: getAsset, assetLevel: assetLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
-    currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations
+    currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
+    isComplexDevice: isComplexDevice, deviceView: deviceView, openDeviceView: openDeviceView
   };
 };
 
