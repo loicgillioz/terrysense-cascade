@@ -6,8 +6,9 @@
  * One entity query brings every device of the configured profiles with its
  * activity, versions and register (ATTRIBUTES.md §3); one alarm query counts
  * the active alarms per device; the `Contains` relations name the stations a
- * device feeds. Versions are what the device reports (`deviceInfo.*`), else
- * the hand-kept `register.*`. A column header sorts by that column; an empty
+ * device feeds. A LOGR3 or LOGR4 reports its versions (`deviceInfo.*`) and its
+ * hardware state (`status.healthFaults`) and always takes a firmware update; any
+ * other device shows the hand-kept `register.*`. A column header sorts by that column; an empty
  * cell (a device never heard from, on no station) sorts last either way.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
@@ -26,8 +27,9 @@ var GROUPS = [
   { id: 'logr', label: 'LOGR', profiles: ['logr2', 'logr3', 'logr4'] },
   { id: 'other', label: 'Other devices', profiles: ['gsaa', 'gsaa2', 'whtr', 'zc-tilt', 'default'] }
 ];
+var REPORTING = ['logr3', 'logr4'];
 var ATTRS = ['active', 'lastActivityTime', 'inactivityTimeout', 'deviceInfo.hwVersion', 'deviceInfo.fwVersion',
-  'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu'];
+  'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu'];
 var FINE_STATUS = /^(all functional|ok|)$/i;
 var REFRESH_MS = 60000;
 var PAGE = 1000;
@@ -123,14 +125,20 @@ function worstAlarm(d) {
     .sort(function (a, b) { return G.rank(b.toLowerCase()) - G.rank(a.toLowerCase()); })[0] || null;
 }
 
+function reports(d) { return REPORTING.indexOf(d.type) >= 0; }
+
 function version(d, reported, register) {
   if (d.attrs[reported]) { return { value: d.attrs[reported], from: 'reported' }; }
-  if (register && d.attrs[register]) { return { value: d.attrs[register], from: 'register' }; }
+  if (register && !reports(d) && d.attrs[register]) { return { value: d.attrs[register], from: 'register' }; }
   return null;
 }
 
-function hwStatusBad(d) { return !FINE_STATUS.test(String(d.attrs['register.hwStatus'] || '')); }
-function dfuImpossible(d) { return d.attrs['register.dfu'] !== undefined && !flag(d.attrs['register.dfu']); }
+function healthFaults(d) {
+  try { var f = JSON.parse(d.attrs['status.healthFaults'] || '[]'); return Array.isArray(f) ? f : []; } catch (e) { return []; }
+}
+function hwStatus(d) { return reports(d) ? healthFaults(d).join(', ') : String(d.attrs['register.hwStatus'] || ''); }
+function hwStatusBad(d) { return !FINE_STATUS.test(hwStatus(d)); }
+function dfuImpossible(d) { return !reports(d) && d.attrs['register.dfu'] !== undefined && !flag(d.attrs['register.dfu']); }
 
 /** Columns of each list: header, default direction, and the value it sorts by (null sorts last). */
 var COLUMNS = {
@@ -156,7 +164,7 @@ function visible() {
     if (groupOf(d).id !== state.group) { return false; }
     if (state.filter === 'attention' && !needsLook(d)) { return false; }
     if (!q) { return true; }
-    return [d.name, d.label, d.owner, d.type, d.attrs['register.hwStatus']].concat(d.stations || [])
+    return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [])
       .some(function (x) { return x && String(x).toLowerCase().indexOf(q) >= 0; });
   });
   var value = COLUMNS[state.sort].value;
@@ -272,11 +280,11 @@ function row(d, logr) {
     var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
     var ver = el.querySelector('.ts-fleet-ver');
     ver.innerHTML = [hw ? 'hw ' + esc(hw.value) + (hw.from === 'register' ? ' <i title="Kept by hand">reg</i>' : '') : '',
-      fw ? 'fw ' + esc(fw.value) : '', d.attrs['register.loraFw'] ? 'LoRa ' + esc(d.attrs['register.loraFw']) : '']
+      fw ? 'fw ' + esc(fw.value) : '', !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + esc(d.attrs['register.loraFw']) : '']
       .filter(Boolean).join('<br>');
     var hwEl = el.querySelector('.ts-fleet-hw');
     // Only the exceptions: a status other than fine, and no firmware update possible.
-    if (hwStatusBad(d)) { hwEl.appendChild(h('<span class="ts-chip warn"></span>')).textContent = d.attrs['register.hwStatus']; }
+    if (hwStatusBad(d)) { hwEl.appendChild(h('<span class="ts-chip warn"></span>')).textContent = hwStatus(d); }
     if (dfuImpossible(d)) { hwEl.appendChild(h('<span class="ts-chip warn" title="This unit cannot take a firmware update">DFU impossible</span>')); }
   } else {
     el.querySelector('.ts-fleet-type').textContent = d.type;

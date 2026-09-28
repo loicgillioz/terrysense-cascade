@@ -577,7 +577,9 @@ function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 // -- register -------------------------------------------------------------------------------
 
 /** Hand-kept facts the device cannot report (ATTRIBUTES.md §3): shown to every
- * reader, edited by whoever may write the device. */
+ * reader, edited by whoever may write the device. A LOGR3 or LOGR4 reports them
+ * itself and keeps no register. */
+var REPORTING = ['logr3', 'logr4'];
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
   { key: 'register.hwStatus', label: 'Hardware status' },
@@ -589,6 +591,7 @@ var HOUR_MS = 3600000;
 var FINE_STATUS = /^(all functional|ok|)$/i;
 
 function registerSection() {
+  if (REPORTING.indexOf(state.device.type) >= 0) { return null; }
   var s = state.server;
   var set = REGISTER.filter(function (f) { return s[f.key] !== undefined && s[f.key] !== ''; });
   var timeout = Number(s.inactivityTimeout);
