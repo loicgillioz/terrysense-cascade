@@ -101,6 +101,11 @@ function load() {
         var old = state.devices.filter(function (x) { return x.id === d.id; })[0];
         d.stations = old ? old.stations : null;
       });
+      if (!state.loadedAt) {
+        // A customer may own no LOGR: open on the first group that has a device.
+        var first = GROUPS.filter(function (g) { return devices.some(function (d) { return groupOf(d).id === g.id; }); })[0];
+        if (first) { state.group = first.id; }
+      }
       state.devices = devices;
       state.loadedAt = Date.now();
       render();
