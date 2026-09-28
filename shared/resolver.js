@@ -376,15 +376,22 @@ function channelsFromAttrs(attrs, names) {
   return out;
 }
 
-/** The calculated names a station carries: every input channel mapped and
- * every `calc.<attribute>` set — mirrors `calculated_channels()` in config_resolver.py. */
+/** The calculated names a station carries: every input channel mapped or itself
+ * a calculated name the station carries, and every `calc.<attribute>` set —
+ * mirrors `calculated_channels()` in config_resolver.py. */
 function calculatedChannels(mapped, attrs, names) {
-  return Object.keys(names).filter(function (name) {
-    var calc = (names[name] || {}).calculated;
-    return !!calc && !(name in mapped)
-      && (calc.channels || []).every(function (c) { return c in mapped; })
-      && (calc.attributes || []).every(function (a) { return attrs[CALC_PREFIX + a] != null; });
-  });
+  var known = Object.assign({}, mapped), found = [], added = true;
+  while (added) {
+    var fresh = Object.keys(names).filter(function (name) {
+      var calc = (names[name] || {}).calculated;
+      return !!calc && !(name in known)
+        && (calc.channels || []).every(function (c) { return c in known; })
+        && (calc.attributes || []).every(function (a) { return attrs[CALC_PREFIX + a] != null; });
+    });
+    fresh.forEach(function (name) { known[name] = true; found.push(name); });
+    added = fresh.length > 0;
+  }
+  return found;
 }
 
 function channelMapOf(entity, names, io) {
