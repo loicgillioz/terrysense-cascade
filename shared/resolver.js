@@ -46,6 +46,7 @@
 
 var CONFIG_PREFIX = 'config.';
 var CHANNEL_PREFIX = 'channel.';
+var CALC_PREFIX = 'calc.';
 var EFFECTIVE_PREFIX = 'effective.';
 
 // `label` falls back to the dictionary label and fills `${alarmLabel}`.
@@ -238,10 +239,15 @@ function resolveField(chain, channel, kind, field, io, cache) {
         return label ? { value: label, level: null, source: 'Channel dictionary', overrideKey: chanKey } : null;
       });
     }
-    if (field !== 'unit' || !kind) { return null; }
-    return defaultsJson('kinds', io, cache).then(function (kinds) {
-      var unit = kindSpec(kind, kinds).cloudUnit;
-      return unit ? { value: unit, level: null, source: 'Kind default (' + kind + ')', overrideKey: chanKey } : null;
+    if (field !== 'unit') { return null; }
+    return defaultsJson('channelNames', io, cache).then(function (names) {
+      var own = (names[split.name] || {}).unit;
+      if (own) { return { value: own, level: null, source: 'Channel dictionary', overrideKey: chanKey }; }
+      if (!kind) { return null; }
+      return defaultsJson('kinds', io, cache).then(function (kinds) {
+        var unit = kindSpec(kind, kinds).cloudUnit;
+        return unit ? { value: unit, level: null, source: 'Kind default (' + kind + ')', overrideKey: chanKey } : null;
+      });
     });
   });
 }
@@ -365,8 +371,20 @@ function channelsFromAttrs(attrs, names) {
   var out = {};
   if (channels) {
     Object.keys(channels).forEach(function (c) { out[c] = (names[splitChannelKey(c).name] || {}).kind || null; });
+    calculatedChannels(channels, attrs, names).forEach(function (c) { out[c] = names[c].kind || null; });
   }
   return out;
+}
+
+/** The calculated names a station carries: every input channel mapped and
+ * every `calc.<attribute>` set — mirrors `calculated_channels()` in config_resolver.py. */
+function calculatedChannels(mapped, attrs, names) {
+  return Object.keys(names).filter(function (name) {
+    var calc = (names[name] || {}).calculated;
+    return !!calc && !(name in mapped)
+      && (calc.channels || []).every(function (c) { return c in mapped; })
+      && (calc.attributes || []).every(function (a) { return attrs[CALC_PREFIX + a] != null; });
+  });
 }
 
 function channelMapOf(entity, names, io) {
