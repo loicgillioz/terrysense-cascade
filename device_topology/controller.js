@@ -577,7 +577,7 @@ function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 // -- register -------------------------------------------------------------------------------
 
 /** Hand-kept facts the device cannot report (ATTRIBUTES.md §3): shown to every
- * reader, edited by the tenant admin only. */
+ * reader, edited by whoever may write the device. */
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
   { key: 'register.hwStatus', label: 'Hardware status' },
@@ -586,15 +586,13 @@ var REGISTER = [
 ];
 var HOUR_MS = 3600000;
 
-function tenantAdmin() { return !!state.me && state.me.authority === 'TENANT_ADMIN'; }
-
 var FINE_STATUS = /^(all functional|ok|)$/i;
 
 function registerSection() {
   var s = state.server;
   var set = REGISTER.filter(function (f) { return s[f.key] !== undefined && s[f.key] !== ''; });
   var timeout = Number(s.inactivityTimeout);
-  if (!set.length && !(timeout > 0) && !tenantAdmin()) { return null; }
+  if (!set.length && !(timeout > 0) && !state.writable) { return null; }
   var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Register ' + info('register') +
     '<span class="ts-spacer"></span></div><div class="ts-reg-grid"></div></div>');
   var grid = sec.querySelector('.ts-reg-grid');
@@ -612,7 +610,7 @@ function registerSection() {
     else { tile(f.key, f.label, String(v), f.key === 'register.hwStatus' && !FINE_STATUS.test(String(v))); }
   });
   tile('inactivityTimeout', 'Inactivity timeout', timeout > 0 ? fmtDuration(timeout / 1000) : 'platform default', false);
-  if (tenantAdmin()) {
+  if (state.writable) {
     var edit = h('<button type="button" class="ts-btn ts-reg-edit" data-a="register">' + ICON.edit + 'Edit</button>');
     edit.addEventListener('click', registerDrawer);
     sec.querySelector('.ts-section-head').appendChild(edit);

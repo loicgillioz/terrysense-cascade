@@ -41,7 +41,7 @@ var TERMS = {
   drycRules: 'The relay controller runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
   drycRecords: 'The relay controller holds at most 16 records: one per notifying rule, and one per relay a rule switches.',
   drycSync: 'Saving keeps the rules here. Send puts them on the relay controller, after the logger’s next uplink.',
-  register: 'Facts about the unit it cannot report itself, kept by hand by in-terra: hardware version, hardware status, LoRa module firmware, whether a firmware update is possible, and the inactivity timeout.',
+  register: 'Facts about the unit it cannot report itself, kept by hand by in-terra or the customer admin: hardware version, hardware status, LoRa module firmware, whether a firmware update is possible, and the inactivity timeout.',
   commands: 'A command reaches the LOGR after its next uplink (LoRaWAN Class A), so it waits here until the device answers. With no answer after a day, or two uplink intervals when longer, it is shown as unanswered.',
   peripheralFault: 'Sources the LOGR reported a failed read for, and that have not sent a value since. The device states the fault; nothing is guessed from missing data.'
 };
