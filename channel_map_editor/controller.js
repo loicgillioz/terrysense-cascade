@@ -35,7 +35,7 @@ var EMPTY_MARKER = '(empty)';
 var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
 var SOURCE_KEY_RE = /^p(\d+)\.([a-z][A-Za-z0-9]*)(?:\.g(\d+))?(?:\.i(\d+))?$/;
 // Converter-named device keys that are not measurements.
-var DEVICE_WIDE_KEYS = ['uplinkCause', 'uplinkLatest', 'rssi', 'snr', 'fCnt'];
+var DEVICE_WIDE_KEYS = ['uplinkCause', 'uplinkLatest', 'rssi', 'snr'];
 
 function topologyFrom(attrs) {
   var nodes = [];

@@ -55,14 +55,14 @@ var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
 var HOUR_MS = 3600000;
 var DAY_MS = 86400000;
-var NETWORK_KEYS = ['rssi', 'snr', 'fCnt'];
+var NETWORK_KEYS = ['rssi', 'snr'];
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'batteryVoltage'];
 var BATTERY_CHARGING = ['p0.boolean', 'batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
-// Device bookkeeping, not readings: radio, frame counter, uplink markers, the relay controller's own counters.
-var NOT_READINGS = ['rssi', 'snr', 'fCnt', 'uplinkCause', 'uplinkLatest', 'drycRuleCount', 'drycRulesSynced'];
+// Device bookkeeping, not readings: radio, uplink markers, the relay controller's own counters.
+var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'drycRuleCount', 'drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
@@ -1103,9 +1103,6 @@ function statusSection() {
   if (lat.rssi) { net.push('Uplink ' + lat.rssi.value + ' dBm, SNR ' + (lat.snr ? lat.snr.value : '?') + ' dB'); }
   var sf = state.server.spreadingFactor !== undefined ? state.server.spreadingFactor : c.spreadingFactor;
   if (sf !== undefined) { net.push('Spreading factor ' + sf); }
-  // Older devices hold the frame counter only as a telemetry series.
-  var fcnt = c.fCnt !== undefined ? c.fCnt : lat.fCnt && lat.fCnt.value;
-  if (fcnt !== undefined) { net.push('Frame counter ' + fcnt); }
   var gws = parseJson(c.gateways || state.server.gateways) || [];
   if (gws.length) {
     net.push('Heard by ' + gws.length + (gws.length === 1 ? ' gateway: ' : ' gateways, best: ') + gws.slice(0, 3).map(function (g) {
