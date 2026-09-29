@@ -1,13 +1,14 @@
 /*
  * Project — a project's locations on a map and its stations in a list, each
  * station with its state and the age of its last reading (EU-1). A station
- * opens its own station dashboard; an editor assigns one, or creates a
- * template for it, and places locations, the project area and stations.
+ * opens its station view, and its charts on its own station dashboard; an
+ * editor assigns one, or creates a template for it, and places, renames and
+ * deletes locations, and places the project area and stations.
  * Bound to one station, the same widget shows that station alone.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `configDashboardId` (the gear
- * link), `projectDashboardId` (checked for public access).
+ * link), `projectDashboardId` (its Station view; checked for public access).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
  * Leaflet and Leaflet-Geoman itself.
@@ -46,6 +47,8 @@ var ICON_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
+var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
+var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
 
 function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
@@ -430,6 +433,57 @@ function savePosition(loc, latLng) {
   }).catch(function (err) { ui.toast('Position not saved: ' + errText(err), 'error'); drawMarkers(); });
 }
 
+function renameLocation(loc) {
+  var dr = ui.openDrawer('Rename location', esc(loc.entity.name));
+  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Name</span></div>' +
+    '<div class="ts-ctl"><input class="ts-input" type="text" data-f="name"></div></div>'));
+  var input = dr.body.querySelector('[data-f=name]');
+  input.value = loc.entity.name;
+  ui.drawerActions(dr, 'Save').addEventListener('click', function () {
+    var name = input.value.trim();
+    if (!name || name === loc.entity.name) { ui.closeDrawer(); return; }
+    tb.getAsset(loc.id).then(function (asset) {
+      asset.name = name;
+      return tb.post('/api/asset', asset);
+    }).then(function () {
+      ui.toast('Location renamed');
+      ui.closeDrawer();
+      return refresh();
+    }).catch(function (err) { ui.toast('Not renamed: ' + errText(err), 'error'); });
+  });
+}
+
+/** The stations below `loc`, in its sub-locations too. */
+function stationsBelow(loc) {
+  function inside(l) { return !!l && (l.id === loc.id || inside(locationById(l.parent && l.parent.id))); }
+  return state.stations.filter(function (s) { return inside(locationById(s.locationId)); });
+}
+
+/** Delete a location; what it contains moves up to its parent first, and the
+ * stations below it re-resolve, since they now inherit from another place. */
+function deleteLocation(loc) {
+  var parent = loc.parent, below = stationsBelow(loc);
+  ui.confirm('Delete location <b>' + esc(loc.entity.name) + '</b>?' + (below.length
+    ? ' Its ' + below.length + (below.length === 1 ? ' station moves' : ' stations move') + ' to <b>' + esc(parent.name) +
+      '</b> and inherit its settings: thresholds, units, texts and contacts.' : ''), 'Delete').then(function (ok) {
+    if (!ok) { return null; }
+    return tb.io.fetchChildren(loc.entity).then(function (children) {
+      return Promise.all(children.map(function (c) {
+        return tb.post('/api/relation', { from: { entityType: 'ASSET', id: parent.id }, to: { entityType: 'ASSET', id: c.id },
+          type: 'Contains', typeGroup: 'COMMON' });
+      }));
+    }).then(function () {
+      return tb.del('/api/asset/' + loc.id);
+    }).then(function () {
+      return tb.resolveStations(below.map(function (s) { return s.station; }));
+    }).then(function () {
+      if (state.filter === loc.id) { state.filter = null; }
+      ui.toast('Location deleted');
+      return refresh();
+    });
+  }).catch(function (err) { ui.toast('Location not deleted: ' + errText(err), 'error'); });
+}
+
 // -- moving a station --------------------------------------------------------------------
 
 var dragged = null;
@@ -531,6 +585,12 @@ function groupHead(g, here) {
       ui.toast('Click the map where ' + g.loc.name + ' is');
     });
     el.appendChild(place);
+    var rename = h('<button type="button" class="ts-icon-btn" data-a="rename" title="Rename">' + ICON.edit + '</button>');
+    rename.addEventListener('click', function () { renameLocation(g.loc); });
+    el.appendChild(rename);
+    var remove = h('<button type="button" class="ts-icon-btn" data-a="delete" title="Delete">' + ICON_TRASH + '</button>');
+    remove.addEventListener('click', function () { deleteLocation(g.loc); });
+    el.appendChild(remove);
   }
   if (here.length) { el.appendChild(chip(worstOf(here))); }
   if (g.loc) {
@@ -571,12 +631,19 @@ function stationRow(entry) {
   var pub = state.canEdit && publicState(entry);
   if (pub) { side.appendChild(publicIcon(pub)); }
   side.appendChild(chip(entry.status));
-  if (entry.dashboardId) {
+  // The row opens the station view; without one, its charts.
+  var view = opts.projectDashboardId ? [opts.projectDashboardId, 'station'] : entry.dashboardId ? [entry.dashboardId, 'station'] : null;
+  if (view) {
     el.classList.add('linked');
-    el.addEventListener('click', function (e) { if (!e.target.closest('button')) { openDashboard(entry.dashboardId, 'station', entry.station); } });
-    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { openDashboard(entry.dashboardId, 'station', entry.station); } });
+    el.addEventListener('click', function (e) { if (!e.target.closest('button')) { openDashboard(view[0], view[1], entry.station); } });
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { openDashboard(view[0], view[1], entry.station); } });
+  }
+  if (entry.dashboardId) {
+    var charts = h('<button type="button" class="ts-icon-btn" data-a="charts" title="Charts">' + ICON_CHART + '</button>');
+    charts.addEventListener('click', function () { openDashboard(entry.dashboardId, 'station', entry.station); });
+    side.appendChild(charts);
   } else {
-    el.querySelector('.ts-row-meta').textContent += ' · No dashboard yet';
+    el.querySelector('.ts-row-meta').textContent += ' · No charts dashboard yet';
   }
   if (state.canEdit) {
     var assign = h('<button type="button" class="ts-icon-btn" title="' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '">' +
