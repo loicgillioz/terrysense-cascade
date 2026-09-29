@@ -34,6 +34,7 @@ var STARTER_TITLE = 'Station (starter)';
 var STARTER_USE = 'New template';
 var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
 var DASHBOARD_KEY = 'config.stationDashboard';
+var HOME_KEY = 'config.homeDashboard';
 var NO_LOCATION = '';
 var STATUS = {
   stale: { label: 'Stale', color: 'var(--ts-stale)', rank: 3 },
@@ -42,6 +43,7 @@ var STATUS = {
   none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
 };
 var ICON_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
@@ -105,11 +107,12 @@ function encodeState(states) {
 }
 
 /** Open view `stateId` of dashboard `dashboardId` on `entity`, above its landing
- * view. A public link stays public: its route is /dashboard, and it keeps publicId. */
+ * view; with no `stateId`, its landing view. A public link stays public: its
+ * route is /dashboard, and it keeps publicId. */
 function openDashboard(dashboardId, stateId, entity) {
   var isPublic = /^\/dashboard\//.test(window.location.pathname);
-  var params = { state: encodeState([{ id: 'default', params: {} },
-    { id: stateId, params: { entityId: { entityType: 'ASSET', id: entity.id }, entityName: entity.name } }]) };
+  var params = stateId ? { state: encodeState([{ id: 'default', params: {} },
+    { id: stateId, params: { entityId: { entityType: 'ASSET', id: entity.id }, entityName: entity.name } }]) } : {};
   var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
   if (publicId) { params.publicId = publicId; }
   service('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
@@ -233,6 +236,7 @@ var cardEl = h(
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
   '    <div class="ts-head-text"><div class="ts-title">Project</div><div class="ts-subtitle"></div></div>' +
   '    <span class="ts-proj-public" tabindex="0" hidden></span><span class="ts-proj-worst"></span>' +
+  '    <button type="button" class="ts-btn ts-proj-home" hidden>' + ICON_HOME + ' Project dashboard</button>' +
   '    <button type="button" class="ts-btn ts-proj-edit" hidden>Edit map</button>' +
   '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Project settings">' + ICON_GEAR + '</button></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list"><div class="ts-loading">Loading…</div></div></div>' +
@@ -245,6 +249,7 @@ var listEl = cardEl.querySelector('.ts-proj-list');
 var publicEl = cardEl.querySelector('.ts-proj-public');
 var editBtn = cardEl.querySelector('.ts-proj-edit');
 var gearBtn = cardEl.querySelector('.ts-proj-gear');
+var homeBtn = cardEl.querySelector('.ts-proj-home');
 var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
 
 new ResizeObserver(function () {
@@ -477,6 +482,7 @@ function renderHeader() {
   cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
   editBtn.hidden = single || !state.canEdit || !map;
   gearBtn.hidden = single || !state.canEdit || !opts.configDashboardId;
+  homeBtn.hidden = single || !state.projectAttrs[HOME_KEY];
 }
 
 function renderList() {
@@ -911,6 +917,7 @@ function refresh() {
 refreshBtn.addEventListener('click', function () { refresh().then(refreshPublic); });
 editBtn.addEventListener('click', function () { setEditMap(!state.editMap); });
 gearBtn.addEventListener('click', function () { openDashboard(opts.configDashboardId, 'project', state.entity); });
+homeBtn.addEventListener('click', function () { openDashboard(state.projectAttrs[HOME_KEY]); });
 
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project, location or station in the widget\'s Data tab.'); return; }
