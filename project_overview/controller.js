@@ -1,20 +1,21 @@
 /*
- * Project — every station of a project or location at a glance, under its
- * channel names (EU-1). Bound to one station, that station's channels as
- * charts with their alarm bands. Read-only for everyone.
+ * Project — a project's locations on a map and its stations in a list, each
+ * station with its state and the age of its last reading (EU-1). A station
+ * opens its own station dashboard; an editor assigns one, or creates a
+ * template for it, and places locations, the project area and stations.
+ * Bound to one station, the same widget shows that station alone.
+ * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
- * Channels are the keys of the station's `config.channelMap`; labels, units and
- * bands are its `effective.<channel>.*` attributes. A name the vocabulary marks
- * diagnostic (battery, firmware, ...) is folded away until asked for. A channel
- * with an active `<channel>.max|min|state` alarm takes that alarm's colour; the
- * station's other alarms (peripheral fault, device event, ...) are listed on the
- * card. Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
+ * `opts`, set by build_project_dashboard.py: `configDashboardId` (the gear
+ * link), `projectDashboardId` (checked for public access).
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
+ * Leaflet and Leaflet-Geoman itself.
  */
 
-window.TerrySenseProjectOverview = function (ctx, container) {
+window.TerrySenseProjectOverview = function (ctx, container, opts) {
 
+opts = opts || {};
 var resolver = window.TerrySenseResolver;
 var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
@@ -23,49 +24,102 @@ var ui = window.TerrySenseUi(root);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
-var HOUR = 3600000;
-var TREND_MS = 24 * HOUR;
-var CHART_MS = 7 * 24 * HOUR;
 var MAX_DEPTH = 4;
-var CHANNEL_ALARM_RE = /^(.+)\.(max|min|state)$/;
-var BAND_RE = /^effective\.(.+)\.alarm\.([a-z]+)\.threshold(Max|Min)$/;
-var OTHER_ALARMS = [
-  { prefix: 'peripheralFault.', text: 'Sensor fault' },
-  { prefix: 'deviceEvent.movement', text: 'Logger moved' },
-  { prefix: 'deviceEvent.batteryCritical', text: 'Logger battery critical' },
-  { prefix: 'deviceEvent.power', text: 'Logger power changed' },
-  { prefix: 'deviceHealth', text: 'Logger self-test fault' },
-  { prefix: 'pipelineError', text: 'Data processing error' }
-];
+var HOUR = 3600000;
+var LEAFLET = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/';
+var GEOMAN = 'https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.17.0/dist/';
+var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
+var TEMPLATE_GROUP = 'Station dashboards';
+var STARTER_TITLE = 'Station (starter)';
+var STARTER_USE = 'New template';
+var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
+var DASHBOARD_KEY = 'config.stationDashboard';
+var NO_LOCATION = '';
+var STATUS = {
+  stale: { label: 'Stale', color: 'var(--ts-stale)', rank: 3 },
+  nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
+  ok: { label: 'OK', color: 'var(--ts-ok)', rank: 1 },
+  none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
+};
+var ICON_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+var ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>';
+
+function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
 
 function parseJson(raw) {
   if (!raw) { return null; }
   try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
 }
 
+function errText(e) { return (e && e.error && e.error.message) || (e && e.message) || String(e); }
+
 function ago(ts) {
-  if (!ts) { return 'no reading yet'; }
-  var s = Math.max(0, (Date.now() - Number(ts)) / 1000);
+  var s = Math.max(0, (Date.now() - ts) / 1000);
   if (s < 90) { return 'just now'; }
   if (s < 5400) { return Math.round(s / 60) + ' min ago'; }
   if (s < 129600) { return Math.round(s / 3600) + ' h ago'; }
   return Math.round(s / 86400) + ' days ago';
 }
 
-function fmtNumber(n) {
-  var a = Math.abs(n);
-  var digits = a >= 1000 ? 0 : a >= 100 ? 1 : a >= 1 ? 2 : 3;
-  return String(Math.round(n * Math.pow(10, digits)) / Math.pow(10, digits));
-}
-
-function fmtDate(ts) {
+function fmtTime(ts) {
   var d = new Date(ts);
-  return d.getDate() + '.' + (d.getMonth() + 1) + '. ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
 }
 
-// -- data -------------------------------------------------------------------------------
+function uuid() {
+  if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+  });
+}
 
-var state = { entity: null, names: {}, stations: [], showDiagnostic: false, loadedAt: 0 };
+function loadOnce(tag, url) {
+  if (document.querySelector(tag + '[data-ts-src="' + url + '"]')) { return Promise.resolve(); }
+  return new Promise(function (resolve, reject) {
+    var el = document.createElement(tag);
+    el.setAttribute('data-ts-src', url);
+    if (tag === 'link') { el.rel = 'stylesheet'; el.href = url; } else { el.src = url; }
+    el.onload = resolve;
+    el.onerror = function () { reject(new Error('could not load ' + url)); };
+    document.head.appendChild(el);
+  });
+}
+
+function loadMapLibraries() {
+  var css = Promise.all([loadOnce('link', LEAFLET + 'leaflet.css'), loadOnce('link', GEOMAN + 'leaflet-geoman.css')]);
+  var leaflet = window.L && window.L.version && window.L.version >= '1.9' ? Promise.resolve() : loadOnce('script', LEAFLET + 'leaflet.js');
+  return Promise.all([css, leaflet.then(function () {
+    return window.L.PM ? null : loadOnce('script', GEOMAN + 'leaflet-geoman.js');
+  })]);
+}
+
+// -- navigation --------------------------------------------------------------------------
+
+/** ThingsBoard's own encoding of the `state` query parameter. */
+function encodeState(states) {
+  return btoa(encodeURIComponent(JSON.stringify(states)).replace(/%([0-9A-F]{2})/g,
+    function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); }));
+}
+
+/** Open view `stateId` of dashboard `dashboardId` on `entity`, above its landing
+ * view. A public link stays public: its route is /dashboard, and it keeps publicId. */
+function openDashboard(dashboardId, stateId, entity) {
+  var isPublic = /^\/dashboard\//.test(window.location.pathname);
+  var params = { state: encodeState([{ id: 'default', params: {} },
+    { id: stateId, params: { entityId: { entityType: 'ASSET', id: entity.id }, entityName: entity.name } }]) };
+  var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
+  if (publicId) { params.publicId = publicId; }
+  service('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
+}
+
+// -- data --------------------------------------------------------------------------------
+
+var state = {
+  entity: null, owner: null, names: {}, projectAttrs: {}, locations: [], stations: [], loadedAt: 0,
+  canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null,
+  publicReport: null, templates: null
+};
 
 function loadNames() {
   return tb.io.fetchDefaults().then(function (d) { return d ? tb.attrsMap(d) : {}; }).then(function (a) {
@@ -73,326 +127,795 @@ function loadNames() {
   });
 }
 
-/** Stations below `entity` over `Contains`, each with the location it sits in. */
-function findStations(entity) {
-  var out = [];
-  function walk(level, location, depth) {
+/** Locations and stations below the bound entity over `Contains`. A station
+ * belongs to its nearest location, or to none. */
+function walkTree(entity) {
+  var locations = [], stations = [];
+  function walk(level, location, path, depth) {
     if (depth > MAX_DEPTH) { return Promise.resolve(); }
     return tb.io.fetchChildren(level).then(function (children) {
       return Promise.all(children.map(function (c) {
-        if (c.kind === 'Station') { out.push({ station: c, location: location }); return null; }
-        if (c.kind === 'Location') { return walk(c, location ? location + ' › ' + c.name : c.name, depth + 1); }
-        return null;
+        if (c.kind === 'Station') { stations.push({ station: c, parent: level, locationId: location ? location.id : NO_LOCATION }); return null; }
+        if (c.kind !== 'Location') { return null; }
+        var loc = { entity: c, id: c.id, name: path ? path + ' › ' + c.name : c.name, parent: level };
+        locations.push(loc);
+        return walk(c, loc, loc.name, depth + 1);
       }));
     });
   }
-  return walk(entity, null, 0).then(function () {
-    return out.sort(function (a, b) {
-      return (a.location || '').localeCompare(b.location || '') || a.station.name.localeCompare(b.station.name);
-    });
+  return walk(entity, null, '', 0).then(function () { return { locations: locations, stations: stations }; });
+}
+
+function loadLocation(loc) {
+  return tb.attrsMap(loc.entity).then(function (a) {
+    var lat = Number(a.latitude), lng = Number(a.longitude);
+    loc.latLng = a.latitude != null && a.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
+    return loc;
   });
 }
 
-function channelOf(key, attrs, latest, history) {
-  var base = state.names[resolver.splitChannelKey(key).name] || {};
-  var raw = latest[key] && latest[key][0];
-  var bands = [];
-  Object.keys(attrs).forEach(function (k) {
-    var m = BAND_RE.exec(k);
-    if (m && m[1] === key && isFinite(Number(attrs[k]))) { bands.push({ severity: m[2], side: m[3], value: Number(attrs[k]) }); }
-  });
-  return {
-    key: key,
-    label: attrs['effective.' + key + '.label'] || base.label || key,
-    unit: attrs['effective.' + key + '.unit'] || '',
-    diagnostic: !!base.diagnostic,
-    states: base.states || null,
-    whenTrue: attrs['effective.' + key + '.textWhenTrue'],
-    whenFalse: attrs['effective.' + key + '.textWhenFalse'],
-    latest: raw ? { ts: Number(raw.ts), value: raw.value } : null,
-    history: ((history && history[key]) || []).map(function (p) { return [Number(p.ts), p.value]; })
-      .sort(function (a, b) { return a[0] - b[0]; }),
-    bands: bands,
-    alarm: null
-  };
-}
-
-function loadStation(entry, spanMs) {
+function loadStation(entry) {
   var s = entry.station, url = '/api/plugins/telemetry/ASSET/' + s.id + '/values/timeseries';
   return tb.attrsMap(s).then(function (attrs) {
+    entry.attrs = attrs;
+    entry.dashboardId = attrs[DASHBOARD_KEY] || null;
+    entry.staleAfterMs = Number(attrs['effective.staleAfterHours']) * HOUR || 0;
     var keys = Object.keys(((parseJson(attrs['config.channelMap']) || {}).channels) || {});
-    var now = Date.now();
-    var reads = keys.length ? [
-      tb.get(url, { keys: keys.join(',') }).catch(function () { return {}; }),
-      tb.get(url, { keys: keys.join(','), startTs: String(now - spanMs), endTs: String(now), limit: '2000', agg: 'NONE', orderBy: 'ASC' })
-        .catch(function () { return {}; })
-    ] : [{}, {}];
-    reads.push(tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }));
-    return Promise.all(reads).then(function (got) {
-      var channels = keys.map(function (k) { return channelOf(k, attrs, got[0] || {}, got[1] || {}); });
-      var byKey = {};
-      channels.forEach(function (c) { byKey[c.key] = c; });
-      var others = [];
-      ((got[2] && got[2].data) || []).forEach(function (a) {
-        var m = CHANNEL_ALARM_RE.exec(a.type), c = m && byKey[m[1]];
-        if (c) {
-          if (!c.alarm || G.rank(a.severity.toLowerCase()) > G.rank(c.alarm.toLowerCase())) { c.alarm = a.severity; }
-        } else {
-          others.push(a);
-        }
-      });
-      entry.channels = channels;
-      entry.alarms = others;
-      entry.lastTs = channels.reduce(function (m, c) { return Math.max(m, c.latest ? c.latest.ts : 0); }, 0);
-      return entry;
-    });
+    return Promise.all([
+      keys.length ? tb.get(url, { keys: keys.join(',') }).catch(function () { return {}; }) : {},
+      tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
+    ]);
+  }).then(function (got) {
+    entry.lastTs = Object.keys(got[0] || {}).reduce(function (m, k) {
+      var p = got[0][k] && got[0][k][0];
+      return p && p.value !== null && p.value !== undefined ? Math.max(m, Number(p.ts)) : m;
+    }, 0);
+    entry.alarms = (got[1] && got[1].data) || [];
+    entry.status = statusOf(entry);
+    return entry;
   });
 }
 
 function load() {
   var e = state.entity;
-  var stations = e.kind === 'Station' ? Promise.resolve([{ station: e, location: null }]) : findStations(e);
-  return stations.then(function (list) {
-    var span = e.kind === 'Station' ? CHART_MS : TREND_MS;
-    return Promise.all(list.map(function (x) { return loadStation(x, span); }));
-  }).then(function (list) {
-    state.stations = list;
+  var tree = e.kind === 'Station' ? Promise.resolve({ locations: [], stations: [{ station: e, locationId: NO_LOCATION }] }) : walkTree(e);
+  return Promise.all([tree, tb.attrsMap(e)]).then(function (got) {
+    state.projectAttrs = got[1];
+    return Promise.all([
+      Promise.all(got[0].locations.map(loadLocation)),
+      Promise.all(got[0].stations.map(loadStation))
+    ]);
+  }).then(function (got) {
+    state.locations = got[0].sort(function (a, b) { return a.name.localeCompare(b.name); });
+    state.stations = got[1].sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
     state.loadedAt = Date.now();
   });
 }
 
-// -- model ------------------------------------------------------------------------------
+// -- model -------------------------------------------------------------------------------
 
-function worst(severities) {
-  return severities.filter(Boolean).sort(function (a, b) { return G.rank(b.toLowerCase()) - G.rank(a.toLowerCase()); })[0] || null;
-}
-
-function stationSeverity(entry) {
-  return worst(entry.channels.map(function (c) { return c.alarm; }).concat(entry.alarms.map(function (a) { return a.severity; })));
-}
-
-function otherAlarmText(entry, a) {
-  var kind = OTHER_ALARMS.filter(function (o) { return a.type.indexOf(o.prefix) === 0; })[0];
-  if (kind && kind.prefix === 'peripheralFault.') {
-    var channel = entry.channels.filter(function (c) { return c.key === a.type.slice(kind.prefix.length); })[0];
-    return kind.text + (channel ? ': ' + channel.label : '');
+function statusOf(entry) {
+  var worst = entry.alarms.reduce(function (w, a) {
+    return !w || G.rank(a.severity.toLowerCase()) > G.rank(w.toLowerCase()) ? a.severity : w;
+  }, null);
+  if (worst) {
+    var id = worst.toLowerCase();
+    return { id: 'alarm', label: G.severity(id).label, color: 'var(--sev-' + id + ')', rank: 10 + G.rank(id) };
   }
-  return kind ? kind.text : a.type;
+  if (!entry.lastTs) { return Object.assign({ id: 'nodata' }, STATUS.nodata); }
+  if (entry.staleAfterMs && Date.now() - entry.lastTs > entry.staleAfterMs) { return Object.assign({ id: 'stale' }, STATUS.stale); }
+  return Object.assign({ id: 'ok' }, STATUS.ok);
 }
 
-function shown(entry) {
-  return entry.channels.filter(function (c) { return state.showDiagnostic || !c.diagnostic || c.alarm; });
+function worstOf(entries) {
+  return entries.reduce(function (w, s) { return !w || s.status.rank > w.rank ? s.status : w; }, null) || STATUS.none;
 }
 
-function display(c) {
-  if (!c.latest) { return { text: '—', unit: '' }; }
-  var v = c.latest.value;
-  if (v === true || v === 'true' || v === false || v === 'false') {
-    var on = v === true || v === 'true';
-    return { text: (on ? c.whenTrue : c.whenFalse) || (on ? 'on' : 'off'), unit: '' };
-  }
-  if (c.states && c.states[String(v)] !== undefined) { return { text: c.states[String(v)], unit: '' }; }
-  var n = Number(v);
-  return isNaN(n) ? { text: String(v), unit: '' } : { text: fmtNumber(n), unit: c.unit };
+function stationsAt(locationId) {
+  return state.stations.filter(function (s) { return s.locationId === locationId; });
 }
 
-function numeric(points) {
-  return points.map(function (p) {
-    var v = p[1] === true || p[1] === 'true' ? 1 : p[1] === false || p[1] === 'false' ? 0 : Number(p[1]);
-    return [p[0], v];
-  }).filter(function (p) { return isFinite(p[1]); });
-}
+function locationById(id) { return state.locations.filter(function (l) { return l.id === id; })[0] || null; }
 
-// -- charts -----------------------------------------------------------------------------
-
-/** An SVG polyline over `points`, scaled into w x h; bands drawn as dashed lines. */
-function plot(points, w, h, bands, from, to) {
-  var pts = numeric(points);
-  if (pts.length < 2) { return null; }
-  var ys = pts.map(function (p) { return p[1]; }).concat(bands.map(function (b) { return b.value; }));
-  var lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
-  if (hi === lo) { hi += 1; lo -= 1; }
-  var pad = (hi - lo) * 0.08;
-  lo -= pad; hi += pad;
-  var t0 = from || pts[0][0], t1 = to || pts[pts.length - 1][0];
-  function x(t) { return ((t - t0) / Math.max(1, t1 - t0) * w).toFixed(1); }
-  function y(v) { return (h - (v - lo) / (hi - lo) * h).toFixed(1); }
-  var lines = bands.map(function (b) {
-    return '<line x1="0" x2="' + w + '" y1="' + y(b.value) + '" y2="' + y(b.value) + '" stroke="var(--sev-' + esc(b.severity) +
-      ')" stroke-width="1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>';
-  }).join('');
-  var path = pts.map(function (p) { return x(p[0]) + ',' + y(p[1]); }).join(' ');
-  return { lo: lo + pad, hi: hi - pad, svg: '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' + lines +
-    '<polyline points="' + path + '" fill="none" stroke="var(--ts-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>' };
-}
-
-// -- scaffold ---------------------------------------------------------------------------
-
-var cardEl = h(
-  '<div class="ts-card ts-proj">' +
-  '  <div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div>' +
-  '    <div class="ts-head-text"><div class="ts-title">Project</div><div class="ts-subtitle"></div></div>' +
-  '    <span class="ts-chip ts-proj-sev" hidden></span></div>' +
-  '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
-  '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
-  '    <label class="ts-proj-diag"><input type="checkbox"> Diagnostic readings</label>' +
-  '    <button type="button" class="ts-btn">Refresh</button></div>' +
-  '</div>');
-root.appendChild(cardEl);
-var bodyEl = cardEl.querySelector('.ts-body');
-var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
-var diagBox = cardEl.querySelector('.ts-proj-diag input');
-
-function fail(text) {
-  bodyEl.innerHTML = '';
-  bodyEl.appendChild(h('<div class="ts-empty"></div>')).textContent = text;
-}
-
-function sevChip(el, severity, noData) {
-  el.hidden = false;
-  if (noData && !severity) {
-    el.className = 'ts-chip ts-proj-sev';
-    el.textContent = 'No data';
-  } else if (severity) {
-    el.className = 'ts-chip ts-proj-sev alarm';
-    el.style.setProperty('--sev', 'var(--sev-' + severity.toLowerCase() + ')');
-    el.textContent = G.severity(severity.toLowerCase()).label;
-  } else {
-    el.className = 'ts-chip ts-proj-sev ok';
-    el.style.removeProperty('--sev');
-    el.textContent = 'OK';
-  }
-}
-
-function openStation(entry) {
-  var sc = ctx.stateController;
-  if (!sc) { return; }
-  sc.openState('station', { entityId: { entityType: 'ASSET', id: entry.station.id }, entityName: entry.station.name }, false);
-}
-
-// -- render -----------------------------------------------------------------------------
-
-function render() {
-  var e = state.entity;
-  var single = e.kind === 'Station';
-  cardEl.querySelector('.ts-title').textContent = single ? 'Station' : e.kind === 'Location' ? 'Location' : 'Project';
-  cardEl.querySelector('.ts-subtitle').textContent = e.name + (single ? '' : ' · ' + state.stations.length +
-    (state.stations.length === 1 ? ' station' : ' stations'));
-  sevChip(cardEl.querySelector('.ts-proj-sev'), worst(state.stations.map(stationSeverity)));
-  cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtDate(state.loadedAt);
-  var hidden = state.stations.reduce(function (n, s) { return n + s.channels.filter(function (c) { return c.diagnostic && !c.alarm; }).length; }, 0);
-  diagBox.parentNode.hidden = !hidden && !state.showDiagnostic;
-
-  bodyEl.innerHTML = '';
-  if (!state.stations.length) { fail('No station in this ' + e.kind.toLowerCase() + ' yet.'); return; }
-  if (single) { renderStation(state.stations[0]); return; }
-
-  var groupEl = null, current;
-  state.stations.forEach(function (entry) {
-    if (!groupEl || entry.location !== current) {
-      current = entry.location;
-      if (current) { bodyEl.appendChild(h('<div class="ts-section-head ts-proj-loc"></div>')).textContent = current; }
-      groupEl = bodyEl.appendChild(h('<div class="ts-proj-grid"></div>'));
-    }
-    groupEl.appendChild(stationCard(entry));
-  });
-}
-
-function stationCard(entry) {
-  var sev = stationSeverity(entry);
-  var el = h('<div class="ts-st" tabindex="0" role="button"><div class="ts-st-head"><span class="ts-st-name"></span>' +
-    '<span class="ts-chip ts-proj-sev"></span></div><div class="ts-row-meta ts-st-when"></div><div class="ts-st-rows"></div></div>');
-  el.setAttribute('data-station', entry.station.name);
-  el.querySelector('.ts-st-name').textContent = entry.station.name;
-  sevChip(el.querySelector('.ts-proj-sev'), sev, !entry.lastTs);
-  el.querySelector('.ts-st-when').textContent = entry.lastTs ? 'Last reading ' + ago(entry.lastTs) : 'No reading yet';
-  var rows = el.querySelector('.ts-st-rows');
-  var list = shown(entry);
-  if (!list.length) { rows.appendChild(h('<div class="ts-empty">No channel mapped yet.</div>')); }
-  list.forEach(function (c) {
-    var d = display(c);
-    var row = h('<div class="ts-st-row"><span class="ts-st-label"></span><span class="ts-st-spark"></span>' +
-      '<span class="ts-st-value"><b></b> <small></small></span></div>');
-    row.setAttribute('data-channel', c.key);
-    if (c.alarm) { row.classList.add('alarm'); row.style.setProperty('--sev', 'var(--sev-' + c.alarm.toLowerCase() + ')'); }
-    row.querySelector('.ts-st-label').textContent = c.label;
-    row.querySelector('b').textContent = d.text;
-    row.querySelector('small').textContent = d.unit;
-    var p = plot(c.history, 100, 24, [], Date.now() - TREND_MS, Date.now());
-    if (p) { row.querySelector('.ts-st-spark').innerHTML = p.svg; }
-    rows.appendChild(row);
-  });
-  entry.alarms.forEach(function (a) {
-    var row = h('<div class="ts-st-other"></div>');
-    row.style.setProperty('--sev', 'var(--sev-' + a.severity.toLowerCase() + ')');
-    row.textContent = otherAlarmText(entry, a);
-    rows.appendChild(row);
-  });
-  el.addEventListener('click', function () { openStation(entry); });
-  el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { openStation(entry); } });
+function chip(status) {
+  var el = h('<span class="ts-chip ts-proj-sev"></span>');
+  el.style.setProperty('--c', status.color);
+  el.textContent = status.label;
   return el;
 }
 
-function renderStation(entry) {
-  if (entry.alarms.length) {
-    var box = bodyEl.appendChild(h('<div class="ts-section"><div class="ts-section-head">Station alarms</div></div>'));
-    entry.alarms.forEach(function (a) {
-      var row = h('<div class="ts-st-other"></div>');
-      row.style.setProperty('--sev', 'var(--sev-' + a.severity.toLowerCase() + ')');
-      row.textContent = otherAlarmText(entry, a) + ' · since ' + fmtDate(a.startTs || a.createdTime);
-      box.appendChild(row);
-    });
-  }
-  var list = shown(entry);
-  if (!list.length) { bodyEl.appendChild(h('<div class="ts-empty">No channel mapped yet.</div>')); return; }
-  var grid = bodyEl.appendChild(h('<div class="ts-proj-charts"></div>'));
-  var to = Date.now(), from = to - CHART_MS;
-  list.forEach(function (c) {
-    var d = display(c);
-    var el = h('<div class="ts-chart"><div class="ts-chart-head"><span class="ts-st-label"></span>' +
-      '<span class="ts-st-value"><b></b> <small></small></span></div><div class="ts-chart-body"><div class="ts-chart-y"></div>' +
-      '<div class="ts-chart-plot"></div></div><div class="ts-chart-x"><span></span><span></span></div></div>');
-    el.setAttribute('data-channel', c.key);
-    if (c.alarm) { el.classList.add('alarm'); el.style.setProperty('--sev', 'var(--sev-' + c.alarm.toLowerCase() + ')'); }
-    el.querySelector('.ts-st-label').textContent = c.label;
-    el.querySelector('b').textContent = d.text;
-    el.querySelector('small').textContent = d.unit + (c.latest ? ' · ' + ago(c.latest.ts) : '');
-    var p = plot(c.history, 300, 90, c.bands, from, to);
-    if (p) {
-      el.querySelector('.ts-chart-plot').innerHTML = p.svg;
-      el.querySelector('.ts-chart-y').innerHTML = '<span>' + esc(fmtNumber(p.hi)) + '</span><span>' + esc(fmtNumber(p.lo)) + '</span>';
-      var x = el.querySelectorAll('.ts-chart-x span');
-      x[0].textContent = fmtDate(from);
-      x[1].textContent = fmtDate(to);
-    } else {
-      el.querySelector('.ts-chart-plot').appendChild(h('<div class="ts-empty">Not enough readings in the last 7 days.</div>'));
-    }
-    grid.appendChild(el);
+// -- scaffold ----------------------------------------------------------------------------
+
+var cardEl = h(
+  '<div class="ts-card ts-proj">' +
+  '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
+  '    <div class="ts-head-text"><div class="ts-title">Project</div><div class="ts-subtitle"></div></div>' +
+  '    <span class="ts-proj-worst"></span>' +
+  '    <button type="button" class="ts-btn ts-proj-edit" hidden>Edit map</button>' +
+  '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Project settings">' + ICON_GEAR + '</button></div>' +
+  '  <div class="ts-proj-banners"></div>' +
+  '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list"><div class="ts-loading">Loading…</div></div></div>' +
+  '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
+  '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
+  '</div>');
+root.appendChild(cardEl);
+var mapEl = cardEl.querySelector('.ts-proj-map');
+var listEl = cardEl.querySelector('.ts-proj-list');
+var bannersEl = cardEl.querySelector('.ts-proj-banners');
+var editBtn = cardEl.querySelector('.ts-proj-edit');
+var gearBtn = cardEl.querySelector('.ts-proj-gear');
+var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
+
+new ResizeObserver(function () {
+  cardEl.classList.toggle('narrow', cardEl.clientWidth < 720);
+  if (map) { map.invalidateSize(); }
+}).observe(cardEl);
+
+function fail(text) {
+  listEl.innerHTML = '';
+  listEl.appendChild(h('<div class="ts-empty"></div>')).textContent = text;
+}
+
+// -- map ---------------------------------------------------------------------------------
+
+var map = null, markerLayer = null, areaLayer = null, markers = {}, fitted = false;
+
+function initMap() {
+  var L = window.L;
+  map = L.map(mapEl, { zoomControl: true, attributionControl: true }).setView([46.8, 8.2], 7);
+  var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
+  var swiss = L.tileLayer(SWISSTOPO + 'pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg',
+    { maxZoom: 19, attribution: '&copy; swisstopo' });
+  var aerial = L.tileLayer(SWISSTOPO + 'swissimage/default/current/3857/{z}/{x}/{y}.jpeg',
+    { maxZoom: 20, attribution: '&copy; swisstopo' });
+  osm.addTo(map);
+  L.control.layers({ 'Map': osm, 'Swiss map': swiss, 'Aerial': aerial }, null, { position: 'topright' }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+  map.pm.setGlobalOptions({ allowSelfIntersection: false });
+  map.on('click', onMapClick);
+  map.on('pm:create', function (e) {
+    if (areaLayer) { map.removeLayer(areaLayer); }
+    areaLayer = e.layer;
+    watchArea();
+    saveArea();
   });
 }
 
-// -- load -------------------------------------------------------------------------------
+function drawArea() {
+  var L = window.L;
+  var points = parseJson(state.projectAttrs.perimeter);
+  if (areaLayer) { map.removeLayer(areaLayer); areaLayer = null; }
+  if (Array.isArray(points) && points.length >= 3) {
+    areaLayer = L.polygon(points, { color: '#0277b7', weight: 2, fillOpacity: 0.06 }).addTo(map);
+    watchArea();
+  }
+}
+
+function watchArea() {
+  areaLayer.setStyle({ color: '#0277b7', weight: 2, fillOpacity: 0.06 });
+  areaLayer.on('pm:edit', saveArea);
+  areaLayer.on('pm:remove', function () { areaLayer = null; saveArea(); });
+}
+
+function saveArea() {
+  var e = state.entity;
+  var write = areaLayer
+    ? tb.saveAttrs(e, { perimeter: JSON.stringify(areaLayer.getLatLngs()[0].map(function (p) { return [p.lat, p.lng]; })) })
+    : tb.deleteAttrs(e, ['perimeter']);
+  write.then(function () { ui.toast(areaLayer ? 'Project area saved' : 'Project area removed'); })
+    .catch(function (err) { ui.toast('Project area not saved: ' + errText(err), 'error'); });
+}
+
+function drawMarkers() {
+  var L = window.L;
+  markerLayer.clearLayers();
+  markers = {};
+  var bounds = [];
+  state.locations.forEach(function (loc) {
+    if (!loc.latLng) { return; }
+    var here = stationsAt(loc.id), worst = worstOf(here);
+    var icon = L.divIcon({ className: 'ts-pin-wrap', iconSize: [26, 26], iconAnchor: [13, 13],
+      html: '<span class="ts-pin" style="--c:' + worst.color + '"><b>' + here.length + '</b></span>' });
+    var m = L.marker(loc.latLng, { icon: icon, draggable: state.editMap, keyboard: true, title: loc.name, pmIgnore: true }).addTo(markerLayer);
+    m.bindTooltip(esc(loc.name) + ' · ' + here.length + (here.length === 1 ? ' station' : ' stations') + ' · ' + esc(worst.label), { direction: 'top', offset: [0, -12] });
+    m.on('click', function (ev) {
+      L.DomEvent.stopPropagation(ev);
+      state.filter = state.filter === loc.id ? null : loc.id;
+      renderList();
+      drawMarkers();
+    });
+    m.on('dragend', function () {
+      var p = m.getLatLng();
+      savePosition(loc, [p.lat, p.lng]);
+    });
+    m.on('add', function () { dropTarget(m.getElement(), loc.id); });
+    if (m.getElement()) { dropTarget(m.getElement(), loc.id); }
+    if (state.filter === loc.id) { m.getElement() && m.getElement().classList.add('selected'); }
+    markers[loc.id] = m;
+    bounds.push(loc.latLng);
+  });
+  if (areaLayer) { bounds = bounds.concat(areaLayer.getLatLngs()[0].map(function (p) { return [p.lat, p.lng]; })); }
+  if (!fitted && bounds.length) {
+    fitted = true;
+    if (bounds.length === 1) { map.setView(bounds[0], 15); } else { map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 }); }
+  }
+}
+
+function highlight(locationId, on) {
+  var m = markers[locationId];
+  if (m && m.getElement()) { m.getElement().classList.toggle('hover', on); }
+}
+
+function setEditMap(on) {
+  state.editMap = on;
+  editBtn.textContent = on ? 'Done' : 'Edit map';
+  editBtn.classList.toggle('primary', on);
+  cardEl.classList.toggle('editing', on);
+  state.placing = null;
+  if (on) {
+    map.pm.addControls({ position: 'topleft', drawMarker: false, drawCircleMarker: false, drawPolyline: false,
+      drawRectangle: false, drawCircle: false, drawText: false, cutPolygon: false, rotateMode: false,
+      dragMode: false, drawPolygon: true, editMode: true, removalMode: true });
+    ui.toast('Click the map to add a location; drag a pin to move it; drag a station onto a location');
+  } else {
+    map.pm.disableDraw();
+    map.pm.disableGlobalEditMode();
+    map.pm.disableGlobalRemovalMode();
+    map.pm.removeControls();
+  }
+  drawMarkers();
+  renderList();
+}
+
+function onMapClick(ev) {
+  if (!state.editMap || map.pm.globalDrawModeEnabled() || map.pm.globalEditModeEnabled() || map.pm.globalRemovalModeEnabled()) { return; }
+  var latLng = [ev.latlng.lat, ev.latlng.lng];
+  if (state.placing) {
+    var loc = locationById(state.placing);
+    state.placing = null;
+    cardEl.classList.remove('placing');
+    savePosition(loc, latLng);
+    return;
+  }
+  newLocationPopup(ev.latlng);
+}
+
+function newLocationPopup(latlng) {
+  var form = h('<form class="ts-proj-newloc"><div class="ts-field-label">New location here</div>' +
+    '<input class="ts-input" placeholder="Location name" required><div class="ts-confirm-actions">' +
+    '<button type="submit" class="ts-btn primary">Create</button></div></form>');
+  var popup = window.L.popup({ closeButton: true, minWidth: 220 }).setLatLng(latlng).setContent(form).openOn(map);
+  var input = form.querySelector('input');
+  setTimeout(function () { input.focus(); }, 0);
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var name = input.value.trim();
+    if (!name) { return; }
+    form.querySelector('button').disabled = true;
+    createLocation(name, [latlng.lat, latlng.lng]).then(function () {
+      map.closePopup(popup);
+    }).catch(function (err) {
+      form.querySelector('button').disabled = false;
+      ui.toast('Location not created: ' + errText(err), 'error');
+    });
+  });
+}
+
+function createLocation(name, latLng) {
+  var owner = state.owner;
+  var body = { name: name, type: 'Location' };
+  if (owner.entityType === 'CUSTOMER') { body.customerId = owner; }
+  return tb.post('/api/asset', body).then(function (asset) {
+    return tb.post('/api/relation', { from: { entityType: 'ASSET', id: state.entity.id }, to: asset.id, type: 'Contains', typeGroup: 'COMMON' })
+      .then(function () { return tb.saveAttrs({ entityType: 'ASSET', id: asset.id.id }, { latitude: latLng[0], longitude: latLng[1] }); });
+  }).then(function () {
+    ui.toast('Location "' + name + '" created');
+    return refresh();
+  });
+}
+
+function savePosition(loc, latLng) {
+  tb.saveAttrs(loc.entity, { latitude: latLng[0], longitude: latLng[1] }).then(function () {
+    loc.latLng = latLng;
+    ui.toast(loc.name + ' placed');
+    drawMarkers();
+    renderList();
+  }).catch(function (err) { ui.toast('Position not saved: ' + errText(err), 'error'); drawMarkers(); });
+}
+
+// -- moving a station --------------------------------------------------------------------
+
+var dragged = null;
+
+function dropTarget(el, locationId) {
+  if (!el || el.getAttribute('data-drop')) { return; }
+  el.setAttribute('data-drop', '1');
+  el.addEventListener('dragover', function (e) { if (dragged) { e.preventDefault(); el.classList.add('drop'); } });
+  el.addEventListener('dragleave', function () { el.classList.remove('drop'); });
+  el.addEventListener('drop', function (e) {
+    e.preventDefault();
+    el.classList.remove('drop');
+    if (dragged) { moveStation(dragged, locationId); }
+  });
+}
+
+function moveStation(entry, locationId) {
+  if (entry.locationId === locationId) { return; }
+  var target = locationId === NO_LOCATION ? state.entity : locationById(locationId).entity;
+  var where = locationId === NO_LOCATION ? 'directly under ' + esc(state.entity.name) : 'to ' + esc(target.name);
+  ui.confirm('Move <b>' + esc(entry.station.name) + '</b> ' + where + '? It then inherits the settings of its new place: thresholds, units, texts and contacts.', 'Move')
+    .then(function (ok) {
+      if (!ok) { return null; }
+      var s = entry.station;
+      return tb.io.fetchParent(s).then(function (parent) {
+        return parent ? tb.del('/api/relation', { fromId: parent.id, fromType: 'ASSET', relationType: 'Contains',
+          relationTypeGroup: 'COMMON', toId: s.id, toType: 'ASSET' }) : null;
+      }).then(function () {
+        return tb.post('/api/relation', { from: { entityType: 'ASSET', id: target.id }, to: { entityType: 'ASSET', id: s.id },
+          type: 'Contains', typeGroup: 'COMMON' });
+      }).then(function () {
+        return tb.resolveStations([s]);
+      }).then(function () {
+        ui.toast(s.name + ' moved');
+        return refresh();
+      });
+    }).catch(function (err) { ui.toast('Station not moved: ' + errText(err), 'error'); });
+}
+
+// -- list --------------------------------------------------------------------------------
+
+function renderHeader() {
+  var e = state.entity, single = e.kind === 'Station';
+  cardEl.querySelector('.ts-title').textContent = single ? 'Station' : e.kind === 'Location' ? 'Location' : 'Project';
+  cardEl.querySelector('.ts-subtitle').textContent = e.name + (single ? '' : ' · ' + state.stations.length +
+    (state.stations.length === 1 ? ' station' : ' stations'));
+  var worstEl = cardEl.querySelector('.ts-proj-worst');
+  worstEl.innerHTML = '';
+  if (state.stations.length) { worstEl.appendChild(chip(worstOf(state.stations))); }
+  cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
+  editBtn.hidden = single || !state.canEdit || !map;
+  gearBtn.hidden = single || !state.canEdit || !opts.configDashboardId;
+}
+
+function renderList() {
+  listEl.innerHTML = '';
+  if (state.entity.kind === 'Station') { renderSingle(state.stations[0]); return; }
+  if (!state.stations.length && !state.locations.length) {
+    fail('No station in this ' + state.entity.kind.toLowerCase() + ' yet.' + (state.canEdit && map ? ' Use Edit map to add a location.' : ''));
+    return;
+  }
+  if (state.filter) {
+    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every location">' + ICON.close + '</button></div>');
+    bar.querySelector('span').textContent = 'Showing ' + locationById(state.filter).name;
+    bar.querySelector('button').addEventListener('click', function () { state.filter = null; renderList(); drawMarkers(); });
+    listEl.appendChild(bar);
+  }
+  var groups = state.locations.map(function (l) { return { id: l.id, name: l.name, loc: l }; });
+  groups.push({ id: NO_LOCATION, name: 'No location', loc: null });
+  groups.forEach(function (g) {
+    if (state.filter && state.filter !== g.id) { return; }
+    var here = stationsAt(g.id);
+    if (!g.loc && !here.length && !state.editMap) { return; }
+    listEl.appendChild(groupHead(g, here));
+    here.forEach(function (entry) { listEl.appendChild(stationRow(entry)); });
+    if (!here.length) { listEl.appendChild(h('<div class="ts-row-meta ts-proj-none">No station here yet.</div>')); }
+  });
+}
+
+function groupHead(g, here) {
+  var el = h('<div class="ts-proj-group"><span class="ts-proj-group-name"></span><span class="ts-count"></span>' +
+    '<span class="ts-spacer"></span></div>');
+  el.querySelector('.ts-proj-group-name').textContent = g.name;
+  el.querySelector('.ts-count').textContent = here.length;
+  if (g.loc && !g.loc.latLng) {
+    el.appendChild(h('<span class="ts-row-meta">not on the map</span>'));
+  }
+  if (g.loc && state.editMap) {
+    var place = h('<button type="button" class="ts-btn ghost">' + (g.loc.latLng ? 'Move pin' : 'Place') + '</button>');
+    place.addEventListener('click', function () {
+      state.placing = g.id;
+      cardEl.classList.add('placing');
+      ui.toast('Click the map where ' + g.loc.name + ' is');
+    });
+    el.appendChild(place);
+  }
+  if (here.length) { el.appendChild(chip(worstOf(here))); }
+  if (g.loc) {
+    el.addEventListener('mouseenter', function () { highlight(g.id, true); });
+    el.addEventListener('mouseleave', function () { highlight(g.id, false); });
+  }
+  if (state.canEdit) { dropTarget(el, g.id); }
+  return el;
+}
+
+function lastReading(entry) {
+  return entry.lastTs ? 'Last reading ' + ago(entry.lastTs) : 'No reading yet';
+}
+
+function publicProblem(entry) {
+  var r = state.publicReport;
+  if (!r || !r.token) { return null; }
+  if (r.denied[entry.station.id]) { return 'A public link cannot show this station: it is in no public group of its owner.'; }
+  if (entry.dashboardId && r.denied[entry.dashboardId]) { return 'A public link cannot open this station\'s dashboard: it is not shared with the public users.'; }
+  return null;
+}
+
+function stationRow(entry) {
+  var el = h('<div class="ts-proj-st" tabindex="0"><div class="ts-proj-st-main"><div class="ts-proj-st-name"></div>' +
+    '<div class="ts-row-meta"></div></div><div class="ts-proj-st-side"></div></div>');
+  el.setAttribute('data-station', entry.station.name);
+  el.querySelector('.ts-proj-st-name').textContent = entry.station.name;
+  el.querySelector('.ts-row-meta').textContent = lastReading(entry);
+  var side = el.querySelector('.ts-proj-st-side');
+  var problem = state.canEdit && publicProblem(entry);
+  if (problem) {
+    var warn = h('<span class="ts-proj-warn" tabindex="0">' + ICON_WARN + '</span>');
+    warn.setAttribute('data-tip', problem);
+    side.appendChild(warn);
+  }
+  side.appendChild(chip(entry.status));
+  if (entry.dashboardId) {
+    el.classList.add('linked');
+    el.addEventListener('click', function (e) { if (!e.target.closest('button')) { openDashboard(entry.dashboardId, 'station', entry.station); } });
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { openDashboard(entry.dashboardId, 'station', entry.station); } });
+  } else {
+    el.querySelector('.ts-row-meta').textContent += ' · No dashboard yet';
+  }
+  if (state.canEdit) {
+    var assign = h('<button type="button" class="ts-icon-btn" title="' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '">' +
+      (entry.dashboardId ? ICON.edit : ICON.plus) + '</button>');
+    assign.addEventListener('click', function () { openAssign(entry); });
+    side.appendChild(assign);
+    el.draggable = true;
+    el.addEventListener('dragstart', function (e) {
+      dragged = entry;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', entry.station.name);
+      cardEl.classList.add('dragging');
+    });
+    el.addEventListener('dragend', function () { dragged = null; cardEl.classList.remove('dragging'); });
+  }
+  el.addEventListener('mouseenter', function () { highlight(entry.locationId, true); });
+  el.addEventListener('mouseleave', function () { highlight(entry.locationId, false); });
+  return el;
+}
+
+function renderSingle(entry) {
+  var box = h('<div class="ts-proj-single"><div class="ts-proj-single-head"><span class="ts-proj-st-name"></span></div>' +
+    '<div class="ts-row-meta"></div><div class="ts-proj-single-body"></div></div>');
+  box.querySelector('.ts-proj-st-name').textContent = entry.station.name;
+  box.querySelector('.ts-proj-single-head').appendChild(chip(entry.status));
+  box.querySelector('.ts-row-meta').textContent = lastReading(entry);
+  var body = box.querySelector('.ts-proj-single-body');
+  if (entry.dashboardId) {
+    var open = h('<button type="button" class="ts-btn primary">Open the station dashboard ' + ICON.arrow + '</button>');
+    open.addEventListener('click', function () { openDashboard(entry.dashboardId, 'station', entry.station); });
+    body.appendChild(open);
+  } else {
+    body.appendChild(h('<div class="ts-empty">No dashboard yet.</div>'));
+  }
+  if (state.canEdit) {
+    var assign = h('<button type="button" class="ts-btn">' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '</button>');
+    assign.addEventListener('click', function () { openAssign(entry); });
+    body.appendChild(assign);
+  }
+  var problem = state.canEdit && publicProblem(entry);
+  if (problem) { body.appendChild(banner(problem)); }
+  listEl.appendChild(box);
+}
+
+function banner(text) {
+  var el = h('<div class="ts-banner warn">' + ICON_WARN + '<span></span></div>');
+  el.querySelector('span').textContent = text;
+  return el;
+}
+
+function renderBanners() {
+  bannersEl.innerHTML = '';
+  var r = state.publicReport;
+  if (!state.canEdit || !r) { return; }
+  if (!r.token) { bannersEl.appendChild(banner(r.reason)); return; }
+  var lines = [];
+  if (r.denied[state.entity.id]) { lines.push('this ' + state.entity.kind.toLowerCase() + ' is in no public group'); }
+  var locs = state.locations.filter(function (l) { return r.denied[l.id]; });
+  if (locs.length) { lines.push(locs.length + (locs.length === 1 ? ' location is' : ' locations are') + ' in no public group'); }
+  var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
+  if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station is' : ' stations are') + ' in no public group'); }
+  var dash = state.stations.filter(function (s) { return s.dashboardId && r.denied[s.dashboardId]; });
+  if (dash.length) { lines.push(dash.length + (dash.length === 1 ? ' station dashboard is' : ' station dashboards are') + ' not shared with the public users'); }
+  if (opts.projectDashboardId && r.denied[opts.projectDashboardId]) { lines.push('the Project dashboard is not shared with the public users'); }
+  if (lines.length) { bannersEl.appendChild(banner('A public link cannot show everything: ' + lines.join('; ') + '.')); }
+}
+
+function render() {
+  renderHeader();
+  renderBanners();
+  renderList();
+  if (map) { drawArea(); drawMarkers(); }
+}
+
+// -- public access -----------------------------------------------------------------------
+
+/** Sign in as the owner's public customer and try every read a public link needs
+ * (FRONTEND.md *Public links*). `denied` maps an entity id to true. */
+function checkPublic() {
+  var owner = state.owner;
+  return tb.get('/api/user/customers', { pageSize: '1000', page: '0' }).then(function (page) {
+    var pub = ((page && page.data) || []).filter(function (c) {
+      var isPub = (c.additionalInfo || {}).isPublic;
+      var parent = c.parentCustomerId && c.parentCustomerId.id;
+      return isPub && (owner.entityType === 'CUSTOMER' ? parent === owner.id : !parent);
+    })[0];
+    if (!pub) { return { token: null, reason: 'No public link can show this project: its owner has made nothing public yet.' }; }
+    return fetch('/api/auth/login/public', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicId: pub.id.id }) }).then(function (r) { return r.json(); }).then(function (auth) {
+      var headers = { 'X-Authorization': 'Bearer ' + auth.token };
+      var checks = [['asset', state.entity.id]]
+        .concat(state.locations.map(function (l) { return ['asset', l.id]; }))
+        .concat(state.stations.map(function (s) { return ['asset', s.station.id]; }))
+        .concat(state.stations.filter(function (s) { return s.dashboardId; }).map(function (s) { return ['dashboard', s.dashboardId]; }));
+      if (opts.projectDashboardId) { checks.push(['dashboard', opts.projectDashboardId]); }
+      var denied = {};
+      return Promise.all(checks.map(function (c) {
+        return fetch('/api/' + c[0] + '/' + c[1], { headers: headers }).then(function (r) { if (!r.ok) { denied[c[1]] = true; } });
+      })).then(function () { return { token: auth.token, denied: denied }; });
+    });
+  }).catch(function () { return null; });
+}
+
+function refreshPublic() {
+  if (!state.canEdit) { return Promise.resolve(); }
+  return checkPublic().then(function (report) {
+    state.publicReport = report;
+    renderBanners();
+    renderList();
+  });
+}
+
+// -- templates ---------------------------------------------------------------------------
+
+/** The channels a template's widgets bind on the station its state carries. */
+function requiredChannels(dashboard) {
+  var conf = dashboard.configuration || {};
+  var aliases = conf.entityAliases || {};
+  var stateAliases = Object.keys(aliases).filter(function (k) { return (aliases[k].filter || {}).type === 'stateEntity'; });
+  var keys = {};
+  Object.keys(conf.widgets || {}).forEach(function (wid) {
+    ((conf.widgets[wid].config || {}).datasources || []).forEach(function (ds) {
+      if (stateAliases.indexOf(ds.entityAliasId) < 0) { return; }
+      (ds.dataKeys || []).forEach(function (k) { if (k.type === 'timeseries') { keys[k.name] = true; } });
+    });
+  });
+  return Object.keys(keys);
+}
+
+/** Every template the user can read: the tenant's and the user's own. */
+function loadTemplates() {
+  if (state.templates) { return Promise.resolve(state.templates); }
+  return tb.get('/api/entityGroups/DASHBOARD').then(function (groups) {
+    var mine = (groups || []).filter(function (g) { return g.name === TEMPLATE_GROUP; });
+    return Promise.all(mine.map(function (g) {
+      return tb.get('/api/entityGroup/' + g.id.id + '/dashboards', { pageSize: '200', page: '0' }).then(function (page) {
+        return Promise.all(((page && page.data) || []).map(function (d) {
+          return tb.get('/api/dashboard/' + d.id.id).then(function (full) {
+            return { id: d.id.id, title: d.title, tenant: g.ownerId.entityType === 'TENANT', channels: requiredChannels(full) };
+          });
+        }));
+      });
+    }));
+  }).then(function (lists) {
+    state.templates = [].concat.apply([], lists);
+    return state.templates;
+  });
+}
+
+function stationChannels(entry) {
+  return Object.keys(resolver.channelsFromAttrs(entry.attrs, state.names));
+}
+
+function fitOf(template, have) {
+  var missing = template.channels.filter(function (c) { return have.indexOf(c) < 0; });
+  return { missing: missing, fits: template.channels.length > 0 && !missing.length };
+}
+
+function openAssign(entry) {
+  var dr = ui.openDrawer('Station dashboard', esc(entry.station.name));
+  dr.body.appendChild(h('<div class="ts-loading">Loading the templates…</div>'));
+  loadTemplates().then(function (templates) {
+    dr.body.innerHTML = '';
+    var have = stationChannels(entry);
+    var rows = templates.map(function (t) { return { t: t, fit: fitOf(t, have) }; }).sort(function (a, b) {
+      return (b.fit.fits - a.fit.fits) || (a.fit.missing.length - b.fit.missing.length) || a.t.title.localeCompare(b.t.title);
+    });
+    dr.body.appendChild(h('<div class="ts-row-meta">A template fits when the station carries every measurement it shows.</div>'));
+    if (!rows.length) { dr.body.appendChild(h('<div class="ts-empty">No template yet.</div>')); }
+    rows.forEach(function (r) {
+      var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
+        '<div class="ts-opt-side"></div></div>');
+      if (r.t.id === entry.dashboardId) { o.classList.add('selected'); }
+      o.querySelector('.ts-opt-label').textContent = r.t.title;
+      o.querySelector('.ts-opt-desc').textContent = r.fit.fits ? 'Shows ' + r.t.channels.join(', ')
+        : r.t.channels.length ? 'Misses ' + r.fit.missing.join(', ') : 'Binds no measurement';
+      var side = o.querySelector('.ts-opt-side');
+      side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
+      if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
+      o.addEventListener('click', function () { assign(entry, r.t, dr); });
+      o.addEventListener('keydown', function (e) { if (e.key === 'Enter') { assign(entry, r.t, dr); } });
+      dr.body.appendChild(o);
+    });
+    dr.foot.hidden = false;
+    dr.foot.innerHTML = '';
+    if (entry.dashboardId) {
+      var unlink = h('<button type="button" class="ts-btn">Remove the link</button>');
+      unlink.addEventListener('click', function () {
+        tb.deleteAttrs(entry.station, [DASHBOARD_KEY]).then(function () {
+          ui.closeDrawer();
+          ui.toast('Dashboard removed from ' + entry.station.name);
+          return refresh();
+        }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+      });
+      dr.foot.appendChild(unlink);
+    }
+    dr.foot.appendChild(h('<span class="ts-spacer"></span>'));
+    if (state.canCreateDashboards) {
+      var create = h('<button type="button" class="ts-btn primary">' + ICON.plus + ' Create template</button>');
+      create.addEventListener('click', function () { openCreate(entry); });
+      dr.foot.appendChild(create);
+    }
+  }).catch(function (err) {
+    dr.body.innerHTML = '';
+    dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent = 'Could not load the templates: ' + errText(err);
+  });
+}
+
+function assign(entry, template, dr) {
+  tb.saveAttrs(entry.station, { 'config.stationDashboard': template.id }).then(function () {
+    ui.closeDrawer();
+    ui.toast(entry.station.name + ' opens ' + template.title);
+    return refresh();
+  }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+}
+
+function channelList(entry) {
+  return stationChannels(entry).filter(function (c) {
+    return !(state.names[resolver.splitChannelKey(c).name] || {}).diagnostic;
+  }).map(function (c) {
+    var base = state.names[resolver.splitChannelKey(c).name] || {};
+    return { key: c, label: entry.attrs['effective.' + c + '.label'] || base.label || c, unit: entry.attrs['effective.' + c + '.unit'] || '' };
+  });
+}
+
+function openCreate(entry) {
+  var channels = channelList(entry);
+  var dr = ui.openDrawer('Create template', esc(entry.station.name));
+  var form = h('<div><div class="ts-field"><label class="ts-field-label">Name</label><div class="ts-proj-name">' +
+    '<span class="ts-row-meta">Station · </span><input class="ts-input wide" placeholder="River level"></div>' +
+    '<div class="ts-field-hint">What kind of station it shows, so the next station of that kind can reuse it.</div></div>' +
+    '<div class="ts-section-head">A value and a chart for each of</div><div class="ts-proj-chans"></div></div>');
+  var input = form.querySelector('input');
+  var list = form.querySelector('.ts-proj-chans');
+  channels.forEach(function (c) {
+    var row = h('<div class="ts-proj-chan"><span></span><span class="ts-mono"></span></div>');
+    row.firstChild.textContent = c.label + (c.unit ? ' (' + c.unit + ')' : '');
+    row.lastChild.textContent = c.key;
+    list.appendChild(row);
+  });
+  if (!channels.length) { list.appendChild(h('<div class="ts-empty">The station maps no measurement yet.</div>')); }
+  form.appendChild(h('<div class="ts-row-meta">The template opens in ThingsBoard afterwards, to arrange as you like. ' +
+    (state.me.authority === 'TENANT_ADMIN' ? 'It is saved with the in-terra templates, shared with every customer.' : 'Only your organisation sees it.') + '</div>'));
+  dr.body.appendChild(form);
+  dr.onBack(function () { openAssign(entry); });
+  var go = ui.drawerActions(dr, 'Create');
+  go.disabled = !channels.length;
+  setTimeout(function () { input.focus(); }, 0);
+  go.addEventListener('click', function () {
+    var use = input.value.trim();
+    if (!use) { input.focus(); return; }
+    go.disabled = true;
+    createTemplate(entry, use, channels).then(function (dashboardId) {
+      ui.closeDrawer();
+      openDashboard(dashboardId, 'station', entry.station);
+    }).catch(function (err) {
+      go.disabled = false;
+      ui.toast('Template not created: ' + errText(err), 'error');
+    });
+  });
+}
+
+/** The user's own template group — the tenant's for a tenant admin. */
+function ownTemplateGroup() {
+  var me = state.me;
+  var owner = me.authority === 'TENANT_ADMIN' ? { entityType: 'TENANT', id: me.tenantId.id } : { entityType: 'CUSTOMER', id: me.customerId.id };
+  return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(TEMPLATE_GROUP))
+    .catch(function () { return tb.post('/api/entityGroup', { type: 'DASHBOARD', name: TEMPLATE_GROUP, ownerId: owner }); });
+}
+
+function jsonText(v) { return JSON.stringify(String(v)).slice(1, -1); }
+
+/** The starter's configuration with its placeholder widgets repeated per channel,
+ * one band of rows each, and its own id replaced by `dashboardId`. */
+function expandStarter(starter, dashboardId, use, channels) {
+  var text = JSON.stringify(starter.configuration).split(starter.id.id).join(dashboardId).split(STARTER_USE).join(jsonText(use));
+  var conf = JSON.parse(text);
+  var placeholders = Object.keys(conf.widgets).filter(function (id) { return JSON.stringify(conf.widgets[id]).indexOf(PLACEHOLDER.channel) >= 0; });
+  var layout = conf.states.station.layouts.main.widgets;
+  var top = Math.min.apply(null, placeholders.map(function (id) { return layout[id].row; }));
+  var band = Math.max.apply(null, placeholders.map(function (id) { return layout[id].row + layout[id].sizeY; })) - top;
+  channels.forEach(function (c, i) {
+    placeholders.forEach(function (id) {
+      var copy = JSON.stringify(conf.widgets[id]).split(PLACEHOLDER.channel).join(jsonText(c.key))
+        .split(PLACEHOLDER.label).join(jsonText(c.label)).split(PLACEHOLDER.unit).join(jsonText(c.unit));
+      var wid = uuid(), widget = JSON.parse(copy);
+      widget.id = wid;
+      conf.widgets[wid] = widget;
+      layout[wid] = Object.assign({}, layout[id], { row: layout[id].row + i * band });
+    });
+  });
+  placeholders.forEach(function (id) { delete conf.widgets[id]; delete layout[id]; });
+  return conf;
+}
+
+function createTemplate(entry, use, channels) {
+  var title = 'Station · ' + use;
+  return Promise.all([
+    tb.get('/api/user/dashboards', { pageSize: '50', page: '0', textSearch: STARTER_TITLE }),
+    ownTemplateGroup()
+  ]).then(function (got) {
+    var info = ((got[0] && got[0].data) || []).filter(function (d) { return d.title === STARTER_TITLE; })[0];
+    if (!info) { throw new Error('the dashboard "' + STARTER_TITLE + '" is not visible to you'); }
+    var group = got[1];
+    return Promise.all([
+      tb.get('/api/dashboard/' + info.id.id),
+      tb.post('/api/dashboard?entityGroupId=' + group.id.id, { title: title, configuration: {} })
+    ]);
+  }).then(function (got) {
+    var created = got[1];
+    created.configuration = expandStarter(got[0], created.id.id, use, channels);
+    return tb.post('/api/dashboard', created);
+  }).then(function (saved) {
+    state.templates = null;
+    return tb.saveAttrs(entry.station, { 'config.stationDashboard': saved.id.id }).then(function () { return saved.id.id; });
+  });
+}
+
+// -- load --------------------------------------------------------------------------------
 
 var timer = null;
 function refresh() {
   if (!root.isConnected && timer) { clearInterval(timer); return Promise.resolve(); }
   refreshBtn.disabled = true;
   return load().then(render).catch(function (err) {
-    ui.toast('Refresh failed: ' + (err && err.message ? err.message : err), 'error');
+    ui.toast('Refresh failed: ' + errText(err), 'error');
   }).then(function () { refreshBtn.disabled = false; });
 }
-refreshBtn.addEventListener('click', refresh);
-diagBox.addEventListener('change', function () { state.showDiagnostic = diagBox.checked; render(); });
+
+refreshBtn.addEventListener('click', function () { refresh().then(refreshPublic); });
+editBtn.addEventListener('click', function () { setEditMap(!state.editMap); });
+gearBtn.addEventListener('click', function () { openDashboard(opts.configDashboardId, 'project', state.entity); });
 
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project, location or station in the widget\'s Data tab.'); return; }
-  return Promise.all([tb.loadEntity(ds), loadNames()]).then(function (got) {
+  return Promise.all([tb.loadEntity(ds), tb.getAsset(ds.entityId), loadNames(), tb.currentUser()]).then(function (got) {
     state.entity = got[0];
-    return load();
-  }).then(function () {
+    state.owner = got[1].ownerId;
+    state.me = got[3] || {};
+    cardEl.classList.toggle('single', state.entity.kind === 'Station');
+    var perms = service('userPermissionsService');
+    state.canCreateDashboards = !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
+    return Promise.all([
+      tb.canWrite(state.entity),
+      state.entity.kind === 'Station' ? null : loadMapLibraries().then(initMap).catch(function (err) {
+        mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);
+      }),
+      load()
+    ]);
+  }).then(function (got) {
+    state.canEdit = got[0] && !state.me.isPublic;
     render();
     timer = setInterval(refresh, REFRESH_MS);
+    return refreshPublic();
   });
-}).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });
+}).catch(function (err) { fail('Could not load: ' + errText(err)); });
 
 };

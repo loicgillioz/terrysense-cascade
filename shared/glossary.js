@@ -15,6 +15,7 @@ var TERMS = {
   measurements: 'Alarm thresholds, display unit and hysteresis, set per measurement.',
   notifications: 'Who receives alarm messages, by SMS and e-mail, and what the messages say.',
   retention: 'How long measured data is kept before it is deleted. A change applies to new data only.',
+  stale: 'A station with no reading for this long shows Stale on the project map and list.',
   debounce: 'How many readings in a row must meet an alarm condition before anyone is notified. The alarm is recorded from the first reading but stays pending until then. Empty or 1 notifies on the first reading.',
   hysteresis: 'An absolute margin, zero or positive, in the measurement unit. The alarm clears only once the value is back past the threshold by this margin, so a value hovering at the limit does not trigger alarms repeatedly.',
   unit: 'The unit shown in dashboards and alarm messages. Leave empty to use the standard unit of the measurement.',

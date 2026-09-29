@@ -59,7 +59,7 @@ var ALARM_TEXT_EVENTS = ['created', 'cleared'];
 // Entity scalars beyond ttlDays (the only one the hot path consumes as a unit —
 // CONFIG_RESOLVER.md §3) and notify.contacts (platform users are expanded to
 // their addresses), which are handled apart.
-var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled']
+var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled', 'staleAfterHours']
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }))
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'emailText.' + e; }));
 var CONTACTS_KEY = 'notify.contacts';
@@ -548,6 +548,7 @@ return {
   effectiveDiff: effectiveDiff,
   affectedStations: affectedStations,
   discoverChannels: discoverChannels,
+  channelsFromAttrs: channelsFromAttrs,
   inheritedValue: inheritedValue
 };
 

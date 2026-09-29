@@ -32,9 +32,10 @@ var SCALARS = [
   { key: 'config.alarmText.cleared', label: 'Message when an alarm ends', section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
   { key: 'config.emailText.cleared', label: 'E-mail when an alarm ends', section: 'notifications', type: 'text', nestedIn: 'config.alarmText.cleared' },
   { key: 'config.language', label: 'Message language', section: 'notifications', type: 'lang' },
-  { key: 'config.ttlDays', label: 'Keep data for', section: 'retention', type: 'days', tip: 'retention' }
+  { key: 'config.ttlDays', label: 'Keep data for', section: 'retention', type: 'days', tip: 'retention' },
+  { key: 'config.staleAfterHours', label: 'Stale after', section: 'reporting', type: 'hours', tip: 'stale' }
 ];
-var SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention']];
+var SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention'], ['reporting', 'Reporting']];
 
 var state = {
   origin: null, own: {}, ancestors: [], names: {}, kinds: {}, channelKinds: {},
@@ -227,7 +228,7 @@ function channelChips(ch, keys, source) {
 function fmtScalar(def, v) {
   if (def.type === 'contacts') { return Array.isArray(v) ? (v.length === 1 ? '1 contact' : v.length + ' contacts') : ''; }
   if (def.type === 'bool') { return v === true || v === 'true' ? 'On' : 'Off'; }
-  if (def.type === 'days') { return esc(v) + ' days'; }
+  if (def.type === 'days' || def.type === 'hours') { return esc(v) + ' ' + def.type; }
   if (def.type === 'lang') { return esc(G.LANGUAGES[v] || v); }
   if (def.type === 'text') { var t = String(v); return '<i>“' + esc(t.slice(0, 38)) + (t.length > 38 ? '…' : '') + '”</i>'; }
   return esc(v);
@@ -353,7 +354,8 @@ function openAdd() {
   var tiles = h('<div class="ts-tiles"></div>');
   [['measurement', ICON.gauge, 'Measurement', 'Alarm thresholds or conditions, unit and hysteresis for one measurement'],
    ['notifications', ICON.bell, 'Notifications', 'Contacts, SMS and e-mail on or off, message wording, language'],
-   ['retention', ICON.archive, 'Data retention', 'How long measured data is kept']].forEach(function (t) {
+   ['retention', ICON.archive, 'Data retention', 'How long measured data is kept'],
+   ['reporting', ICON.info, 'Reporting', 'How long a station may stay silent before it shows Stale']].forEach(function (t) {
     var el = h('<button type="button" class="ts-tile"><span class="ts-tile-icon">' + t[1] + '</span><span><b>' + t[2] + '</b><span>' + t[3] + '</span></span></button>');
     el.addEventListener('click', function () { if (t[0] === 'measurement') { openMeasurementPicker(true); } else { openScalar(t[0], true); } });
     tiles.appendChild(el);
@@ -707,7 +709,7 @@ function conditionEditor(ch, dr, isBool) {
 // -- notifications and retention -------------------------------------------------------
 
 function openScalar(section, fromAdd) {
-  var title = section === 'notifications' ? 'Notifications' : 'Data retention';
+  var title = SECTIONS.filter(function (x) { return x[0] === section; })[0][1];
   var needsUsers = section === 'notifications' && state.users === null;
   var ready = needsUsers
     ? tb.listUsers(state.customerId).then(function (u) { state.users = u; }).catch(function () { state.users = []; })
@@ -796,8 +798,8 @@ function scalarField(d, draft) {
       sel.value = v || 'en';
       sel.addEventListener('change', function () { set(sel.value); });
       ctl.appendChild(sel);
-    } else if (d.type === 'days') {
-      var n = h('<span><input class="ts-input num" type="number" min="1" step="1"> days</span>');
+    } else if (d.type === 'days' || d.type === 'hours') {
+      var n = h('<span><input class="ts-input num" type="number" min="1" step="1"> ' + d.type + '</span>');
       var inp = n.querySelector('input');
       inp.value = v === null ? '' : v;
       inp.addEventListener('input', function () {
