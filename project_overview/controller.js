@@ -3,12 +3,12 @@
  * station with its state and the age of its last reading (EU-1). A station
  * opens its station view, and its charts on its own station dashboard; an
  * editor assigns one, or creates a template for it, and places, renames and
- * deletes locations, and places the project area and stations.
- * Bound to one station, the same widget shows that station alone.
+ * deletes locations, and places the project area and stations. A gear opens
+ * the Settings view of the project or of a location.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
- * `opts`, set by build_project_dashboard.py: `configDashboardId` (the gear
- * link), `projectDashboardId` (its Station view; checked for public access).
+ * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
+ * and Settings views; checked for public access).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
  * Leaflet and Leaflet-Geoman itself.
@@ -43,7 +43,6 @@ var STATUS = {
   ok: { label: 'OK', color: 'var(--ts-ok)', rank: 1 },
   none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
 };
-var ICON_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
 var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
@@ -101,25 +100,7 @@ function loadMapLibraries() {
   })]);
 }
 
-// -- navigation --------------------------------------------------------------------------
-
-/** ThingsBoard's own encoding of the `state` query parameter. */
-function encodeState(states) {
-  return btoa(encodeURIComponent(JSON.stringify(states)).replace(/%([0-9A-F]{2})/g,
-    function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); }));
-}
-
-/** Open view `stateId` of dashboard `dashboardId` on `entity`, above its landing
- * view; with no `stateId`, its landing view. A public link stays public: its
- * route is /dashboard, and it keeps publicId. */
-function openDashboard(dashboardId, stateId, entity) {
-  var isPublic = /^\/dashboard\//.test(window.location.pathname);
-  var params = stateId ? { state: encodeState([{ id: 'default', params: {} },
-    { id: stateId, params: { entityId: { entityType: 'ASSET', id: entity.id }, entityName: entity.name } }]) } : {};
-  var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
-  if (publicId) { params.publicId = publicId; }
-  service('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
-}
+var openDashboard = tb.openDashboard;
 
 // -- data --------------------------------------------------------------------------------
 
@@ -186,7 +167,7 @@ function loadStation(entry) {
 
 function load() {
   var e = state.entity;
-  var tree = e.kind === 'Station' ? Promise.resolve({ locations: [], stations: [{ station: e, locationId: NO_LOCATION }] }) : walkTree(e);
+  var tree = walkTree(e);
   return Promise.all([tree, tb.attrsMap(e)]).then(function (got) {
     state.projectAttrs = got[1];
     return Promise.all([
@@ -241,7 +222,7 @@ var cardEl = h(
   '    <span class="ts-proj-public" tabindex="0" hidden></span><span class="ts-proj-worst"></span>' +
   '    <button type="button" class="ts-btn ts-proj-home" hidden>' + ICON_HOME + ' Project dashboard</button>' +
   '    <button type="button" class="ts-btn ts-proj-edit" hidden>Edit map</button>' +
-  '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Project settings">' + ICON_GEAR + '</button></div>' +
+  '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Settings">' + ICON.gear + '</button></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list"><div class="ts-loading">Loading…</div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
@@ -526,22 +507,21 @@ function moveStation(entry, locationId) {
 // -- list --------------------------------------------------------------------------------
 
 function renderHeader() {
-  var e = state.entity, single = e.kind === 'Station';
-  cardEl.querySelector('.ts-title').textContent = single ? 'Station' : e.kind === 'Location' ? 'Location' : 'Project';
-  cardEl.querySelector('.ts-subtitle').textContent = e.name + (single ? '' : ' · ' + state.stations.length +
+  var e = state.entity;
+  cardEl.querySelector('.ts-title').textContent = e.kind === 'Location' ? 'Location' : 'Project';
+  cardEl.querySelector('.ts-subtitle').textContent = e.name + (' · ' + state.stations.length +
     (state.stations.length === 1 ? ' station' : ' stations'));
   var worstEl = cardEl.querySelector('.ts-proj-worst');
   worstEl.innerHTML = '';
   if (state.stations.length) { worstEl.appendChild(chip(worstOf(state.stations))); }
   cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
-  editBtn.hidden = single || !state.canEdit || !map;
-  gearBtn.hidden = single || !state.canEdit || !opts.configDashboardId;
-  homeBtn.hidden = single || !state.projectAttrs[HOME_KEY];
+  editBtn.hidden = !state.canEdit || !map;
+  gearBtn.hidden = tb.isPublicView();
+  homeBtn.hidden = !state.projectAttrs[HOME_KEY];
 }
 
 function renderList() {
   listEl.innerHTML = '';
-  if (state.entity.kind === 'Station') { renderSingle(state.stations[0]); return; }
   if (!state.stations.length && !state.locations.length) {
     fail('No station in this ' + state.entity.kind.toLowerCase() + ' yet.' + (state.canEdit && map ? ' Use Edit map to add a location.' : ''));
     return;
@@ -593,6 +573,11 @@ function groupHead(g, here) {
     el.appendChild(remove);
   }
   if (here.length) { el.appendChild(chip(worstOf(here))); }
+  if (g.loc && !tb.isPublicView()) {
+    var gear = h('<button type="button" class="ts-icon-btn" data-a="settings" title="Settings of this location">' + ICON.gear + '</button>');
+    gear.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'settings', g.loc); });
+    el.appendChild(gear);
+  }
   if (g.loc) {
     el.addEventListener('mouseenter', function () { highlight(g.id, true); });
     el.addEventListener('mouseleave', function () { highlight(g.id, false); });
@@ -669,35 +654,11 @@ function stationRow(entry) {
   return el;
 }
 
-function renderSingle(entry) {
-  var box = h('<div class="ts-proj-single"><div class="ts-proj-single-head"><span class="ts-proj-st-name"></span></div>' +
-    '<div class="ts-row-meta"></div><div class="ts-proj-single-body"></div></div>');
-  box.querySelector('.ts-proj-st-name').textContent = entry.station.name;
-  var pub = state.canEdit && publicState(entry);
-  if (pub) { box.querySelector('.ts-proj-single-head').appendChild(publicIcon(pub)); }
-  box.querySelector('.ts-proj-single-head').appendChild(chip(entry.status));
-  box.querySelector('.ts-row-meta').textContent = lastReading(entry);
-  var body = box.querySelector('.ts-proj-single-body');
-  if (entry.dashboardId) {
-    var open = h('<button type="button" class="ts-btn primary">Open the station dashboard ' + ICON.arrow + '</button>');
-    open.addEventListener('click', function () { openDashboard(entry.dashboardId, 'station', entry.station); });
-    body.appendChild(open);
-  } else {
-    body.appendChild(h('<div class="ts-empty">No dashboard yet.</div>'));
-  }
-  if (state.canEdit) {
-    var assign = h('<button type="button" class="ts-btn">' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '</button>');
-    assign.addEventListener('click', function () { openAssign(entry); });
-    body.appendChild(assign);
-  }
-  listEl.appendChild(box);
-}
-
 /** One header icon for the whole project: public when a public link shows
  * everything, private otherwise, with what it cannot show. */
 function renderPublic() {
   var r = state.publicReport;
-  publicEl.hidden = !state.canEdit || !r || state.entity.kind === 'Station';
+  publicEl.hidden = !state.canEdit || !r;
   if (publicEl.hidden) { return; }
   var lines = [];
   if (!r.token) {
@@ -983,7 +944,7 @@ function refresh() {
 
 refreshBtn.addEventListener('click', function () { refresh().then(refreshPublic); });
 editBtn.addEventListener('click', function () { setEditMap(!state.editMap); });
-gearBtn.addEventListener('click', function () { openDashboard(opts.configDashboardId, 'project', state.entity); });
+gearBtn.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'settings', state.entity); });
 homeBtn.addEventListener('click', function () { openDashboard(state.projectAttrs[HOME_KEY]); });
 
 tb.boundDatasource().then(function (ds) {
@@ -992,12 +953,11 @@ tb.boundDatasource().then(function (ds) {
     state.entity = got[0];
     state.owner = got[1].ownerId;
     state.me = got[3] || {};
-    cardEl.classList.toggle('single', state.entity.kind === 'Station');
     var perms = service('userPermissionsService');
     state.canCreateDashboards = !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
     return Promise.all([
       tb.canWrite(state.entity),
-      state.entity.kind === 'Station' ? null : loadMapLibraries().then(initMap).catch(function (err) {
+      loadMapLibraries().then(initMap).catch(function (err) {
         mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);
       }),
       load()

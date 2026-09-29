@@ -221,11 +221,14 @@ root.TerrySenseTbIo = function (ctx) {
       function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); }));
   }
 
+  /** A dashboard opened through a public link: its route is /dashboard, not /dashboards. */
+  function isPublicView() { return /^\/dashboard\//.test(window.location.pathname); }
+
   /** Open view `stateId` of dashboard `dashboardId` on `entity`, above its
    * landing view; with no `stateId`, its landing view. A public link stays
    * public: its route is /dashboard, and it keeps publicId. */
   function openDashboard(dashboardId, stateId, entity) {
-    var isPublic = /^\/dashboard\//.test(window.location.pathname);
+    var isPublic = isPublicView();
     var params = stateId ? { state: encodeState([{ id: 'default', params: {} },
       { id: stateId, params: { entityId: { entityType: entity.entityType || 'ASSET', id: entity.id }, entityName: entity.name } }]) } : {};
     var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
@@ -238,7 +241,7 @@ root.TerrySenseTbIo = function (ctx) {
     getAsset: getAsset, assetLevel: assetLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
     isComplexDevice: isComplexDevice,
-    ancestors: ancestors, openDashboard: openDashboard
+    ancestors: ancestors, openDashboard: openDashboard, isPublicView: isPublicView
   };
 };
 

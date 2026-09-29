@@ -151,6 +151,8 @@ function fail(text) {
 // -- load ------------------------------------------------------------------------
 
 function load() {
+  // The contacts' phone numbers and addresses stay off a public link.
+  if (tb.isPublicView()) { fail('Settings are not shown on a public link.'); return Promise.resolve(); }
   return tb.boundDatasource().then(function (ds) {
     if (!ds) { fail('No entity bound — bind a customer, project, location or station in the widget\'s Data tab.'); return; }
     return tb.loadEntity(ds).then(function (origin) {
