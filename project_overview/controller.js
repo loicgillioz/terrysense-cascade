@@ -42,7 +42,9 @@ var STATUS = {
   none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
 };
 var ICON_GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
-var ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>';
+var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
+var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
 
 function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
 
@@ -230,10 +232,9 @@ var cardEl = h(
   '<div class="ts-card ts-proj">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
   '    <div class="ts-head-text"><div class="ts-title">Project</div><div class="ts-subtitle"></div></div>' +
-  '    <span class="ts-proj-worst"></span>' +
+  '    <span class="ts-proj-public" tabindex="0" hidden></span><span class="ts-proj-worst"></span>' +
   '    <button type="button" class="ts-btn ts-proj-edit" hidden>Edit map</button>' +
   '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Project settings">' + ICON_GEAR + '</button></div>' +
-  '  <div class="ts-proj-banners"></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list"><div class="ts-loading">Loading…</div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
@@ -241,7 +242,7 @@ var cardEl = h(
 root.appendChild(cardEl);
 var mapEl = cardEl.querySelector('.ts-proj-map');
 var listEl = cardEl.querySelector('.ts-proj-list');
-var bannersEl = cardEl.querySelector('.ts-proj-banners');
+var publicEl = cardEl.querySelector('.ts-proj-public');
 var editBtn = cardEl.querySelector('.ts-proj-edit');
 var gearBtn = cardEl.querySelector('.ts-proj-gear');
 var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
@@ -496,16 +497,21 @@ function renderList() {
   groups.forEach(function (g) {
     if (state.filter && state.filter !== g.id) { return; }
     var here = stationsAt(g.id);
-    if (!g.loc && !here.length && !state.editMap) { return; }
-    listEl.appendChild(groupHead(g, here));
-    here.forEach(function (entry) { listEl.appendChild(stationRow(entry)); });
-    if (!here.length) { listEl.appendChild(h('<div class="ts-row-meta ts-proj-none">No station here yet.</div>')); }
+    if (!g.loc && !here.length && !state.canEdit) { return; }
+    var card = listEl.appendChild(h('<div class="ts-proj-loc' + (g.loc ? '' : ' unplaced') + '"></div>'));
+    card.appendChild(groupHead(g, here));
+    var body = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
+    here.forEach(function (entry) { body.appendChild(stationRow(entry)); });
+    if (!here.length) {
+      body.appendChild(h('<div class="ts-row-meta ts-proj-none"></div>')).textContent = g.loc ? 'No station here yet.' : 'Drop a station here to take it out of its location.';
+    }
+    if (state.canEdit) { dropTarget(card, g.id); }
   });
 }
 
 function groupHead(g, here) {
-  var el = h('<div class="ts-proj-group"><span class="ts-proj-group-name"></span><span class="ts-count"></span>' +
-    '<span class="ts-spacer"></span></div>');
+  var el = h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + (g.loc ? ICON.map : ICON_UNPLACE) + '</span>' +
+    '<span class="ts-proj-group-name"></span><span class="ts-count"></span><span class="ts-spacer"></span></div>');
   el.querySelector('.ts-proj-group-name').textContent = g.name;
   el.querySelector('.ts-count').textContent = here.length;
   if (g.loc && !g.loc.latLng) {
@@ -525,7 +531,6 @@ function groupHead(g, here) {
     el.addEventListener('mouseenter', function () { highlight(g.id, true); });
     el.addEventListener('mouseleave', function () { highlight(g.id, false); });
   }
-  if (state.canEdit) { dropTarget(el, g.id); }
   return el;
 }
 
@@ -533,12 +538,21 @@ function lastReading(entry) {
   return entry.lastTs ? 'Last reading ' + ago(entry.lastTs) : 'No reading yet';
 }
 
-function publicProblem(entry) {
+/** Public access of one station for a public link: null before the check,
+ * else `{open, why}` (FRONTEND.md *Public links*). */
+function publicState(entry) {
   var r = state.publicReport;
-  if (!r || !r.token) { return null; }
-  if (r.denied[entry.station.id]) { return 'A public link cannot show this station: it is in no public group of its owner.'; }
-  if (entry.dashboardId && r.denied[entry.dashboardId]) { return 'A public link cannot open this station\'s dashboard: it is not shared with the public users.'; }
-  return null;
+  if (!r) { return null; }
+  if (!r.token) { return { open: false, why: r.reason }; }
+  if (r.denied[entry.station.id]) { return { open: false, why: 'Private: a public link cannot show this station, which is in no public group of its owner.' }; }
+  if (entry.dashboardId && r.denied[entry.dashboardId]) { return { open: false, why: 'Private: a public link cannot open this station\'s dashboard, which is not shared with the public users.' }; }
+  return { open: true, why: 'Public: a public link shows this station' + (entry.dashboardId ? ' and opens its dashboard.' : '.') };
+}
+
+function publicIcon(pub) {
+  var el = h('<span class="ts-proj-access' + (pub.open ? ' open' : '') + '" tabindex="0">' + (pub.open ? ICON_GLOBE : ICON_LOCK) + '</span>');
+  el.setAttribute('data-tip', pub.why);
+  return el;
 }
 
 function stationRow(entry) {
@@ -548,12 +562,8 @@ function stationRow(entry) {
   el.querySelector('.ts-proj-st-name').textContent = entry.station.name;
   el.querySelector('.ts-row-meta').textContent = lastReading(entry);
   var side = el.querySelector('.ts-proj-st-side');
-  var problem = state.canEdit && publicProblem(entry);
-  if (problem) {
-    var warn = h('<span class="ts-proj-warn" tabindex="0">' + ICON_WARN + '</span>');
-    warn.setAttribute('data-tip', problem);
-    side.appendChild(warn);
-  }
+  var pub = state.canEdit && publicState(entry);
+  if (pub) { side.appendChild(publicIcon(pub)); }
   side.appendChild(chip(entry.status));
   if (entry.dashboardId) {
     el.classList.add('linked');
@@ -567,6 +577,11 @@ function stationRow(entry) {
       (entry.dashboardId ? ICON.edit : ICON.plus) + '</button>');
     assign.addEventListener('click', function () { openAssign(entry); });
     side.appendChild(assign);
+    if (entry.locationId !== NO_LOCATION) {
+      var unplace = h('<button type="button" class="ts-icon-btn" title="Take out of its location">' + ICON_UNPLACE + '</button>');
+      unplace.addEventListener('click', function () { moveStation(entry, NO_LOCATION); });
+      side.appendChild(unplace);
+    }
     el.draggable = true;
     el.addEventListener('dragstart', function (e) {
       dragged = entry;
@@ -585,6 +600,8 @@ function renderSingle(entry) {
   var box = h('<div class="ts-proj-single"><div class="ts-proj-single-head"><span class="ts-proj-st-name"></span></div>' +
     '<div class="ts-row-meta"></div><div class="ts-proj-single-body"></div></div>');
   box.querySelector('.ts-proj-st-name').textContent = entry.station.name;
+  var pub = state.canEdit && publicState(entry);
+  if (pub) { box.querySelector('.ts-proj-single-head').appendChild(publicIcon(pub)); }
   box.querySelector('.ts-proj-single-head').appendChild(chip(entry.status));
   box.querySelector('.ts-row-meta').textContent = lastReading(entry);
   var body = box.querySelector('.ts-proj-single-body');
@@ -600,37 +617,38 @@ function renderSingle(entry) {
     assign.addEventListener('click', function () { openAssign(entry); });
     body.appendChild(assign);
   }
-  var problem = state.canEdit && publicProblem(entry);
-  if (problem) { body.appendChild(banner(problem)); }
   listEl.appendChild(box);
 }
 
-function banner(text) {
-  var el = h('<div class="ts-banner warn">' + ICON_WARN + '<span></span></div>');
-  el.querySelector('span').textContent = text;
-  return el;
-}
-
-function renderBanners() {
-  bannersEl.innerHTML = '';
+/** One header icon for the whole project: public when a public link shows
+ * everything, private otherwise, with what it cannot show. */
+function renderPublic() {
   var r = state.publicReport;
-  if (!state.canEdit || !r) { return; }
-  if (!r.token) { bannersEl.appendChild(banner(r.reason)); return; }
+  publicEl.hidden = !state.canEdit || !r || state.entity.kind === 'Station';
+  if (publicEl.hidden) { return; }
   var lines = [];
-  if (r.denied[state.entity.id]) { lines.push('this ' + state.entity.kind.toLowerCase() + ' is in no public group'); }
-  var locs = state.locations.filter(function (l) { return r.denied[l.id]; });
-  if (locs.length) { lines.push(locs.length + (locs.length === 1 ? ' location is' : ' locations are') + ' in no public group'); }
-  var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
-  if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station is' : ' stations are') + ' in no public group'); }
-  var dash = state.stations.filter(function (s) { return s.dashboardId && r.denied[s.dashboardId]; });
-  if (dash.length) { lines.push(dash.length + (dash.length === 1 ? ' station dashboard is' : ' station dashboards are') + ' not shared with the public users'); }
-  if (opts.projectDashboardId && r.denied[opts.projectDashboardId]) { lines.push('the Project dashboard is not shared with the public users'); }
-  if (lines.length) { bannersEl.appendChild(banner('A public link cannot show everything: ' + lines.join('; ') + '.')); }
+  if (!r.token) {
+    lines.push(r.reason);
+  } else {
+    if (r.denied[state.entity.id]) { lines.push('this ' + state.entity.kind.toLowerCase() + ' is in no public group'); }
+    var locs = state.locations.filter(function (l) { return r.denied[l.id]; });
+    if (locs.length) { lines.push(locs.length + (locs.length === 1 ? ' location is' : ' locations are') + ' in no public group'); }
+    var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
+    if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station is' : ' stations are') + ' in no public group'); }
+    var dash = state.stations.filter(function (s) { return s.dashboardId && r.denied[s.dashboardId]; });
+    if (dash.length) { lines.push(dash.length + (dash.length === 1 ? ' station dashboard is' : ' station dashboards are') + ' not shared with the public users'); }
+    if (opts.projectDashboardId && r.denied[opts.projectDashboardId]) { lines.push('the Project dashboard is not shared with the public users'); }
+  }
+  var open = !!r.token && !lines.length;
+  publicEl.className = 'ts-proj-access ts-proj-public' + (open ? ' open' : '');
+  publicEl.innerHTML = (open ? ICON_GLOBE : ICON_LOCK) + '<span>' + (open ? 'Public' : 'Private') + '</span>';
+  publicEl.setAttribute('data-tip', open ? 'A public link shows this project, its stations and their dashboards.'
+    : !r.token ? lines[0] : 'Private to signed-in users: ' + lines.join('; ') + '.');
 }
 
 function render() {
   renderHeader();
-  renderBanners();
+  renderPublic();
   renderList();
   if (map) { drawArea(); drawMarkers(); }
 }
@@ -668,7 +686,7 @@ function refreshPublic() {
   if (!state.canEdit) { return Promise.resolve(); }
   return checkPublic().then(function (report) {
     state.publicReport = report;
-    renderBanners();
+    renderPublic();
     renderList();
   });
 }
