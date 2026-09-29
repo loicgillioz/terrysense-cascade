@@ -212,11 +212,44 @@ root.TerrySenseTbIo = function (ctx) {
     return true;
   }
 
+  /** The assets above `entity` over `Contains`, nearest first, up to its project. */
+  function ancestors(entity) {
+    var chain = [];
+    function up(level) {
+      if (chain.length >= 5) { return Promise.resolve(chain); }
+      return io.fetchParent(level).then(function (parent) {
+        if (!parent) { return chain; }
+        chain.push(parent);
+        return parent.kind === 'Project' ? chain : up(parent);
+      });
+    }
+    return up(entity).catch(function () { return chain; });
+  }
+
+  /** ThingsBoard's own encoding of the `state` query parameter. */
+  function encodeState(states) {
+    return btoa(encodeURIComponent(JSON.stringify(states)).replace(/%([0-9A-F]{2})/g,
+      function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); }));
+  }
+
+  /** Open view `stateId` of dashboard `dashboardId` on `entity`, above its
+   * landing view; with no `stateId`, its landing view. A public link stays
+   * public: its route is /dashboard, and it keeps publicId. */
+  function openDashboard(dashboardId, stateId, entity) {
+    var isPublic = /^\/dashboard\//.test(window.location.pathname);
+    var params = stateId ? { state: encodeState([{ id: 'default', params: {} },
+      { id: stateId, params: { entityId: { entityType: entity.entityType || 'ASSET', id: entity.id }, entityName: entity.name } }]) } : {};
+    var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
+    if (publicId) { params.publicId = publicId; }
+    getService('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
+  }
+
   return {
     io: io, get: get, getAll: getAll, post: post, del: del, attrsMap: attrsMap, saveAttrs: saveAttrs, deleteAttrs: deleteAttrs,
     getAsset: getAsset, assetLevel: assetLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
-    isComplexDevice: isComplexDevice, deviceView: deviceView, openDeviceView: openDeviceView
+    isComplexDevice: isComplexDevice, deviceView: deviceView, openDeviceView: openDeviceView,
+    ancestors: ancestors, openDashboard: openDashboard
   };
 };
 

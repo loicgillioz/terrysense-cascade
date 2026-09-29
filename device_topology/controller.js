@@ -3,6 +3,10 @@
  * and, for a user who may write the device, the commands to reconfigure it
  * (CA-4, TC-8/9). Read-only for anyone else.
  *
+ * Laid out as the device's status beside the stations it feeds, above its bus:
+ * one card per position, each source with its interval, whether it is enabled,
+ * its latest reading and the station channel it feeds.
+ *
  * A command is written as `cmd.request`; `dl_dispatch` sends it and leaves a
  * `cmd.seq.<seq>` marker, `dl_ack` turns the device's answer into
  * `cmd.lastResult` (DOWNLINK.md).
@@ -15,10 +19,15 @@
  * device's active `peripheralFault.*` alarms. Any other device opens in the
  * simple device view. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
  *
+ * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose Station
+ * view a station opens.
+ *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
 
-window.TerrySenseDeviceTopology = function (ctx, container) {
+window.TerrySenseDeviceTopology = function (ctx, container, opts) {
+
+opts = opts || {};
 
 var resolver = window.TerrySenseResolver;
 var G = window.TerrySenseGlossary;
@@ -390,7 +399,7 @@ function commandsSection() {
 // -- skeleton ---------------------------------------------------------------------------
 
 root.innerHTML = '';
-var cardEl = h('<div class="ts-card ts-readonly"><div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div><div class="ts-head-text">' +
+var cardEl = h('<div class="ts-card ts-readonly ts-dev"><div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div><div class="ts-head-text">' +
   '<div class="ts-title"><span>Device</span></div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
   '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '<div class="ts-foot"><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div></div>');
@@ -398,6 +407,8 @@ root.appendChild(cardEl);
 var bodyEl = cardEl.querySelector('.ts-body');
 var summaryEl = cardEl.querySelector('.ts-summary');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
+
+new ResizeObserver(function () { cardEl.classList.toggle('narrow', cardEl.clientWidth < 720); }).observe(cardEl);
 
 function fail(text) {
   bodyEl.innerHTML = '';
@@ -413,12 +424,28 @@ function render() {
   chip.hidden = !d.type;
   chip.textContent = d.type || '';
 
-  var nodes = topology();
   var srcs = sources();
+  bodyEl.innerHTML = '';
+  var top = bodyEl.appendChild(h('<div class="ts-dev-top"><div class="ts-dev-status"></div><div class="ts-dev-stations"></div></div>'));
+  renderStatus(top.firstChild, srcs);
+  renderStations(top.lastChild);
+  bodyEl.appendChild(busSection(srcs));
+  var cmds = commandsSection();
+  if (cmds) { bodyEl.appendChild(cmds); }
+  cardEl.classList.toggle('ts-readonly', !state.writable);
+  summaryEl.textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
+}
+
+/** Left pane: the product, its verdict (TC-3) and its operational status. */
+function renderStatus(pane, srcs) {
   var faulting = Object.keys(state.faults);
   var active = state.server.active === true || state.server.active === 'true';
+  var hw = state.client['deviceInfo.hwVersion'], fw = state.client['deviceInfo.fwVersion'];
 
-  bodyEl.innerHTML = '';
+  // Holds the product image once there is one.
+  var figure = pane.appendChild(h('<div class="ts-dev-figure" data-figure="placeholder"><span class="ts-dev-model"></span><span class="ts-row-meta">Product image</span></div>'));
+  figure.querySelector('.ts-dev-model').textContent = hw || String(state.device.type || '').toUpperCase();
+
   var verdict = active && !faulting.length;
   var banner = h('<div class="ts-banner ' + (verdict ? 'ok' : 'warn') + '">' + (verdict ? ICON.check : ICON.info) + '<span></span></div>');
   banner.querySelector('span').textContent = verdict
@@ -426,76 +453,108 @@ function render() {
     : [active ? null : 'Not active: no uplink within the inactivity timeout.',
        faulting.length ? faulting.length + (faulting.length === 1 ? ' source is' : ' sources are') + ' faulting.' : null]
       .filter(Boolean).join(' ');
-  bodyEl.appendChild(banner);
+  pane.appendChild(banner);
 
   function kv(label, tip, valueHtml) {
     var row = h('<div class="ts-kv"><div class="ts-kv-label">' + esc(label) + (tip ? ' ' + info(tip) : '') + '</div><div class="ts-kv-value"></div></div>');
     row.querySelector('.ts-kv-value').innerHTML = valueHtml;
-    bodyEl.appendChild(row);
+    pane.appendChild(row);
   }
   kv('Uplink', 'uplink', '<span class="ts-status"><span class="ts-dot" style="background:' + (active ? 'var(--ts-ok)' : 'var(--ts-danger)') + '"></span>' +
     esc((active ? 'Active, last ' : 'Inactive, last ') + ago(state.server.lastActivityTime)) + '</span>');
   kv('Faults', 'peripheralFault', faulting.length
     ? faulting.sort().map(function (k) { return '<span class="ts-chip fault">' + esc(k) + '</span>'; }).join(' ')
     : '<span class="ts-status">none</span>');
-  var fw = state.client['deviceInfo.fwVersion'], hw = state.client['deviceInfo.hwVersion'];
   if (fw || hw) { kv('Versions', null, '<span class="ts-mono">' + esc(['firmware ' + (fw || '?'), 'hardware ' + (hw || '?')].join(' · ')) + '</span>'); }
-  kv('Stations', 'wiring', state.stations.length
-    ? state.stations.map(function (st) { return '<span class="ts-chip">' + esc(st.name) + '</span>'; }).join(' ')
-    : '<span class="ts-chip warn">on no station</span>');
+  pane.appendChild(statusSection(srcs));
+}
 
-  bodyEl.appendChild(statusSection(srcs));
+/** Right pane: the Stations that contain the device, and the channels it feeds in each (TC-2). */
+function renderStations(pane) {
+  var sec = pane.appendChild(h('<div class="ts-section"><div class="ts-section-head">Stations ' + info('wiring') + '</div></div>'));
+  if (!state.stations.length) {
+    sec.appendChild(h('<div class="ts-empty"><span class="ts-chip warn">on no station</span> No station receives this device’s readings.</div>'));
+    return;
+  }
+  state.stations.forEach(function (st) {
+    var fed = [];
+    Object.keys(state.wiring).forEach(function (src) {
+      state.wiring[src].forEach(function (w) { if (w.station === st.name) { fed.push(w); } });
+    });
+    fed.sort(function (a, b) { return (a.label || a.channel).localeCompare(b.label || b.channel); });
+    var row = h('<div class="ts-dev-station"><div class="ts-grow"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div></div>');
+    row.dataset.station = st.name;
+    row.querySelector('.ts-row-label').textContent = st.name;
+    row.querySelector('.ts-row-meta').textContent = fed.length
+      ? fed.length + (fed.length === 1 ? ' channel: ' : ' channels: ') + fed.map(function (w) { return w.label || w.channel; }).join(', ')
+      : 'no channel from this device';
+    if (opts.projectDashboardId) {
+      row.classList.add('link');
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.appendChild(h('<span class="ts-dev-go">' + ICON.chev + '</span>'));
+      var go = function () { tb.openDashboard(opts.projectDashboardId, 'station', st); };
+      row.addEventListener('click', go);
+      row.addEventListener('keydown', function (e) { if (e.key === 'Enter') { go(); } });
+    }
+    sec.appendChild(row);
+  });
+}
 
-  var sec = h('<div class="ts-section"><div class="ts-section-head">Bus ' + info('position') + '</div></div>');
+/** Full width: the bus, the LOGR first, one card per position (TC-1, TC-5). */
+function busSection(srcs) {
+  var nodes = topology();
+  var sec = h('<div class="ts-section ts-dev-bus"><div class="ts-section-head">Topology ' + info('position') + '</div><div class="ts-bus"></div></div>');
+  var bus = sec.querySelector('.ts-bus');
   var positions = {};
   Object.keys(nodes).forEach(function (p) { positions[p] = true; });
   srcs.forEach(function (s) { positions[s.position] = true; });
   var order = Object.keys(positions).map(Number).sort(function (a, b) { return a - b; });
   if (!order.length) {
-    sec.appendChild(h('<div class="ts-empty">No topology report and no reading from this device yet.</div>'));
+    bus.appendChild(h('<div class="ts-empty">No topology report and no reading from this device yet.</div>'));
   }
-  order.forEach(function (pos) {
-    var node = nodes[pos];
-    var own = srcs.filter(function (s) { return s.position === pos; }).sort(function (a, b) { return a.sourceKey.localeCompare(b.sourceKey); });
-    var box = h('<div class="ts-pos"><div class="ts-pos-head"><span class="ts-pos-num"></span><span class="ts-pos-name"></span><span class="ts-mono"></span><span class="ts-spacer"></span></div></div>');
-    var head = box.querySelector('.ts-pos-head');
-    box.querySelector('.ts-pos-num').textContent = pos;
-    var p = node && state.peripherals[node.type];
-    box.querySelector('.ts-pos-name').textContent = pos === 0 ? 'LOGR itself' : (p ? p.displayName : node ? node.type : 'Unknown peripheral');
-    box.querySelector('.ts-mono').textContent = node ? node.type + (node.version !== undefined && node.version !== null ? ' · v' + node.version : '') : '';
-    if (!node) { head.appendChild(h('<span class="ts-chip warn">not in the topology report</span>')); }
-    else if (!p && pos !== 0) { head.appendChild(h('<span class="ts-chip warn">not in the catalog</span>')); }
-    var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
-    if (bad.length) { head.appendChild(h('<span class="ts-chip fault">' + bad.length + ' faulting</span>')); }
-    var more = node && pos !== 0 ? unsubscribed(pos, node, own).length : 0;
-    if (more) { head.appendChild(h('<span class="ts-chip" data-available="' + more + '" title="Measurements this peripheral offers that the LOGR does not subscribe, from the catalog">+' + more + ' available</span>')); }
-    if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
-      head.appendChild(h('<span class="ts-chip warn" data-unwired="1">not wired to any station</span>'));
-    }
-    if (state.writable && node && unsubscribed(pos, node, own).length) {
-      var add = h('<button type="button" class="ts-btn ts-add">' + ICON.plus + 'Add subscription</button>');
-      add.addEventListener('click', function () { addDrawer(pos, node, own); });
-      head.appendChild(add);
-    }
+  order.forEach(function (pos) { bus.appendChild(positionCard(pos, nodes[pos], srcs)); });
+  return sec;
+}
 
-    var collapsed = pos === 0 && !bad.length && !state.showBoard;
-    if (!own.length) {
-      box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty">No subscription and no reading from this position.</span></div>'));
-    } else if (collapsed) {
-      var more = h('<button type="button" class="ts-more"></button>');
-      more.textContent = 'Show ' + own.length + ' on-board reading' + (own.length === 1 ? '' : 's');
-      more.addEventListener('click', function () { state.showBoard = true; render(); });
-      box.appendChild(more);
-    } else {
-      own.forEach(function (s) { box.appendChild(sourceRow(s, node)); });
-    }
-    sec.appendChild(box);
-  });
-  bodyEl.appendChild(sec);
-  var cmds = commandsSection();
-  if (cmds) { bodyEl.appendChild(cmds); }
-  cardEl.classList.toggle('ts-readonly', !state.writable);
-  summaryEl.textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
+function positionCard(pos, node, srcs) {
+  var own = srcs.filter(function (s) { return s.position === pos; }).sort(function (a, b) { return a.sourceKey.localeCompare(b.sourceKey); });
+  var box = h('<div class="ts-pos"><div class="ts-pos-head"><span class="ts-pos-num"></span><div class="ts-grow"><div class="ts-pos-name"></div><div class="ts-mono"></div></div></div>' +
+    '<div class="ts-pos-flags"></div></div>');
+  box.dataset.position = pos;
+  var head = box.querySelector('.ts-pos-head'), flags = box.querySelector('.ts-pos-flags');
+  box.querySelector('.ts-pos-num').textContent = pos;
+  var p = node && state.peripherals[node.type];
+  box.querySelector('.ts-pos-name').textContent = pos === 0 ? 'LOGR itself' : (p ? p.displayName : node ? node.type : 'Unknown peripheral');
+  box.querySelector('.ts-mono').textContent = node ? node.type + (node.version !== undefined && node.version !== null ? ' · v' + node.version : '') : '';
+  if (!node) { flags.appendChild(h('<span class="ts-chip warn">not in the topology report</span>')); }
+  else if (!p && pos !== 0) { flags.appendChild(h('<span class="ts-chip warn">not in the catalog</span>')); }
+  var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
+  if (bad.length) { flags.appendChild(h('<span class="ts-chip fault">' + bad.length + ' faulting</span>')); }
+  var more = node && pos !== 0 ? unsubscribed(pos, node, own).length : 0;
+  if (more) { flags.appendChild(h('<span class="ts-chip" data-available="' + more + '" title="Measurements this peripheral offers that the LOGR does not subscribe, from the catalog">+' + more + ' available</span>')); }
+  if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
+    flags.appendChild(h('<span class="ts-chip warn" data-unwired="1">not wired to any station</span>'));
+  }
+  if (state.writable && node && unsubscribed(pos, node, own).length) {
+    var add = h('<button type="button" class="ts-btn ts-add">' + ICON.plus + 'Add subscription</button>');
+    add.addEventListener('click', function () { addDrawer(pos, node, own); });
+    head.appendChild(add);
+  }
+  if (!flags.childNodes.length) { flags.remove(); }
+
+  var collapsed = pos === 0 && !bad.length && !state.showBoard;
+  if (!own.length) {
+    box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty">No subscription and no reading from this position.</span></div>'));
+  } else if (collapsed) {
+    var show = h('<button type="button" class="ts-more"></button>');
+    show.textContent = 'Show ' + own.length + ' on-board reading' + (own.length === 1 ? '' : 's');
+    show.addEventListener('click', function () { state.showBoard = true; render(); });
+    box.appendChild(show);
+  } else {
+    own.forEach(function (s) { box.appendChild(sourceRow(s, node)); });
+  }
+  return box;
 }
 
 /** TC-6 / TC-7: the unit's operational status, each value tagged with where it
@@ -572,21 +631,20 @@ function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 
 function sourceRow(s, node) {
   var st = sourceState(s);
-  var row = h('<div class="ts-tsrc"><div><div class="ts-row-label"></div><div class="ts-mono"></div></div><div class="ts-tsrc-state"></div><div class="ts-tsrc-value"></div></div>');
+  var row = h('<div class="ts-tsrc"><div class="ts-tsrc-top"><div class="ts-row-label"></div><div class="ts-tsrc-value"></div></div>' +
+    '<div class="ts-tsrc-meta"><span class="ts-mono"></span><span class="ts-tsrc-state"></span></div></div>');
   row.dataset.source = s.sourceKey;
   row.dataset.state = st.state;
   row.querySelector('.ts-row-label').textContent = sourceLabel(s, node);
-  row.querySelector('.ts-mono').textContent = s.sourceKey + (s.interval ? ' · every ' + s.interval + ' s' : '');
-  var feeds = state.wiring[s.sourceKey] || [];
-  if (feeds.length || s.position !== 0) {
-    var wire = h('<div class="ts-wire"></div>');
-    wire.dataset.wired = feeds.length ? '1' : '0';
-    wire.textContent = feeds.length
-      ? feeds.map(function (f) { return '→ ' + f.station + ' · ' + (f.label ? f.label + ' (' + f.channel + ')' : f.channel); }).join('   ')
-      : 'not wired to any station';
-    row.firstChild.appendChild(wire);
+  row.querySelector('.ts-mono').textContent = s.sourceKey;
+  var meta = row.querySelector('.ts-tsrc-meta'), stateEl = row.querySelector('.ts-tsrc-state'), valueEl = row.querySelector('.ts-tsrc-value');
+  if (s.interval) {
+    meta.insertBefore(h('<span class="ts-tsrc-every" data-interval="' + esc(s.interval) + '"></span>'), stateEl).textContent = 'every ' + fmtDuration(s.interval);
   }
-  var stateEl = row.querySelector('.ts-tsrc-state'), valueEl = row.querySelector('.ts-tsrc-value');
+  if (s.enabled !== undefined && st.state !== 'disabled') {
+    var on = truthyFlag(s.enabled);
+    meta.insertBefore(h('<span class="ts-chip' + (on ? '' : ' warn') + '" data-enabled="' + on + '">' + (on ? 'enabled' : 'disabled') + '</span>'), stateEl);
+  }
   if (st.state === 'fault') {
     var code = G.STATUS_CODES[st.code];
     stateEl.innerHTML = '<span class="ts-chip fault"></span>';
@@ -611,6 +669,14 @@ function sourceRow(s, node) {
     var act = h('<button type="button" class="ts-icon-btn ts-src-act" title="Change this subscription">' + ICON.edit + '</button>');
     act.addEventListener('click', function () { sourceDrawer(s, node); });
     stateEl.appendChild(act);
+  }
+  var feeds = state.wiring[s.sourceKey] || [];
+  if (feeds.length || s.position !== 0) {
+    var wire = row.appendChild(h('<div class="ts-wire"></div>'));
+    wire.dataset.wired = feeds.length ? '1' : '0';
+    wire.textContent = feeds.length
+      ? feeds.map(function (f) { return '→ ' + f.station + ' · ' + (f.label ? f.label + ' (' + f.channel + ')' : f.channel); }).join('   ')
+      : 'not wired to any station';
   }
   return row;
 }
