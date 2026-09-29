@@ -216,7 +216,7 @@ function fail(text) {
 
 function openDevice(d) {
   var sc = ctx.stateController;
-  if (sc) { sc.openState(tb.deviceView(d.type), { entityId: { entityType: 'DEVICE', id: d.id }, entityName: d.name }, false); }
+  if (sc) { sc.openState('device', { entityId: { entityType: 'DEVICE', id: d.id }, entityName: d.name }, false); }
 }
 
 // -- render -----------------------------------------------------------------------------

@@ -332,7 +332,7 @@ function renderSide() {
     if (sev) { line(el, d.alarms.length + ' active alarm' + (d.alarms.length === 1 ? '' : 's') + ', worst ' + G.severity(sev.toLowerCase()).label, 'ts-stv-bad'); }
     if (opts.devicesDashboardId) {
       linkCard(el, function () {
-        tb.openDashboard(opts.devicesDashboardId, tb.deviceView(dev.type), { entityType: 'DEVICE', id: d.id, name: dev.name });
+        tb.openDashboard(opts.devicesDashboardId, 'device', { entityType: 'DEVICE', id: d.id, name: dev.name });
       });
     }
   });
