@@ -55,14 +55,14 @@ var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
 var HOUR_MS = 3600000;
 var DAY_MS = 86400000;
-var NETWORK_KEYS = ['rssi', 'snr'];
+var NETWORK_KEYS = ['rssi', 'snr', 'fCnt'];
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'batteryVoltage'];
 var BATTERY_CHARGING = ['p0.boolean', 'batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
-// Device bookkeeping, not readings: radio, uplink markers, the relay controller's own counters.
-var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'drycRuleCount', 'drycRulesSynced'];
+// Device bookkeeping, not readings: radio, frame counter, uplink markers, the relay controller's own counters.
+var NOT_READINGS = ['rssi', 'snr', 'fCnt', 'uplinkCause', 'uplinkLatest', 'drycRuleCount', 'drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
@@ -762,7 +762,7 @@ function registerFields() { return family() === 'logr2' ? REGISTER : []; }
 
 function registerSection() {
   var s = state.server;
-  var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Register ' + info('register') +
+  var sec = h('<div class="ts-section" data-section="register"><div class="ts-section-head">Attributes ' + info('register') +
     '<span class="ts-spacer"></span></div><div class="ts-reg-grid"></div></div>');
   var grid = sec.querySelector('.ts-reg-grid');
   function tile(key, label, value, warn) {
@@ -790,7 +790,7 @@ function registerSection() {
 
 function registerDrawer() {
   var s = state.server;
-  var dr = ui.openDrawer('Register', esc(state.device.name));
+  var dr = ui.openDrawer('Attributes', esc(state.device.name));
   registerFields().forEach(function (f) {
     var field = h('<div class="ts-field"><div class="ts-field-label"><span></span></div><div class="ts-ctl"></div></div>');
     field.querySelector('span').textContent = f.label;
@@ -825,7 +825,7 @@ function registerDrawer() {
     if (write.inactivityTimeout !== undefined && !(write.inactivityTimeout > 0)) { ui.toast('A timeout is a positive number of hours', 'error'); return; }
     var dev = deviceEntity();
     tb.saveAttrs(dev, write).then(function () { return tb.deleteAttrs(dev, drop); }).then(function () {
-      ui.toast('Register saved');
+      ui.toast('Attributes saved');
       ui.closeDrawer();
       return refresh();
     }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
@@ -1103,6 +1103,9 @@ function statusSection() {
   if (lat.rssi) { net.push('Uplink ' + lat.rssi.value + ' dBm, SNR ' + (lat.snr ? lat.snr.value : '?') + ' dB'); }
   var sf = state.server.spreadingFactor !== undefined ? state.server.spreadingFactor : c.spreadingFactor;
   if (sf !== undefined) { net.push('Spreading factor ' + sf); }
+  // Older devices hold the frame counter only as a telemetry series.
+  var fcnt = c.fCnt !== undefined ? c.fCnt : lat.fCnt && lat.fCnt.value;
+  if (fcnt !== undefined) { net.push('Frame counter ' + fcnt); }
   var gws = parseJson(c.gateways || state.server.gateways) || [];
   if (gws.length) {
     net.push('Heard by ' + gws.length + (gws.length === 1 ? ' gateway: ' : ' gateways, best: ') + gws.slice(0, 3).map(function (g) {
