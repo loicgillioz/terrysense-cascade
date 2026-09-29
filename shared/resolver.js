@@ -255,9 +255,11 @@ function resolveField(chain, channel, kind, field, io, cache) {
 /** `config.notify.contacts` as the flat list `alarm_notify` sends to — mirrors
  * `expand_contacts()` in config_resolver.py. A platform user becomes their
  * current profile name, e-mail and phone, each kept only where the contact
- * opted in; `io.fetchUser(id)` resolves the user, and a missing one is dropped
- * like a contact with no address or no severity. */
+ * opted in and the user's own switch (`u.switches`) is not off;
+ * `io.fetchUser(id)` resolves the user, and a missing one is dropped like a
+ * contact with no address or no severity. */
 function expandContacts(raw, io) {
+  function off(u, key) { return String((u.switches || {})[CONFIG_PREFIX + key]).toLowerCase() === 'false'; }
   var list = parseJson(raw);
   if (!Array.isArray(list)) { return Promise.resolve([]); }
   return Promise.all(list.map(function (c) {
@@ -269,10 +271,10 @@ function expandContacts(raw, io) {
     return user.then(function (u) {
       var name, sms, email;
       if (c.type === 'user') {
-        if (!u) { return null; }
+        if (!u || off(u, 'notify.enabled')) { return null; }
         name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
-        sms = c.viaSms ? u.phone : null;
-        email = c.viaEmail ? u.email : null;
+        sms = c.viaSms && !off(u, 'sms.enabled') ? u.phone : null;
+        email = c.viaEmail && !off(u, 'email.enabled') ? u.email : null;
       } else {
         name = c.name; sms = c.sms; email = c.email;
       }

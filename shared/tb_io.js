@@ -120,7 +120,20 @@ root.TerrySenseTbIo = function (ctx) {
     fetchAllStations: function () {
       return getAll('/api/user/assets', { type: 'Station' }).then(function (list) { return list.map(assetLevel); });
     },
-    fetchUser: function (id) { return get('/api/user/' + id).catch(function () { return null; }); }
+    // A user's own notification switches ride along as `switches`; a user
+    // whose attributes this viewer cannot read keeps them all on.
+    fetchUser: function (id) {
+      return get('/api/user/' + id).then(function (u) {
+        return get('/api/plugins/telemetry/USER/' + id + '/values/attributes/SERVER_SCOPE',
+          { keys: 'config.notify.enabled,config.sms.enabled,config.email.enabled' })
+          .catch(function () { return []; })
+          .then(function (list) {
+            u.switches = {};
+            (list || []).forEach(function (a) { u.switches[a.key] = a.value; });
+            return u;
+          });
+      }).catch(function () { return null; });
+    }
   };
 
   /** The entity bound in the widget's Data tab, resolved through its alias. */
