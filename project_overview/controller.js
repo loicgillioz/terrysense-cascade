@@ -651,7 +651,7 @@ function templateOption(entry, r) {
   o.querySelector('.ts-opt-desc').textContent = desc;
   if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
   else if (!r.fit.missing.length && r.fit.needs.length) {
-    side.appendChild(h('<span class="ts-chip warn">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
+    side.appendChild(h('<span class="ts-chip">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
   }
   side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
   function pick() {

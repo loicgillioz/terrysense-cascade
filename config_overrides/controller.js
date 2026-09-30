@@ -374,14 +374,14 @@ function renderCalculations() {
       var spec = state.calcMeta.attributes[a] || {};
       return calcAttrName(a) + ' ' + state.own[resolver.CALC_PREFIX + a] + (spec.unit ? ' ' + spec.unit : '');
     });
-    var meta = [(state.names[p.name] || {}).description].concat(p.reads.length ? set : ['Automatic from ' + calc.listText(calcInputs(p.name))]);
+    var needs = p.on ? [] : ['Needs ' + calc.listText(p.needs.map(calcAttrName))];
+    var meta = [(state.names[p.name] || {}).description].concat(needs, p.reads.length ? set : ['Automatic from ' + calc.listText(calcInputs(p.name))]);
     var editable = !state.readOnly && p.reads.length > 0;
     var row = h('<div class="ts-row' + (editable ? '' : ' static') + '"' + (editable ? ' tabindex="0"' : '') + ' data-calc-name="' + esc(p.name) + '">' +
       '<div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div><div class="ts-row-value"></div></div>');
     row.querySelector('.ts-row-label').textContent = calc.channelLabel(state.calcMeta, state.own, p.name);
     row.querySelector('.ts-row-meta').textContent = meta.filter(Boolean).join(' · ');
-    var badge = row.querySelector('.ts-row-value').appendChild(h('<span class="ts-chip ' + (p.on ? 'accent' : 'warn') + '"></span>'));
-    badge.textContent = p.on ? 'On' : 'Needs ' + calc.listText(p.needs.map(calcAttrName));
+    row.querySelector('.ts-row-value').appendChild(h(p.on ? '<span class="ts-chip accent">On</span>' : '<span class="ts-chip">Off</span>'));
     if (editable) { row.addEventListener('click', function () { openCalculation(p, plan); }); }
     sec.appendChild(row);
   });
