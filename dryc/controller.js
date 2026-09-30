@@ -3,11 +3,15 @@
  * and sending them to the device (CA-5). Bound to a STATION (its LOGR2) or to
  * the LOGR2 DEVICE itself. Model: logr-product-docs/cloud/DRYC.md.
  *
- * Rules live in `dryc.rules` (SHARED_SCOPE) on the DEVICE. Saving also gives
- * each notifying rule its station channel `drycRule-<n>`, mapped to
- * `drycRule.<id>` with a boolean alarm at the rule's severity; `dryc_rules`
- * fills that value on every DRYC status. The labelled inputs, the outputs and
- * the voltage go onto the station too, for display and history. Send writes one `cmd.request`
+ * Rules live in `dryc.rules` on the STATION, so a replaced device takes them
+ * over; the device keeps only what was sent to it (`cmd.lastResult`,
+ * `drycRuleCount`). Saving also gives each notifying rule its station channel
+ * `drycRule-<n>`, mapped to `drycRule.<id>` with a boolean alarm at the rule's
+ * severity; `station_project` fills that value on every DRYC status. The labelled inputs, the outputs and
+ * the voltage go onto the station too, for display and history. A device may
+ * feed several stations; when more than one holds rules for its relay
+ * controller, the widget warns that the device runs whichever set was sent
+ * last. Send writes one `cmd.request`
  * DRYC_RULES, which `dl_dispatch` sends through the LOGR2 integration.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
@@ -49,9 +53,13 @@ function clone(o) { return JSON.parse(JSON.stringify(o)); }
 // -- model ------------------------------------------------------------------------------
 
 var state = {
-  device: null, station: null, rules: null, saved: '', live: {}, server: {},
+  device: null, bound: null, station: null, stations: [], others: [], rules: null, saved: '', live: {}, server: {},
   writeDevice: false, writeStation: false, me: null, error: null
 };
+
+/** Rules are edited on the station and sent from the device. */
+function canEdit() { return !!state.station && state.writeStation; }
+function canSend() { return !!state.station && state.writeDevice; }
 
 function emptySet() {
   var inputs = [], relays = [];
@@ -127,20 +135,27 @@ function devicesOf(stationId) {
   return tb.post('/api/relations', query).then(function (rels) { return (rels || []).map(function (r) { return r.to.id; }); });
 }
 
-function stationOf(deviceId) {
+/** Every Station that contains the device. */
+function stationsOf(deviceId) {
   var query = {
     parameters: { rootId: deviceId, rootType: 'DEVICE', direction: 'TO', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
     filters: [{ relationType: 'Contains', entityTypes: ['ASSET'] }]
   };
   return tb.post('/api/relations', query).then(function (rels) {
-    var first = (rels || [])[0];
-    return first ? tb.loadEntity({ entityType: 'ASSET', entityId: first.from.id }) : null;
+    return Promise.all((rels || []).map(function (r) { return tb.getAsset(r.from.id); }));
+  }).then(function (assets) {
+    return assets.filter(function (a) { return a && a.type === 'Station'; }).map(function (a) {
+      var st = tb.assetLevel(a);
+      st.ownerId = a.ownerId && a.ownerId.id;
+      return st;
+    }).sort(function (a, b) { return a.name.localeCompare(b.name); });
   });
 }
 
+/** [device, the station the widget is bound to or null]. */
 function findDevice(ds) {
   if (ds.entityType === 'DEVICE') {
-    return Promise.all([tb.get('/api/device/' + ds.entityId), stationOf(ds.entityId)]);
+    return Promise.all([tb.get('/api/device/' + ds.entityId), null]);
   }
   return tb.loadEntity(ds).then(function (station) {
     return devicesOf(station.id).then(function (ids) {
@@ -151,15 +166,26 @@ function findDevice(ds) {
   });
 }
 
+/** The rule station is the bound one; from the device, the first holding rules,
+ * else the first. `others` are the device's other stations holding rules. */
 function loadDevice() {
   var dev = deviceEntity();
   return Promise.all([
-    tb.attrsMap(dev, 'SHARED_SCOPE'),
+    stationsOf(dev.id).then(function (list) {
+      return Promise.all(list.map(function (st) { return tb.attrsMap(st).then(function (a) { return { station: st, attrs: a }; }); }));
+    }),
     tb.attrsMap(dev, 'SERVER_SCOPE'),
     tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.map(function (key) { return LIVE_PREFIX + key; }).join(',') }).catch(function () { return {}; })
   ]).then(function (got) {
-    state.saved = JSON.stringify(parseJson(got[0]['dryc.rules']) || null);
-    state.rules = normalise(parseJson(got[0]['dryc.rules']));
+    state.stations = got[0];
+    var held = state.stations.filter(function (x) { return parseJson(x.attrs['dryc.rules']); });
+    var own = state.bound ? state.stations.filter(function (x) { return x.station.id === state.bound.id; })[0]
+      : held[0] || state.stations[0];
+    state.station = own ? own.station : state.bound || null;
+    var raw = own ? parseJson(own.attrs['dryc.rules']) : null;
+    state.saved = JSON.stringify(raw || null);
+    state.rules = normalise(raw);
+    state.others = held.filter(function (x) { return !own || x.station.id !== own.station.id; }).map(function (x) { return x.station; });
     state.server = got[1];
     state.live = {};
     Object.keys(got[2] || {}).forEach(function (key) {
@@ -244,13 +270,11 @@ function save(set) {
     if (r.notify) { out.notify = r.notify; }
     return out;
   });
-  return tb.saveAttrs(deviceEntity(), { 'dryc.rules': body }, 'SHARED_SCOPE').then(function () {
-    if (!state.station || !state.writeStation) { return; }
-    return tb.attrsMap(state.station).then(function (attrs) {
-      var w = stationWrites(set, attrs);
-      return tb.saveAttrs(state.station, w.write).then(function () { return tb.deleteAttrs(state.station, w.remove); });
-    }).then(function () { return tb.resolveStations([state.station]); });
-  });
+  return tb.attrsMap(state.station).then(function (attrs) {
+    var w = stationWrites(set, attrs);
+    w.write['dryc.rules'] = body;
+    return tb.saveAttrs(state.station, w.write).then(function () { return tb.deleteAttrs(state.station, w.remove); });
+  }).then(function () { return tb.resolveStations([state.station]); });
 }
 
 function sendRules() {
@@ -294,7 +318,7 @@ function render() {
   var chip = cardEl.querySelector('.ts-chip.level');
   chip.hidden = false;
   chip.textContent = 'LOGR2';
-  cardEl.classList.toggle('ts-readonly', !state.writeDevice);
+  cardEl.classList.toggle('ts-readonly', !canEdit());
   footEl.hidden = false;
   bodyEl.innerHTML = '';
 
@@ -304,21 +328,25 @@ function render() {
   strip.firstChild.textContent = sync.text;
   strip.querySelector('.ts-cap').textContent = n + ' of ' + MAX_RECORDS + ' records';
   strip.querySelector('.ts-cap').insertAdjacentHTML('beforeend', ' ' + info('drycRecords'));
-  if (state.writeDevice && sync.s !== 'waiting') {
+  if (canSend() && sync.s !== 'waiting') {
     var needed = sync.s === 'changed' || sync.s === 'drift';
     var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '">Send to relay controller</button>');
     send.addEventListener('click', sendRules);
     strip.appendChild(send);
   }
   bodyEl.appendChild(strip);
+  if (state.others.length) {
+    var warn = h('<div class="ts-banner warn" data-warn="competing">' + ICON.info + '<span></span></div>');
+    warn.querySelector('span').innerHTML = 'Rules for this relay controller are also kept on <b>' +
+      state.others.map(function (o) { return esc(o.name); }).join('</b>, <b>') +
+      '</b>. The relay controller runs whichever set was sent last: keep them on one station.';
+    bodyEl.appendChild(warn);
+  }
 
   bodyEl.appendChild(livePanel());
   bodyEl.appendChild(rulesSection());
-  if (state.writeDevice && !state.writeStation && state.station) {
-    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>You can change the rules but not the station, so saving does not update its alarms.</span></div>'));
-  }
   if (!state.station) {
-    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>This device is on no station, so its rules raise no alarm and notify nobody.</span></div>'));
+    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>This device is on no station. Its rules are kept on a station: connect the device to one first.</span></div>'));
   }
   var last = state.live.drycInput1;
   summaryEl.textContent = 'Status ' + (last ? ago(last.ts) : 'never received');
@@ -334,7 +362,7 @@ function livePanel() {
       '<span class="ts-io-n">IN ' + (i + 1) + '</span><span class="ts-io-l"></span><span class="ts-io-v"><span class="ts-dot"></span><span></span></span></button>');
     tile.querySelector('.ts-io-l').textContent = inputLabel(i);
     tile.querySelector('.ts-io-v span:last-child').textContent = v ? inputText(i, on) : '—';
-    tile.disabled = !state.writeDevice;
+    tile.disabled = !canEdit();
     tile.addEventListener('click', namesDrawer.bind(null, 'input', i));
     grid.appendChild(tile);
   }
@@ -345,7 +373,7 @@ function livePanel() {
       '<span class="ts-io-l"></span><span class="ts-io-v"><span class="ts-dot"></span><span></span></span></button>');
     rt.querySelector('.ts-io-l').textContent = relayLabel(j);
     rt.querySelector('.ts-io-v span:last-child').textContent = rv ? (ron ? 'On' : 'Off') : '—';
-    rt.disabled = !state.writeDevice;
+    rt.disabled = !canEdit();
     rt.addEventListener('click', namesDrawer.bind(null, 'relay', j));
     outs.appendChild(rt);
   }
@@ -379,7 +407,7 @@ function actionChips(r) {
 
 function rulesSection() {
   var sec = h('<div class="ts-section"><div class="ts-section-head">Rules <span class="ts-spacer"></span></div></div>');
-  if (state.writeDevice) {
+  if (canEdit()) {
     var add = h('<button type="button" class="ts-btn">' + ICON.plus + 'Add rule</button>');
     add.disabled = records(state.rules).length >= MAX_RECORDS;
     add.addEventListener('click', function () { ruleDrawer(null); });
@@ -393,7 +421,7 @@ function rulesSection() {
       '<div class="ts-row-label"></div><div class="ts-line"><span class="ts-k">When</span>' + conditionChips(r) + '</div>' +
       '<div class="ts-line"><span class="ts-k">Then</span>' + actionChips(r) + '</div></div><div class="ts-rule-acts"></div></div>');
     row.querySelector('.ts-row-label').textContent = r.name;
-    if (state.writeDevice) {
+    if (canEdit()) {
       var acts = row.querySelector('.ts-rule-acts');
       [['up', '↑', 'Earlier'], ['down', '↓', 'Later'], ['edit', null, 'Edit'], ['del', null, 'Delete']].forEach(function (a) {
         var b = h('<button type="button" class="ts-icon-btn" data-a="' + a[0] + '" title="' + a[2] + '"></button>');
@@ -555,15 +583,14 @@ tb.boundDatasource().then(function (ds) {
   if (!ds || (ds.entityType !== 'DEVICE' && ds.entityType !== 'ASSET')) { fail('No station or device bound.'); return; }
   return findDevice(ds).then(function (got) {
     state.device = got[0];
-    state.station = got[1];
+    state.bound = got[1];
     if (!state.device) { fail('This station’s device has no relay controller.'); return; }
-    return Promise.all([
-      loadDevice(), tb.currentUser(), tb.canWrite(deviceEntity()),
-      state.station ? tb.canWrite(state.station) : Promise.resolve(false)
-    ]).then(function (all) {
+    return Promise.all([loadDevice(), tb.currentUser(), tb.canWrite(deviceEntity())]).then(function (all) {
       state.me = all[1];
       state.writeDevice = all[2];
-      state.writeStation = all[3];
+      return state.station ? tb.canWrite(state.station) : false;
+    }).then(function (writable) {
+      state.writeStation = writable;
       render();
     });
   });
