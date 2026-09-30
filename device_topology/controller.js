@@ -968,8 +968,9 @@ function replaceDrawer() {
 // -- register -------------------------------------------------------------------------------
 
 /** Hand-kept facts a device cannot report (ATTRIBUTES.md §3): the four
- * `register.*` fields of a LOGR2, and the inactivity timeout of any device
- * other than a LOGR3 or LOGR4. */
+ * `register.*` fields of a LOGR2, and the measurement interval of any device
+ * other than a LOGR3 or LOGR4, from which its inactivity timeout follows:
+ * three intervals, as a LOGR3 or LOGR4 derives its own. */
 function registerFields() { return family() === 'logr2' ? REGISTER : []; }
 
 function registerSection() {
@@ -990,6 +991,8 @@ function registerSection() {
     if (f.flag) { tile(f.key, f.label, truthyFlag(v) ? 'possible' : 'impossible', !truthyFlag(v)); }
     else { tile(f.key, f.label, String(v), f.key === 'register.hwStatus' && !FINE_STATUS.test(String(v))); }
   });
+  var interval = Number(s['register.intervalSeconds']);
+  tile('register.intervalSeconds', 'Measurement interval', interval > 0 ? fmtDuration(interval) : 'not set', !(interval > 0));
   var timeout = Number(s.inactivityTimeout);
   tile('inactivityTimeout', 'Inactivity timeout', timeout > 0 ? fmtDuration(timeout / 1000) : 'platform default', false);
   if (state.writable) {
@@ -1015,17 +1018,24 @@ function registerDrawer() {
     field.querySelector('.ts-ctl').appendChild(input);
     dr.body.appendChild(field);
   });
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Inactivity timeout</span></div>' +
-    '<div class="ts-ctl"><span><input class="ts-input num" type="number" min="0" step="0.5" data-key="inactivityTimeout"> h</span></div>' +
-    '<div class="ts-field-hint">Empty: the platform default. The device turns inactive after this long without an uplink.</div></div>'));
-  var hours = dr.body.querySelector('[data-key=inactivityTimeout]');
-  hours.value = Number(s.inactivityTimeout) > 0 ? Number(s.inactivityTimeout) / HOUR_MS : '';
+  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Measurement interval</span></div>' +
+    '<div class="ts-ctl"><span><input class="ts-input num" type="number" min="0" step="1" data-key="register.intervalSeconds"> min</span></div>' +
+    '<div class="ts-field-hint">How often the device measures and sends. A channel older than three intervals is stale, ' +
+    'and the device turns inactive after three intervals without an uplink.</div></div>'));
+  var minutes = dr.body.querySelector('[data-key="register.intervalSeconds"]');
+  minutes.value = Number(s['register.intervalSeconds']) > 0 ? Number(s['register.intervalSeconds']) / 60 : '';
   ui.drawerActions(dr, 'Save').addEventListener('click', function () {
     var write = {}, drop = [];
     dr.body.querySelectorAll('[data-key]').forEach(function (el) {
       var key = el.getAttribute('data-key');
-      if (key === 'inactivityTimeout') {
-        if (el.value === '') { if (s.inactivityTimeout !== undefined) { drop.push(key); } } else { write[key] = Math.round(Number(el.value) * HOUR_MS); }
+      if (key === 'register.intervalSeconds') {
+        if (el.value === '') {
+          if (s[key] !== undefined) { drop.push(key); }
+          if (s.inactivityTimeout !== undefined) { drop.push('inactivityTimeout'); }
+        } else {
+          write[key] = Math.round(Number(el.value) * 60);
+          write.inactivityTimeout = 3 * write[key] * 1000;
+        }
       } else if (el.type === 'checkbox') {
         write[key] = el.checked;
       } else if (el.value.trim()) {
@@ -1034,7 +1044,7 @@ function registerDrawer() {
         drop.push(key);
       }
     });
-    if (write.inactivityTimeout !== undefined && !(write.inactivityTimeout > 0)) { ui.toast('A timeout is a positive number of hours', 'error'); return; }
+    if (write['register.intervalSeconds'] !== undefined && !(write['register.intervalSeconds'] > 0)) { ui.toast('An interval is a positive number of minutes', 'error'); return; }
     var dev = deviceEntity();
     tb.saveAttrs(dev, write).then(function () { return tb.deleteAttrs(dev, drop); }).then(function () {
       ui.toast('Attributes saved');
