@@ -24,6 +24,8 @@ var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info;
 var INPUTS = 8, RELAYS = 2, MAX_RECORDS = 16, DAY_MS = 86400000;
 var RULE_CHANNEL = 'drycRule';
 var SEVERITY_IDS = ['critical', 'major', 'minor', 'warning', 'indeterminate'];
+// The device stores them under the DRYC prefix (`dryc.drycInput1`); state.live drops it.
+var LIVE_PREFIX = 'dryc.';
 var LIVE_KEYS = [];
 for (var k = 1; k <= INPUTS; k++) { LIVE_KEYS.push('drycInput' + k); }
 LIVE_KEYS = LIVE_KEYS.concat(['drycOutput1', 'drycOutput2', 'drycVoltage', 'drycRuleCount', 'drycRulesSynced']);
@@ -153,7 +155,7 @@ function loadDevice() {
   return Promise.all([
     tb.attrsMap(dev, 'SHARED_SCOPE'),
     tb.attrsMap(dev, 'SERVER_SCOPE'),
-    tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.join(',') }).catch(function () { return {}; })
+    tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.map(function (key) { return LIVE_PREFIX + key; }).join(',') }).catch(function () { return {}; })
   ]).then(function (got) {
     state.saved = JSON.stringify(parseJson(got[0]['dryc.rules']) || null);
     state.rules = normalise(parseJson(got[0]['dryc.rules']));
@@ -161,7 +163,7 @@ function loadDevice() {
     state.live = {};
     Object.keys(got[2] || {}).forEach(function (key) {
       var p = got[2][key] && got[2][key][0];
-      if (p) { state.live[key] = { ts: Number(p.ts), value: p.value }; }
+      if (p) { state.live[key.slice(LIVE_PREFIX.length)] = { ts: Number(p.ts), value: p.value }; }
     });
   });
 }

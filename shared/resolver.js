@@ -1,6 +1,6 @@
 /*
- * Cascade resolver — shared by the `config_overrides` and `channel_map_editor`
- * widgets (and their offline tests). Pure resolution logic only: every call
+ * Cascade resolver — shared by the terrySense widgets (and their offline
+ * tests). Pure resolution logic only: every call
  * that reaches ThingsBoard goes through an injected `io` object, so this file
  * has no `ctx`/`container` dependency and loads unchanged in a browser
  * (`window.TerrySenseResolver`) or in Node (`module.exports`, see
@@ -213,6 +213,28 @@ function kindSpec(kind, kinds) {
     if (camelKind(names[i]) === wanted) { return kinds[names[i]]; }
   }
   return {};
+}
+
+// -- units ------------------------------------------------------------------
+// A value is stored in its kind's cloudUnit; a display unit is a key of the
+// kind's `units` with the factor that turns it into cloudUnit (vocabulary.md
+// §2). A unit the kind cannot convert is shown as it is, factor 1.
+
+function unitFactor(kind, unit, kinds) {
+  var spec = kindSpec(kind, kinds);
+  var f = unit ? (spec.units || {})[unit] : 1;
+  return typeof f === 'number' && f > 0 ? f : 1;
+}
+
+// toPrecision drops the float noise of a division (3.9840000000000004).
+function toDisplay(value, kind, unit, kinds) {
+  var f = unitFactor(kind, unit, kinds);
+  return f === 1 ? value : Number((value / f).toPrecision(12));
+}
+
+function fromDisplay(value, kind, unit, kinds) {
+  var f = unitFactor(kind, unit, kinds);
+  return f === 1 ? value : Number((value * f).toPrecision(12));
 }
 
 function resolveField(chain, channel, kind, field, io, cache) {
@@ -538,6 +560,9 @@ return {
   splitChannelKey: splitChannelKey,
   expandContacts: expandContacts,
   kindSpec: kindSpec,
+  unitFactor: unitFactor,
+  toDisplay: toDisplay,
+  fromDisplay: fromDisplay,
   defaultsJson: defaultsJson,
   channelFields: channelFields,
   levelDisplay: levelDisplay,

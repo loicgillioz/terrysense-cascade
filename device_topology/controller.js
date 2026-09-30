@@ -12,7 +12,7 @@
  *          `subscriptions.*` and the stored telemetry keys, each with its
  *          interval and whether it is enabled; configurable by command.
  *   logr2  the LOGR and its one or two sensors, fixed in its firmware, so
- *          read-only: readings grouped by LOGR2_GROUPS; the register.
+ *          read-only: readings grouped by their peripheral prefix; the register.
  *   other  any other device: its readings in one card; the register.
  *
  * A bus source's state is its latest reading: a value newer than its
@@ -56,13 +56,13 @@ var REFRESH_MS = 60000;
 var HOUR_MS = 3600000;
 var DAY_MS = 86400000;
 var NETWORK_KEYS = ['rssi', 'snr'];
-var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'batteryVoltage'];
-var BATTERY_CHARGING = ['p0.boolean', 'batteryCharging'];
+var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
+var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
 // Device bookkeeping, not readings: radio, uplink markers, the relay controller's own counters.
-var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'drycRuleCount', 'drycRulesSynced'];
+var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRuleCount', 'dryc.drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
@@ -71,14 +71,11 @@ var REGISTER = [
   { key: 'register.dfu', label: 'Firmware update (DFU)', flag: true }
 ];
 var FINE_STATUS = /^(all functional|ok|)$/i;
-// The parts of a LOGR2 and the channels each reports, by TRX Light wire group:
-// cloud-integrations/sources/logr2.json, kept equal by smoke_test_config_widgets.py.
-// `power` and `release` are the LOGR itself; `temperature` goes to the sensor that
-// reports something else too.
-var LOGR2_GROUPS = {"power": ["batteryCharging", "batteryVoltage"], "release": ["firmwareMajor", "firmwareMinor", "firmwarePatch"], "phpr": ["ph", "phProbePoints", "phProbeType", "phStable", "temperature"], "cond": ["conductivity", "ecProbePoints", "ecProbeType", "ecStable", "temperature"], "dryc": ["drycInput1", "drycInput2", "drycInput3", "drycInput4", "drycInput5", "drycInput6", "drycInput7", "drycInput8", "drycOutput1", "drycOutput2", "drycOutput3", "drycOutput4", "drycOutput5", "drycOutput6", "drycOutput7", "drycOutput8", "drycRuleCount", "drycRulesSynced", "drycVoltage"], "flow": ["flow", "volumeForward", "volumeReverse"], "climate": ["airDensity", "airFlowVelocity", "dewPoint", "globeTemperature", "wetBulbGlobeTemperature"], "inclination": ["temperature", "tiltX", "tiltY"], "generic": ["distance", "humidity", "pressure", "temperature"]};
-var LOGR2_LOGGER = ['power', 'release'];
+// The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
+// (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
+// smoke_test_config_widgets.py. `logr` is the LOGR itself.
 var LOGR2_SENSORS = { phpr: 'pH probe', cond: 'Conductivity probe', dryc: 'Relay controller', flow: 'Flow meter',
-  climate: 'Climate sensor', inclination: 'Inclinometer', generic: 'Sensor' };
+  clmt: 'Climate sensor', inclTilt: 'Inclinometer or tiltmeter', usonRdar: 'Ultrasonic or radar level sensor' };
 
 function parseSource(key) {
   var m = SOURCE_KEY_RE.exec(key);
@@ -282,7 +279,9 @@ function readings() {
   }).sort(function (a, b) { return labelOf(a).localeCompare(labelOf(b)); });
 }
 
-function entryOf(key) { return state.names[resolver.splitChannelKey(key).name] || null; }
+/** The channel name a reading carries: a LOGR2 key after its peripheral prefix, any other key whole. */
+function nameOf(key) { return family() === 'logr2' ? key.slice(key.indexOf('.') + 1) : key; }
+function entryOf(key) { return state.names[resolver.splitChannelKey(nameOf(key)).name] || null; }
 function labelOf(key) { var e = entryOf(key); return (e && e.label) || key; }
 function readingUnit(key) {
   var e = entryOf(key);
@@ -293,16 +292,11 @@ function readingUnit(key) {
  * (label null), then each sensor that reported, then readings of no known part. */
 function logr2Parts(keys) {
   var logger = { id: 'logr', label: null, keys: [] }, sensors = {}, rest = [];
-  function groupsOf(key) { return Object.keys(LOGR2_GROUPS).filter(function (g) { return LOGR2_GROUPS[g].indexOf(key) >= 0; }); }
   keys.forEach(function (key) {
-    var groups = groupsOf(key);
-    if (groups.some(function (g) { return LOGR2_LOGGER.indexOf(g) >= 0; })) { logger.keys.push(key); return; }
-    if (groups.length === 1) { (sensors[groups[0]] = sensors[groups[0]] || []).push(key); return; }
-    if (!groups.length) { rest.push(key); }
-  });
-  keys.filter(function (k) { return groupsOf(k).length > 1; }).forEach(function (key) {
-    var home = groupsOf(key).filter(function (g) { return sensors[g]; })[0] || groupsOf(key).filter(function (g) { return g === 'generic'; })[0];
-    (sensors[home] = sensors[home] || []).push(key);
+    var prefix = key.slice(0, key.indexOf('.'));
+    if (prefix === 'logr') { logger.keys.push(key); return; }
+    if (LOGR2_SENSORS[prefix]) { (sensors[prefix] = sensors[prefix] || []).push(key); return; }
+    rest.push(key);
   });
   var parts = [logger].concat(Object.keys(LOGR2_SENSORS).filter(function (g) { return sensors[g]; }).map(function (g) {
     return { id: g, label: LOGR2_SENSORS[g], keys: sensors[g] };
@@ -320,11 +314,12 @@ function namesForKind(kind) {
 
 /** What a station can take from this device: one row per measurement, with the
  * channel name it gets by default. A LOGR3 or LOGR4 source is renamed to a
- * vocabulary name of its kind; any other reading keeps its own name. */
+ * vocabulary name of its kind; any other reading keeps its own name, a LOGR2's
+ * without its peripheral prefix. */
 function mappable() {
   if (family() !== 'bus') {
     return readings().map(function (key) {
-      return { key: key, label: labelOf(key), names: null, name: key, diagnostic: !!(entryOf(key) || {}).diagnostic };
+      return { key: key, label: labelOf(key), names: null, name: nameOf(key), diagnostic: !!(entryOf(key) || {}).diagnostic };
     });
   }
   var nodes = topology();
@@ -873,7 +868,7 @@ function render() {
 
 function firmwareOf() {
   if (state.client['deviceInfo.fwVersion']) { return state.client['deviceInfo.fwVersion']; }
-  var parts = ['firmwareMajor', 'firmwareMinor', 'firmwarePatch'].map(function (k) { return state.latest[k] && state.latest[k].value; });
+  var parts = ['logr.firmwareMajor', 'logr.firmwareMinor', 'logr.firmwarePatch'].map(function (k) { return state.latest[k] && state.latest[k].value; });
   return parts[0] !== undefined ? parts.map(function (p) { return p === undefined ? '?' : p; }).join('.') : null;
 }
 
