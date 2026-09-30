@@ -1,7 +1,7 @@
 /*
  * Station — one station: which measurement feeds each of its channels, and
  * the latest value of each (left); the device that measures them and the
- * location or project the station stands in (right). Read-only for everyone.
+ * project the station stands in, with its location (right). Read-only for everyone.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
  *
  * Channels are the keys of `config.channelMap`, each fed by a source key of
@@ -11,7 +11,7 @@
  * the station's other alarms are listed under the channels.
  *
  * `opts`, set by build_project_dashboard.py: `devicesDashboardId` (the device
- * card), `projectDashboardId` (the location and project cards).
+ * card), `projectDashboardId` (the project card).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -38,7 +38,6 @@ var OTHER_ALARMS = [
   { prefix: 'deviceHealth', text: 'Logger self-test fault' },
   { prefix: 'pipelineError', text: 'Data processing error' }
 ];
-var ICON_PIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 12 0c0 5.7-6 11-6 11z"/><circle cx="12" cy="10" r="2"/></svg>';
 
 function parseJson(raw) {
   if (!raw) { return null; }
@@ -338,31 +337,16 @@ function renderSide() {
   });
 
   var parent = state.chain[0], project = state.chain.filter(function (a) { return a.kind === 'Project'; })[0];
-  if (parent && parent.kind === 'Location') {
-    var loc = sideCard('Location', ICON_PIN, parent.name);
-    placeLines(loc, parent);
-    if (project) { line(loc, 'In project ' + project.name, 'ts-row-meta'); }
-    openable(loc, parent);
-  } else if (project) {
-    var pr = sideCard('Project', ICON.map, project.name);
-    line(pr, 'Directly in the project, at no location', 'ts-row-meta');
-    openable(pr, project);
-  } else {
-    line(sideCard('Location', ICON_PIN, 'Nowhere yet'), 'The station is in no location and no project.');
+  if (!project) {
+    line(sideCard('Project', ICON.map, 'No project'), 'The station is in no project.');
+    return;
   }
-}
-
-function placeLines(el, loc) {
-  var l = line(el, '…', 'ts-row-meta');
-  tb.attrsMap(loc).then(function (a) {
-    var lat = Number(a.latitude), lng = Number(a.longitude);
-    l.textContent = a.latitude != null && a.longitude != null && isFinite(lat) && isFinite(lng)
-      ? lat.toFixed(5) + ', ' + lng.toFixed(5) : 'Not placed on the map';
-  });
-}
-
-function openable(el, entity) {
-  if (opts.projectDashboardId) { linkCard(el, function () { tb.openDashboard(opts.projectDashboardId, 'project', entity); }); }
+  var pr = sideCard('Project', ICON.map, project.name);
+  line(pr, parent && parent.kind === 'Location' ? 'Location: ' + parent.name : 'At no location', 'ts-row-meta');
+  if (opts.projectDashboardId) {
+    linkCard(pr, function () { tb.openDashboard(opts.projectDashboardId, 'project', project); });
+    pr.querySelector('.ts-stv-card-head .ts-spacer').insertAdjacentHTML('afterend', '<span class="ts-stv-go">Open project</span>');
+  }
 }
 
 // -- load -------------------------------------------------------------------------------

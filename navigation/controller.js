@@ -76,13 +76,13 @@ function projects() {
 function project(e) {
   if (e.entityType !== 'ASSET') { return; }
   if (e.kind === 'Project') {
-    button('project', ICON.back, e.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', e); });
+    button('project', ICON.back, 'Project: ' + e.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', e); });
     return;
   }
   return tb.ancestors(e).then(function (chain) {
     var p = chain.filter(function (a) { return a.kind === 'Project'; })[0];
     if (!p) { missing('project', 'On no project'); return; }
-    button('project', ICON.back, p.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', p); });
+    button('project', ICON.back, 'Project: ' + p.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', p); });
   });
 }
 

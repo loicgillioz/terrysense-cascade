@@ -508,7 +508,6 @@ function moveStation(entry, locationId) {
 
 function renderHeader() {
   var e = state.entity;
-  cardEl.querySelector('.ts-title').textContent = e.kind === 'Location' ? 'Location' : 'Project';
   cardEl.querySelector('.ts-subtitle').textContent = e.name + (' · ' + state.stations.length +
     (state.stations.length === 1 ? ' station' : ' stations'));
   var worstEl = cardEl.querySelector('.ts-proj-worst');
@@ -523,7 +522,7 @@ function renderHeader() {
 function renderList() {
   listEl.innerHTML = '';
   if (!state.stations.length && !state.locations.length) {
-    fail('No station in this ' + state.entity.kind.toLowerCase() + ' yet.' + (state.canEdit && map ? ' Use Edit map to add a location.' : ''));
+    fail('No station in this project yet.' + (state.canEdit && map ? ' Use Edit map to add a location.' : ''));
     return;
   }
   if (state.filter) {
@@ -664,7 +663,7 @@ function renderPublic() {
   if (!r.token) {
     lines.push(r.reason);
   } else {
-    if (r.denied[state.entity.id]) { lines.push('this ' + state.entity.kind.toLowerCase() + ' is in no public group'); }
+    if (r.denied[state.entity.id]) { lines.push('this project is in no public group'); }
     var locs = state.locations.filter(function (l) { return r.denied[l.id]; });
     if (locs.length) { lines.push(locs.length + (locs.length === 1 ? ' location is' : ' locations are') + ' in no public group'); }
     var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
@@ -948,8 +947,9 @@ gearBtn.addEventListener('click', function () { openDashboard(opts.projectDashbo
 homeBtn.addEventListener('click', function () { openDashboard(state.projectAttrs[HOME_KEY]); });
 
 tb.boundDatasource().then(function (ds) {
-  if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project, location or station in the widget\'s Data tab.'); return; }
+  if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project in the widget\'s Data tab.'); return; }
   return Promise.all([tb.loadEntity(ds), tb.getAsset(ds.entityId), loadNames(), tb.currentUser()]).then(function (got) {
+    if (got[0].kind !== 'Project') { fail('This widget shows a project; ' + got[0].name + ' is a ' + got[0].kind + '.'); return null; }
     state.entity = got[0];
     state.owner = got[1].ownerId;
     state.me = got[3] || {};
@@ -963,6 +963,7 @@ tb.boundDatasource().then(function (ds) {
       load()
     ]);
   }).then(function (got) {
+    if (!got) { return; }
     state.canEdit = got[0] && !state.me.isPublic;
     render();
     timer = setInterval(refresh, REFRESH_MS);

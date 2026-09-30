@@ -5,15 +5,15 @@
  * channels (CA-1), and on a LOGR3 or LOGR4 the commands that reconfigure it
  * (CA-4, TC-8/9). Read-only for anyone else.
  *
- * Laid out as the device's status beside the stations it feeds, above its
- * topology: the LOGR and what hangs off it, one card per position. The layout
- * depends on the family:
+ * Laid out as the product image and the device's status beside its topology:
+ * the LOGR and what hangs off it, one foldable card per position; below both,
+ * the stations it feeds and their channels. The layout depends on the family:
  *   bus    LOGR3, LOGR4: positions from `topology.p<POS>.*`, sources from
  *          `subscriptions.*` and the stored telemetry keys, each with its
  *          interval and whether it is enabled; configurable by command.
  *   logr2  the LOGR and its one or two sensors, fixed in its firmware:
- *          readings grouped by their peripheral prefix; a sensor no longer
- *          used can be removed, its readings deleted; the register.
+ *          readings grouped by their peripheral prefix; the data of a sensor
+ *          no longer used can be deleted; the register.
  *   other  any other device: its readings in one card; the register.
  *
  * A bus source's state is its latest reading: a value newer than its
@@ -71,6 +71,11 @@ var REGISTER = [
   { key: 'register.dfu', label: 'Firmware update (DFU)', flag: true }
 ];
 var FINE_STATUS = /^(all functional|ok|)$/i;
+// Tenant public images, by lower-case device type.
+var PRODUCT_IMAGES = {
+  logr4: '/api/images/public/MV2thHN69nM3RPzhnSOCvGluKYPRahrV',
+  logr2: '/api/images/public/5R9sxOWP2LwdjGai84MW8AVI0bn8vAFn'
+};
 // The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
 // (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
@@ -127,13 +132,22 @@ function fmtValue(v) {
   return String(Math.round(n * 1000) / 1000);
 }
 
+/** good | fair | poor: RSSI and SNR by their thresholds, higher is better (DEVICE_VIEW.md §2). */
+function radioLevel(v, good, fair) {
+  var n = Number(v);
+  return !isFinite(n) ? null : n >= good ? 'good' : n >= fair ? 'fair' : 'poor';
+}
+function rssiLevel(v) { return radioLevel(v, -100, -115); }
+function snrLevel(v) { return radioLevel(v, 0, -10); }
+function sfLevel(v) { return radioLevel(-Number(v), -8, -10); }
+
 function errText(err) { return (err && (err.message || (err.error && err.error.message))) || String(err); }
 
 // -- data -------------------------------------------------------------------------------
 
 var state = {
   device: null, client: {}, server: {}, latest: {}, faults: {}, peripherals: {}, kinds: {}, names: {},
-  showBoard: false, loadedAt: 0, writable: false, me: null,
+  open: {}, loadedAt: 0, writable: false, me: null,
   bindings: [], wiring: {}
 };
 
@@ -758,7 +772,7 @@ function sensorKeys(part) {
 
 /** A LOGR2 sensor no longer used: delete its readings on the device, and take
  * its channels off the stations the user may write. Station history stays. */
-function removeSensor(part) {
+function deleteSensorData(part) {
   var keys = sensorKeys(part);
   var fed = [];
   state.bindings.forEach(function (b) {
@@ -767,13 +781,13 @@ function removeSensor(part) {
     if (gone.length && b.writable) { fed.push({ binding: b, gone: gone }); }
   });
   var device = esc(state.device.label || state.device.name);
-  var text = 'Remove the <b>' + esc(part.label) + '</b> from <b>' + device + '</b>? Its ' + keys.length +
+  var text = 'Delete the data of the <b>' + esc(part.label) + '</b> on <b>' + device + '</b>? Its ' + keys.length +
     ' measurements and their history on the device are deleted.' +
     (fed.length ? ' These station channels stop receiving values and keep their history: <ul>' + fed.map(function (f) {
       return '<li>' + esc(f.binding.station.name) + ' · ' + f.gone.map(esc).join(', ') + '</li>';
     }).join('') + '</ul>' : '') +
     ' A sensor that still reports comes back with its next reading.';
-  ui.confirm(text, 'Remove').then(function (ok) {
+  ui.confirm(text, 'Delete').then(function (ok) {
     if (!ok) { return; }
     return tb.del('/api/plugins/telemetry/DEVICE/' + state.device.id.id + '/timeseries/delete',
       { keys: keys.join(','), deleteAllDataForKeys: 'true', rewriteLatestIfDeleted: 'false' }).then(function () {
@@ -785,9 +799,9 @@ function removeSensor(part) {
     }).then(function () {
       return fed.length ? tb.resolveStations(fed.map(function (f) { return f.binding.station; })) : null;
     }).then(function () {
-      ui.toast(part.label + ' removed');
+      ui.toast(part.label + ' data deleted');
       return refresh();
-    }).catch(function (err) { ui.toast('Not removed: ' + errText(err), 'error'); });
+    }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
   });
 }
 
@@ -899,10 +913,10 @@ function render() {
   chip.textContent = d.type || '';
 
   bodyEl.innerHTML = '';
-  var top = bodyEl.appendChild(h('<div class="ts-dev-top"><div class="ts-dev-status"></div><div class="ts-dev-stations"></div></div>'));
+  var top = bodyEl.appendChild(h('<div class="ts-dev-top"><div class="ts-dev-status"></div><div class="ts-dev-topo"></div></div>'));
   renderStatus(top.firstChild);
-  renderStations(top.lastChild);
-  bodyEl.appendChild(topologySection());
+  top.lastChild.appendChild(topologySection());
+  renderStations(bodyEl.appendChild(h('<div class="ts-dev-stations"></div>')));
   var cmds = family() === 'bus' ? commandsSection() : null;
   if (cmds) { bodyEl.appendChild(cmds); }
   cardEl.classList.toggle('ts-readonly', !state.writable);
@@ -915,18 +929,27 @@ function firmwareOf() {
   return parts[0] !== undefined ? parts.map(function (p) { return p === undefined ? '?' : p; }).join('.') : null;
 }
 
-/** Left pane: the product beside its verdict (TC-3), then its operational
- * status and, for a device that cannot report them, the register. */
+/** Left pane: the product image beside its verdict (TC-3), uplink, versions and
+ * operational status; for a device that cannot report them, the register below. */
 function renderStatus(pane) {
   var faulting = Object.keys(state.faults);
   var active = truthyFlag(state.server.active);
   var hw = state.client['deviceInfo.hwVersion'] || state.server['register.hwVersion'], fw = firmwareOf();
 
-  var id = pane.appendChild(h('<div class="ts-dev-id"><div class="ts-dev-figure" data-figure="placeholder"><span class="ts-dev-model"></span>' +
-    '<span class="ts-row-meta">Product image</span></div><div class="ts-dev-facts"></div></div>'));
-  // The product image goes here, 2:3 portrait, chosen by device type.
-  id.querySelector('.ts-dev-figure').dataset.type = state.device.type || '';
-  id.querySelector('.ts-dev-model').textContent = String(state.device.type || 'device').toUpperCase();
+  var type = String(state.device.type || '');
+  var image = PRODUCT_IMAGES[type.toLowerCase()];
+  var id = pane.appendChild(h('<div class="ts-dev-id"><div class="ts-dev-figure"></div><div class="ts-dev-facts"></div></div>'));
+  var figure = id.querySelector('.ts-dev-figure');
+  figure.dataset.type = type;
+  figure.dataset.figure = image ? 'image' : 'placeholder';
+  if (image) {
+    var img = figure.appendChild(h('<img>'));
+    img.src = image;
+    img.alt = type;
+  } else {
+    figure.appendChild(h('<span class="ts-dev-model"></span>')).textContent = (type || 'device').toUpperCase();
+    figure.appendChild(h('<span class="ts-row-meta">No product image</span>'));
+  }
   var facts = id.querySelector('.ts-dev-facts');
 
   var verdict = active && !faulting.length;
@@ -952,12 +975,13 @@ function renderStatus(pane) {
   }
   if (fw || hw) { kv('Versions', null, '<span class="ts-mono">' + esc([fw ? 'firmware ' + fw : '', hw ? 'hardware ' + hw : ''].filter(Boolean).join(' · ')) + '</span>'); }
   var status = statusSection();
-  if (status) { pane.appendChild(status); }
+  if (status) { facts.appendChild(status); }
   if (family() !== 'bus') { pane.appendChild(registerSection()); }
 }
 
-/** Right pane: the Stations that contain the device, the channels it feeds in
- * each (TC-2), and for a user who may write the device, connecting it (CA-1). */
+/** Below both panes: the Stations that contain the device, one card each with
+ * the channels it feeds there (TC-2), and for a user who may write the device,
+ * connecting it (CA-1). */
 function renderStations(pane) {
   var sec = pane.appendChild(h('<div class="ts-section" data-section="stations"><div class="ts-section-head">Stations ' + info('wiring') + '<span class="ts-spacer"></span></div></div>'));
   if (state.writable) {
@@ -969,16 +993,29 @@ function renderStations(pane) {
     sec.appendChild(h('<div class="ts-empty"><span class="ts-chip warn">on no station</span> Its readings are stored on the device only.</div>'));
     return;
   }
+  var grid = sec.appendChild(h('<div class="ts-dev-stgrid"></div>'));
+  var nodes = topology();
   state.bindings.forEach(function (b) {
     var channels = b.map.sourceDeviceId === undefined || b.map.sourceDeviceId === null || b.map.sourceDeviceId === state.device.id.id ? b.map.channels || {} : {};
-    var fed = Object.keys(channels).map(function (c) { return b.attrs['effective.' + c + '.label'] || c; }).sort();
-    var row = h('<div class="ts-dev-station"><div class="ts-grow"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div><div class="ts-rule-acts"></div></div>');
-    row.dataset.station = b.station.name;
-    row.querySelector('.ts-row-label').textContent = b.station.name;
-    row.querySelector('.ts-row-meta').textContent = fed.length
-      ? fed.length + (fed.length === 1 ? ' channel: ' : ' channels: ') + fed.join(', ')
-      : 'no channel from this device';
-    var acts = row.querySelector('.ts-rule-acts');
+    var names = Object.keys(channels).sort(function (x, y) {
+      return (b.attrs['effective.' + x + '.label'] || x).localeCompare(b.attrs['effective.' + y + '.label'] || y);
+    });
+    var card = h('<div class="ts-dev-station"><div class="ts-dev-station-head"><div class="ts-grow"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div>' +
+      '<div class="ts-rule-acts"></div></div><div class="ts-dev-map"></div></div>');
+    card.dataset.station = b.station.name;
+    card.querySelector('.ts-row-label').textContent = b.station.name;
+    card.querySelector('.ts-row-meta').textContent = names.length ? names.length + (names.length === 1 ? ' channel' : ' channels') : 'no channel from this device';
+    var map = card.querySelector('.ts-dev-map');
+    names.forEach(function (c) {
+      var row = map.appendChild(h('<div class="ts-dev-maprow"><div class="ts-dev-ch"><span></span><span class="ts-mono"></span></div><div class="ts-dev-from"></div></div>'));
+      row.dataset.channel = c;
+      var label = b.attrs['effective.' + c + '.label'] || c;
+      row.querySelector('.ts-dev-ch span').textContent = label;
+      if (label !== c) { row.querySelector('.ts-dev-ch .ts-mono').textContent = c; } else { row.querySelector('.ts-dev-ch .ts-mono').remove(); }
+      row.querySelector('.ts-dev-from').textContent = '← ' + sourceText(channels[c], nodes);
+      row.querySelector('.ts-dev-from').title = channels[c];
+    });
+    var acts = card.querySelector('.ts-rule-acts');
     if (state.writable && b.writable) {
       var edit = h('<button type="button" class="ts-icon-btn" data-a="edit" title="Choose the channels">' + ICON.edit + '</button>');
       edit.addEventListener('click', function (e) { e.stopPropagation(); bindDrawer(b); });
@@ -988,19 +1025,45 @@ function renderStations(pane) {
       acts.appendChild(off);
     }
     if (opts.projectDashboardId) {
-      row.classList.add('link');
-      row.tabIndex = 0;
-      row.setAttribute('role', 'button');
+      card.classList.add('link');
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
       acts.appendChild(h('<span class="ts-dev-go">' + ICON.chev + '</span>'));
       var go = function () { tb.openDashboard(opts.projectDashboardId, 'station', b.station); };
-      row.addEventListener('click', go);
-      row.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === row) { go(); } });
+      card.addEventListener('click', go);
+      card.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === card) { go(); } });
     }
-    sec.appendChild(row);
+    grid.appendChild(card);
   });
 }
 
-/** Full width: the LOGR and what hangs off it, one card per position (TC-1, TC-5). */
+/** The device measurement a channel is fed from, in words. */
+function sourceText(key, nodes) {
+  var s = family() === 'bus' && parseSource(key);
+  if (!s) { return labelOf(key); }
+  return sourceLabel(s, nodes[s.position]) + (s.position ? ' · position ' + s.position : ' · the LOGR itself');
+}
+
+/** A position or part as a foldable card; the user's folding outlives a refresh. */
+function foldable(id, open) {
+  var box = h('<details class="ts-pos"><summary class="ts-pos-head"><span class="ts-pos-chev">' + ICON.chev + '</span><span class="ts-pos-num"></span>' +
+    '<div class="ts-grow"><div class="ts-pos-name"></div><div class="ts-mono"></div></div><span class="ts-pos-count"></span></summary></details>');
+  box.open = state.open[id] !== undefined ? state.open[id] : open;
+  box.addEventListener('toggle', function () { state.open[id] = box.open; });
+  return box;
+}
+
+function countText(n) { return n + (n === 1 ? ' reading' : ' readings'); }
+
+/** A button in a card's summary acts without folding the card. */
+function headButton(box, html, onClick) {
+  var b = box.querySelector('.ts-pos-head').appendChild(h(html));
+  b.addEventListener('click', function (e) { e.preventDefault(); onClick(); });
+  return b;
+}
+
+/** Right pane: the LOGR and what hangs off it, one foldable card per position,
+ * stacked in bus order (TC-1, TC-5). */
 function topologySection() {
   var fam = family();
   var sec = h('<div class="ts-section ts-dev-bus"><div class="ts-section-head">Topology ' + info('position') + '</div><div class="ts-bus"></div></div>');
@@ -1029,24 +1092,19 @@ function topologySection() {
 
 /** A LOGR2 part or another device, read-only: its readings and the station channel each feeds. */
 function partCard(part, pos) {
-  var box = h('<div class="ts-pos"><div class="ts-pos-head"><span class="ts-pos-num"></span><div class="ts-grow"><div class="ts-pos-name"></div></div></div></div>');
+  var logger = part.id === 'logr';
+  var box = foldable('part.' + part.id, !logger);
   box.dataset.part = part.id;
   var num = box.querySelector('.ts-pos-num');
   if (pos === null) { num.remove(); } else { num.textContent = pos; }
   box.querySelector('.ts-pos-name').textContent = part.label || 'LOGR itself';
-  var logger = part.id === 'logr';
+  box.querySelector('.ts-pos-head .ts-mono').remove();
+  box.querySelector('.ts-pos-count').textContent = countText(part.keys.length);
   if (LOGR2_SENSORS[part.id] && state.writable) {
-    var drop = h('<button type="button" class="ts-btn" data-a="remove-sensor">Remove sensor</button>');
-    drop.addEventListener('click', function () { removeSensor(part); });
-    box.querySelector('.ts-pos-head').appendChild(drop);
+    headButton(box, '<button type="button" class="ts-btn danger" data-a="delete-data">Delete data</button>', function () { deleteSensorData(part); });
   }
   if (!part.keys.length) {
     box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty">No reading yet.</span></div>'));
-  } else if (logger && !state.showBoard) {
-    var show = h('<button type="button" class="ts-more"></button>');
-    show.textContent = 'Show ' + part.keys.length + ' on-board reading' + (part.keys.length === 1 ? '' : 's');
-    show.addEventListener('click', function () { state.showBoard = true; render(); });
-    box.appendChild(show);
   } else {
     part.keys.slice().sort(function (a, b) { return labelOf(a).localeCompare(labelOf(b)); })
       .forEach(function (key) { box.appendChild(readingRow(key, logger)); });
@@ -1078,17 +1136,17 @@ function wireText(key) {
 
 function positionCard(pos, node, srcs) {
   var own = srcs.filter(function (s) { return s.position === pos; }).sort(function (a, b) { return a.sourceKey.localeCompare(b.sourceKey); });
-  var box = h('<div class="ts-pos"><div class="ts-pos-head"><span class="ts-pos-num"></span><div class="ts-grow"><div class="ts-pos-name"></div><div class="ts-mono"></div></div></div>' +
-    '<div class="ts-pos-flags"></div></div>');
+  var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
+  var box = foldable('p' + pos, pos !== 0 || bad.length > 0);
   box.dataset.position = pos;
-  var head = box.querySelector('.ts-pos-head'), flags = box.querySelector('.ts-pos-flags');
+  var flags = box.querySelector('.ts-pos-head .ts-grow').appendChild(h('<div class="ts-pos-flags"></div>'));
   box.querySelector('.ts-pos-num').textContent = pos;
   var p = node && state.peripherals[node.type];
   box.querySelector('.ts-pos-name').textContent = pos === 0 ? 'LOGR itself' : (p ? p.displayName : node ? node.type : 'Unknown peripheral');
-  box.querySelector('.ts-mono').textContent = node ? node.type + (node.version !== undefined && node.version !== null ? ' · v' + node.version : '') : '';
+  box.querySelector('.ts-pos-head .ts-mono').textContent = node ? node.type + (node.version !== undefined && node.version !== null ? ' · v' + node.version : '') : '';
+  box.querySelector('.ts-pos-count').textContent = countText(own.length);
   if (!node) { flags.appendChild(h('<span class="ts-chip warn">not in the topology report</span>')); }
   else if (!p && pos !== 0) { flags.appendChild(h('<span class="ts-chip warn">not in the catalog</span>')); }
-  var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
   if (bad.length) { flags.appendChild(h('<span class="ts-chip fault">' + bad.length + ' faulting</span>')); }
   var more = node && pos !== 0 ? unsubscribed(pos, node, own).length : 0;
   if (more) { flags.appendChild(h('<span class="ts-chip" data-available="' + more + '" title="Measurements this peripheral offers that the LOGR does not subscribe, from the catalog">+' + more + ' available</span>')); }
@@ -1096,20 +1154,12 @@ function positionCard(pos, node, srcs) {
     flags.appendChild(h('<span class="ts-chip warn" data-unwired="1">not wired to any station</span>'));
   }
   if (state.writable && node && unsubscribed(pos, node, own).length) {
-    var add = h('<button type="button" class="ts-btn ts-add">' + ICON.plus + 'Add subscription</button>');
-    add.addEventListener('click', function () { addDrawer(pos, node, own); });
-    head.appendChild(add);
+    headButton(box, '<button type="button" class="ts-btn ts-add">' + ICON.plus + 'Add subscription</button>', function () { addDrawer(pos, node, own); });
   }
   if (!flags.childNodes.length) { flags.remove(); }
 
-  var collapsed = pos === 0 && !bad.length && !state.showBoard;
   if (!own.length) {
     box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty">No subscription and no reading from this position.</span></div>'));
-  } else if (collapsed) {
-    var show = h('<button type="button" class="ts-more"></button>');
-    show.textContent = 'Show ' + own.length + ' on-board reading' + (own.length === 1 ? '' : 's');
-    show.addEventListener('click', function () { state.showBoard = true; render(); });
-    box.appendChild(show);
   } else {
     own.forEach(function (s) { box.appendChild(sourceRow(s, node)); });
   }
@@ -1130,7 +1180,10 @@ function statusSection() {
     el.dataset.stat = title;
     el.querySelector('span').textContent = title;
     el.querySelector('.ts-stat-from').textContent = from;
-    lines.forEach(function (l) { el.appendChild(h('<div class="ts-stat-line"></div>')).textContent = l; });
+    lines.forEach(function (l) {
+      var line = el.appendChild(h('<div class="ts-stat-line"></div>'));
+      [].concat(l).forEach(function (x) { line.appendChild(typeof x === 'string' ? document.createTextNode(x) : x); });
+    });
     grid.appendChild(el);
   }
   var subs = srcs.filter(function (x) { return x.enabled === true || x.enabled === 'true'; });
@@ -1143,18 +1196,22 @@ function statusSection() {
       : 'No subscription reported'
   ]); }
   var net = [];
-  if (lat.rssi) { net.push('Uplink ' + lat.rssi.value + ' dBm, SNR ' + (lat.snr ? lat.snr.value : '?') + ' dB'); }
   var sf = state.server.spreadingFactor !== undefined ? state.server.spreadingFactor : c.spreadingFactor;
-  if (sf !== undefined) { net.push('Spreading factor ' + sf); }
+  var link = [];
+  if (lat.rssi) { link.push(metric(lat.rssi.value + ' dBm', rssiLevel(lat.rssi.value))); }
+  if (lat.snr) { link.push(metric('SNR ' + lat.snr.value + ' dB', snrLevel(lat.snr.value))); }
+  if (sf !== undefined) { link.push(metric('SF' + sf, sfLevel(sf))); }
+  if (link.length) { net.push(joined(link)); }
   var gws = parseJson(c.gateways || state.server.gateways) || [];
   if (gws.length) {
-    net.push('Heard by ' + gws.length + (gws.length === 1 ? ' gateway: ' : ' gateways, best: ') + gws.slice(0, 3).map(function (g) {
-      return g.id + (g.rssi !== undefined && g.rssi !== null ? ' (' + g.rssi + ' dBm)' : '');
-    }).join(', '));
+    net.push([gws.length + (gws.length === 1 ? ' gateway: ' : ' gateways: ')].concat(joined(gws.slice(0, 3).map(function (g) {
+      return g.rssi !== undefined && g.rssi !== null ? [g.id + ' ', metric(g.rssi + ' dBm', rssiLevel(g.rssi))] : g.id;
+    }), ', ')));
   }
   if (family() !== 'other' || net.length) { card('Uplink radio', 'network', net.length ? net : ['Nothing from the network server yet']); }
   if (hasStatus) {
-    card('Downlink radio', 'device', ['RSSI ' + c['status.dlRssi'] + ' dBm, SNR ' + c['status.dlSnr'] + ' dB']);
+    card('Downlink radio', 'device', [joined([metric(c['status.dlRssi'] + ' dBm', rssiLevel(c['status.dlRssi'])),
+      metric('SNR ' + c['status.dlSnr'] + ' dB', snrLevel(c['status.dlSnr']))])]);
   }
   var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var batt = [];
@@ -1187,6 +1244,18 @@ function statusSection() {
       (state.writable ? ' (Request reports below asks for it).' : '.') + '</div>'));
   }
   return grid.childNodes.length ? sec : null;
+}
+
+function metric(text, level) {
+  var el = h('<span class="ts-radio"></span>');
+  el.textContent = text;
+  if (level) { el.dataset.level = level; }
+  return el;
+}
+
+/** Items, each a string, a node or a list of both, flattened with `sep` between them. */
+function joined(items, sep) {
+  return items.reduce(function (out, x, i) { return out.concat(i ? [sep || ' · '] : [], x); }, []);
 }
 
 function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
