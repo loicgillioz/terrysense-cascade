@@ -6,7 +6,8 @@
  * `opts`, set by the dashboard builders: `links`, a list of
  *   fleet     the Devices dashboard's landing view
  *   device    the device view of the bound device
- *   relays    the relay controller view of the bound device, a LOGR2
+ *   relays    the dry contact interface view of the bound device, a LOGR2
+ *             that has reported a DRYC reading
  *   projects  the Project dashboard's landing view
  *   project   the Project view of the bound project, or of the project above it
  *   station   the station view of the bound station
@@ -67,7 +68,11 @@ function device(e) {
 
 function relays(e) {
   if (e.entityType !== 'DEVICE' || e.kind !== 'logr2') { return; }
-  button('relays', ICON_RELAY, 'Relay controller', function () { tb.openDashboard(opts.devicesDashboardId, 'relays', e); });
+  // A LOGR2 has a DRYC once it has reported a `dryc.` reading.
+  return tb.get('/api/plugins/telemetry/DEVICE/' + e.id + '/keys/timeseries').then(function (keys) {
+    if (!(keys || []).some(function (k) { return k.indexOf('dryc.') === 0; })) { return; }
+    button('relays', ICON_RELAY, 'Dry contact interface', function () { tb.openDashboard(opts.devicesDashboardId, 'relays', e); });
+  });
 }
 
 function projects() {

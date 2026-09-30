@@ -39,9 +39,9 @@ var TERMS = {
   statusSources: 'Each value names its source: device values come from the LOGR’s own reports (STATUS, SUBSCRIPTIONS), network values from the network server’s reception of the last uplink. The cloud estimates none of them; the battery runtime is the same number the BLE app shows.',
   wiring: 'The stations this device feeds, through their channel maps. A position or a reading feeding no station is stored on the device only and shows on no dashboard.',
   uplink: 'Active while the LOGR has sent anything within its inactivity timeout. A unit that went silent shows here, even when every sensor was fine at its last uplink.',
-  drycRules: 'The relay controller runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
-  drycRecords: 'The relay controller holds at most 16 records: one per notifying rule, and one per relay a rule switches.',
-  drycSync: 'Saving keeps the rules here. Send puts them on the relay controller, after the logger’s next uplink.',
+  drycRules: 'The dry contact interface runs these rules itself, first to last. A rule that notifies wakes the logger when it starts and when it ends; the station then raises or clears an alarm, sent to its contacts like any other.',
+  drycRecords: 'The dry contact interface holds at most 16 records: one per notifying rule, and one per relay a rule switches.',
+  drycSync: 'Saving keeps the rules here. Send puts them on the dry contact interface, after the logger’s next uplink.',
   register: 'Facts an older unit (LOGR2) cannot report itself, kept by hand by in-terra or the customer admin: hardware version, hardware status, LoRa module firmware, whether a firmware update is possible, and the inactivity timeout. A LOGR3 or LOGR4 reports them itself.',
   commands: 'A command reaches the LOGR after its next uplink (LoRaWAN Class A), so it waits here until the device answers. With no answer after a day, or two uplink intervals when longer, it is shown as unanswered.',
   peripheralFault: 'Sources the LOGR reported a failed read for, and that have not sent a value since. The device states the fault; nothing is guessed from missing data.'

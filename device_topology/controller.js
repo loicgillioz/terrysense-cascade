@@ -26,11 +26,12 @@
  * Connecting writes the STATION -> DEVICE `Contains` relation, the station's
  * `config.channelMap`, then a resolve. A station keeps one source device (CHANNEL_MAP.md §3), so connecting to a
  * station fed by another device replaces it and keeps the channels this one
- * reports. The relay controller's `drycRule.*` channels belong to the DRYC
+ * reports. The dry contact interface's `drycRule.*` channels belong to the DRYC
  * widget and are kept. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
  *
  * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose Station
- * view a station opens.
+ * view a station opens, and `devicesDashboardId`, whose dry contact interface
+ * view the DRYC card opens.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -61,7 +62,7 @@ var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
-// Device bookkeeping, not readings: radio, uplink markers, the relay controller's own counters.
+// Device bookkeeping, not readings: radio, uplink markers, the dry contact interface's own counters.
 var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRuleCount', 'dryc.drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
 var REGISTER = [
@@ -80,7 +81,7 @@ var PRODUCT_IMAGES = {
 // The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
 // (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
-var LOGR2_SENSORS = { phpr: 'pH probe', cond: 'Conductivity probe', dryc: 'Relay controller', flow: 'Flow meter',
+var LOGR2_SENSORS = { phpr: 'pH probe', cond: 'Conductivity probe', dryc: 'Dry contact interface', flow: 'Flow meter',
   clmt: 'Climate sensor', inclTilt: 'Inclinometer or tiltmeter', usonRdar: 'Ultrasonic or radar level sensor' };
 
 function parseSource(key) {
@@ -749,7 +750,7 @@ function bindDrawer(binding) {
  * its history keeps it too. */
 function channelsFor(old, chosen) {
   var channels = {};
-  // The relay controller's rule channels stay with this device.
+  // The dry contact interface's rule channels stay with this device.
   Object.keys(old).forEach(function (c) { if (RULE_SOURCE.test(old[c])) { channels[c] = old[c]; } });
   var byName = {};
   chosen.forEach(function (c) { (byName[c.name] = byName[c.name] || []).push(c); });
@@ -827,7 +828,7 @@ function disconnect(b) {
   });
 }
 
-/** Every stored key of a LOGR2 sensor, its bookkeeping and the relay controller's
+/** Every stored key of a LOGR2 sensor, its bookkeeping and the dry contact interface's
  * rule matches included. */
 function sensorKeys(part) {
   return Object.keys(state.latest).filter(function (k) {
@@ -1285,6 +1286,11 @@ function partCard(part, pos) {
   box.querySelector('.ts-pos-name').textContent = part.label || 'LOGR itself';
   box.querySelector('.ts-pos-head .ts-mono').remove();
   box.querySelector('.ts-pos-count').textContent = countText(part.keys.length);
+  if (part.id === 'dryc' && opts.devicesDashboardId) {
+    headButton(box, '<button type="button" class="ts-btn" data-a="relays">Dry contact interface</button>', function () {
+      tb.openDashboard(opts.devicesDashboardId, 'relays', { entityType: 'DEVICE', id: state.device.id.id, name: state.device.name });
+    });
+  }
   if (LOGR2_SENSORS[part.id] && state.writable) {
     headButton(box, '<button type="button" class="ts-btn danger" data-a="delete-data">Delete data</button>', function () { deleteSensorData(part); });
   }

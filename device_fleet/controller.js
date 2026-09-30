@@ -8,7 +8,8 @@
  * the active alarms per device; the `Contains` relations name the stations a
  * device feeds. A LOGR3 or LOGR4 reports its versions (`deviceInfo.*`) and its
  * hardware state (`status.healthFaults`) and always takes a firmware update; any
- * other device shows the hand-kept `register.*`. A column header sorts by that column; an empty
+ * other device shows the hand-kept `register.*`. A tenant admin also sees each device's customer,
+ * none for a device the tenant owns. A column header sorts by that column; an empty
  * cell (a device never heard from, on no station) sorts last either way.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
@@ -47,14 +48,14 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], group: 'logr', filter: 'all', search: '', sort: 'uplink', dir: -1, loadedAt: 0 };
+var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
   GROUPS.forEach(function (g) { profiles = profiles.concat(g.profiles); });
   return tb.post('/api/entitiesQuery/find', {
     entityFilter: { type: 'deviceType', deviceTypes: profiles, deviceNameFilter: '' },
-    entityFields: ['name', 'label', 'type', 'ownerName'].map(function (k) { return { type: 'ENTITY_FIELD', key: k }; }),
+    entityFields: ['name', 'label', 'type', 'ownerName', 'ownerType'].map(function (k) { return { type: 'ENTITY_FIELD', key: k }; }),
     latestValues: ATTRS.map(function (k) { return { type: 'ATTRIBUTE', key: k }; }),
     pageLink: { page: 0, pageSize: PAGE, sortOrder: { key: { type: 'ENTITY_FIELD', key: 'name' }, direction: 'ASC' } }
   }).then(function (page) {
@@ -65,6 +66,7 @@ function queryDevices() {
       ATTRS.forEach(function (k) { attrs[k] = v(a, k); });
       return {
         id: e.entityId.id, name: v(f, 'name'), label: v(f, 'label'), type: v(f, 'type'), owner: v(f, 'ownerName'),
+        customer: v(f, 'ownerType') === 'CUSTOMER' ? v(f, 'ownerName') : null,
         attrs: attrs, stations: [], alarms: []
       };
     });
@@ -144,18 +146,19 @@ function hwStatus(d) { return reports(d) ? healthFaults(d).join(', ') : String(d
 function hwStatusBad(d) { return !FINE_STATUS.test(hwStatus(d)); }
 function dfuImpossible(d) { return !reports(d) && d.attrs['register.dfu'] !== undefined && !flag(d.attrs['register.dfu']); }
 
-/** Columns of each list: header, default direction, and the value it sorts by (null sorts last). */
+/** Columns of each list: header, default direction, the value it sorts by (null sorts last), cell class and width. */
 var COLUMNS = {
-  device: { label: 'Device', dir: 1, value: function (d) { return String(d.name || '').toLowerCase(); } },
-  uplink: { label: 'Last uplink', dir: -1, value: function (d) { return lastTs(d) || null; } },
-  stations: { label: 'Stations', dir: 1, value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
-  versions: { label: 'Versions', dir: 1, value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
-  hardware: { label: 'Hardware', dir: -1, value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
-  type: { label: 'Type', dir: 1, value: function (d) { return d.type || null; } },
-  alarms: { label: 'Alarms', dir: -1, value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
+  device: { label: 'Device', dir: 1, cell: 'ts-fleet-dev', width: 'minmax(180px, 2fr)', value: function (d) { return String(d.name || '').toLowerCase(); } },
+  customer: { label: 'Customer', dir: 1, cell: 'ts-fleet-cust', width: 'minmax(110px, 1fr)', value: function (d) { return d.customer ? d.customer.toLowerCase() : null; } },
+  uplink: { label: 'Last uplink', dir: -1, cell: 'ts-fleet-up', width: '110px', value: function (d) { return lastTs(d) || null; } },
+  stations: { label: 'Stations', dir: 1, cell: 'ts-fleet-st', width: 'minmax(120px, 1.5fr)', value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
+  versions: { label: 'Versions', dir: 1, cell: 'ts-fleet-ver', width: 'minmax(120px, 1fr)', value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
+  hardware: { label: 'Hardware', dir: -1, cell: 'ts-fleet-hw', width: 'minmax(110px, 1fr)', value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
+  type: { label: 'Type', dir: 1, cell: 'ts-fleet-type', width: '90px', value: function (d) { return d.type || null; } },
+  alarms: { label: 'Alarms', dir: -1, cell: 'ts-fleet-al', width: '90px', value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
 };
 function columnsOf(logr) {
-  return ['device', 'uplink', 'stations'].concat(logr ? ['versions', 'hardware'] : ['type'], ['alarms']);
+  return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'stations'], logr ? ['versions', 'hardware'] : ['type'], ['alarms']);
 }
 
 function needsLook(d) {
@@ -189,7 +192,7 @@ var cardEl = h(
   '  <div class="ts-fleet-bar">' +
   '    <div class="ts-seg" data-bar="group"></div>' +
   '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button></div>' +
-  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, owner, station"></label>' +
+  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, station"></label>' +
   '  </div>' +
   '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-fleet-updated"></span><span class="ts-spacer"></span>' +
@@ -239,7 +242,8 @@ function render() {
   if (!list.length) { fail(state.search || state.filter !== 'all' ? 'No device matches.' : 'No device here yet.'); return; }
   var logr = state.group === 'logr';
   if (columnsOf(logr).indexOf(state.sort) < 0) { state.sort = 'uplink'; state.dir = -1; return render(); }
-  var table = h('<div class="ts-fleet-list' + (logr ? ' logr' : '') + '"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
+  var table = h('<div class="ts-fleet-list"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
+  table.style.setProperty('--ts-fleet-cols', columnsOf(logr).map(function (id) { return COLUMNS[id].width; }).join(' '));
   var head = table.firstChild;
   columnsOf(logr).forEach(function (id) {
     var on = state.sort === id;
@@ -257,16 +261,17 @@ function render() {
 
 function row(d, logr) {
   var live = liveness(d);
-  var el = h('<div class="ts-fleet-row" tabindex="0" role="button">' +
-    '<span class="ts-fleet-dev"><span class="ts-dot"></span><span class="ts-fleet-names"><b></b><small></small></span></span>' +
-    '<span class="ts-fleet-up"></span><span class="ts-fleet-st"></span>' +
-    (logr ? '<span class="ts-fleet-ver"></span><span class="ts-fleet-hw"></span>' : '<span class="ts-fleet-type"></span>') +
-    '<span class="ts-fleet-al"></span></div>');
+  var el = h('<div class="ts-fleet-row" tabindex="0" role="button">' + columnsOf(logr).map(function (id) {
+    return '<span class="' + COLUMNS[id].cell + '"></span>';
+  }).join('') + '</div>');
+  el.querySelector('.ts-fleet-dev').innerHTML = '<span class="ts-dot"></span><span class="ts-fleet-names"><b></b><small></small></span>';
   el.setAttribute('data-device', d.name);
   el.setAttribute('data-live', live);
   el.querySelector('.ts-dot').style.background = live === 'live' ? 'var(--ts-ok)' : live === 'inactive' ? 'var(--ts-danger)' : 'var(--ts-text-3)';
   el.querySelector('b').textContent = d.name;
-  el.querySelector('small').textContent = [d.label, d.owner].filter(Boolean).join(' · ');
+  el.querySelector('small').textContent = d.label || '';
+  var cust = el.querySelector('.ts-fleet-cust');
+  if (cust) { cust.textContent = d.customer || 'none'; cust.classList.toggle('none', !d.customer); }
   var up = el.querySelector('.ts-fleet-up');
   up.textContent = ago(lastTs(d));
   up.title = fmtTime(lastTs(d)) + (Number(d.attrs.inactivityTimeout) > 0
@@ -318,7 +323,7 @@ function refresh() {
 }
 refreshBtn.addEventListener('click', refresh);
 
-load().then(function () {
+tb.currentUser().then(function (me) { state.tenant = me.authority === 'TENANT_ADMIN'; }).catch(function () {}).then(load).then(function () {
   render();
   timer = setInterval(refresh, REFRESH_MS);
 }).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });

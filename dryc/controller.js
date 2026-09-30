@@ -1,5 +1,5 @@
 /*
- * DRYC — the relay controller of a LOGR2: its live inputs and relays, its rules,
+ * DRYC — the dry contact interface of a LOGR2: its live inputs and relays, its rules,
  * and sending them to the device (CA-5). Bound to a STATION (its LOGR2) or to
  * the LOGR2 DEVICE itself. Model: logr-product-docs/cloud/DRYC.md.
  *
@@ -118,11 +118,11 @@ function syncState() {
     if (Date.now() - (pending.issuedAt || 0) > DAY_MS) { return { s: 'drift', text: 'Sent ' + ago(pending.issuedAt) + ' and never confirmed. Send again.' }; }
     return { s: 'waiting', text: 'Sent ' + ago(pending.issuedAt) + '. Delivered after the logger’s next uplink.' };
   }
-  if (lastRules && !lastRules.ok) { return { s: 'drift', text: 'The relay controller refused the last rules sent. Send again.' }; }
-  if (lastRules && JSON.stringify(lastRules.commands[0].records) !== want) { return { s: 'changed', text: 'Rules changed since they were last sent. The relay controller still runs the previous ones.' }; }
-  if (count !== null && count !== n) { return { s: 'drift', text: 'The relay controller reports ' + count + ' record' + (count === 1 ? '' : 's') + ', these rules need ' + n + '. Send them.' }; }
-  if (lastRules) { return { s: 'insync', text: 'On the relay controller: these rules, confirmed ' + ago(lastRules.ackedAt) + '.' }; }
-  return { s: 'insync', text: count === null ? 'No status from the relay controller yet.' : 'The relay controller holds ' + count + ' record' + (count === 1 ? '' : 's') + ', as these rules need.' };
+  if (lastRules && !lastRules.ok) { return { s: 'drift', text: 'The dry contact interface refused the last rules sent. Send again.' }; }
+  if (lastRules && JSON.stringify(lastRules.commands[0].records) !== want) { return { s: 'changed', text: 'Rules changed since they were last sent. The dry contact interface still runs the previous ones.' }; }
+  if (count !== null && count !== n) { return { s: 'drift', text: 'The dry contact interface reports ' + count + ' record' + (count === 1 ? '' : 's') + ', these rules need ' + n + '. Send them.' }; }
+  if (lastRules) { return { s: 'insync', text: 'On the dry contact interface: these rules, confirmed ' + ago(lastRules.ackedAt) + '.' }; }
+  return { s: 'insync', text: count === null ? 'No status from the dry contact interface yet.' : 'The dry contact interface holds ' + count + ' record' + (count === 1 ? '' : 's') + ', as these rules need.' };
 }
 
 // -- data -------------------------------------------------------------------------------
@@ -204,7 +204,7 @@ function deviceEntity() {
 /** The station side of the rules: a `drycRule-<n>` channel per notifying rule,
  * keeping the key a rule already has so its stored series stays continuous. */
 function stationWrites(set, stationAttrs) {
-  // The relay controller's own channels, as {channel: sourceKey}; another
+  // The dry contact interface's own channels, as {channel: sourceKey}; another
   // device's channels on the same station stay as they are (CHANNEL_MAP.md §1).
   var me = state.device.id.id;
   var entries = resolver.mapEntries(stationAttrs['config.channelMap']);
@@ -287,7 +287,7 @@ function save(set) {
 
 function sendRules() {
   var recs = records(state.rules);
-  ui.confirm('Send ' + recs.length + ' record' + (recs.length === 1 ? '' : 's') + ' to the relay controller of <b>' +
+  ui.confirm('Send ' + recs.length + ' record' + (recs.length === 1 ? '' : 's') + ' to the dry contact interface of <b>' +
     esc(state.device.label || state.device.name) + '</b>? They replace the rules it runs now, after the logger’s next uplink.', 'Send').then(function (ok) {
     if (!ok) { return; }
     var request = { commands: [{ op: 'DRYC_RULES', records: recs }], by: (state.me && state.me.email) || null, issuedAt: Date.now() };
@@ -304,7 +304,7 @@ function errText(err) { return (err && (err.message || (err.error && err.error.m
 
 root.innerHTML = '';
 var cardEl = h('<div class="ts-card"><div class="ts-head"><div class="ts-head-icon">' + ICON.settings + '</div><div class="ts-head-text">' +
-  '<div class="ts-title"><span>Relay controller</span> ' + info('drycRules') + '</div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
+  '<div class="ts-title"><span>Dry contact interface</span> ' + info('drycRules') + '</div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
   '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '<div class="ts-foot" hidden><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div></div>');
 root.appendChild(cardEl);
@@ -338,16 +338,16 @@ function render() {
   strip.querySelector('.ts-cap').insertAdjacentHTML('beforeend', ' ' + info('drycRecords'));
   if (canSend() && sync.s !== 'waiting') {
     var needed = sync.s === 'changed' || sync.s === 'drift';
-    var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '">Send to relay controller</button>');
+    var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '">Send to dry contact interface</button>');
     send.addEventListener('click', sendRules);
     strip.appendChild(send);
   }
   bodyEl.appendChild(strip);
   if (state.others.length) {
     var warn = h('<div class="ts-banner warn" data-warn="competing">' + ICON.info + '<span></span></div>');
-    warn.querySelector('span').innerHTML = 'Rules for this relay controller are also kept on <b>' +
+    warn.querySelector('span').innerHTML = 'Rules for this dry contact interface are also kept on <b>' +
       state.others.map(function (o) { return esc(o.name); }).join('</b>, <b>') +
-      '</b>. The relay controller runs whichever set was sent last: keep them on one station.';
+      '</b>. The dry contact interface runs whichever set was sent last: keep them on one station.';
     bodyEl.appendChild(warn);
   }
 
@@ -474,13 +474,13 @@ function ruleDrawer(idx) {
   var r = creating
     ? { id: nextId(state.rules), name: '', condition: { mask: 0, state: 0 }, relays: { relay1: false, relay2: false }, notify: { severity: 'major' } }
     : clone(state.rules.rules[idx]);
-  var dr = ui.openDrawer(creating ? 'New rule' : 'Edit rule ' + (idx + 1), 'Saved here; Send puts the rules on the relay controller ' + info('drycSync'));
+  var dr = ui.openDrawer(creating ? 'New rule' : 'Edit rule ' + (idx + 1), 'Saved here; Send puts the rules on the dry contact interface ' + info('drycSync'));
   var body = dr.body;
   body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Name</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="name" maxlength="60"></div></div>'));
   var nameIn = body.querySelector('[data-f=name]');
   nameIn.value = r.name;
   var cond = h('<div class="ts-field"><div class="ts-field-label"><span>When all of these hold</span></div><div class="ts-conds"></div>' +
-    '<div class="ts-field-hint">Every input set to On or Off must hold. The relay controller evaluates the rule itself.</div></div>');
+    '<div class="ts-field-hint">Every input set to On or Off must hold. The dry contact interface evaluates the rule itself.</div></div>');
   var list = cond.querySelector('.ts-conds');
   for (var i = 0; i < INPUTS; i++) {
     var cur = (r.condition.mask & (1 << i)) ? ((r.condition.state & (1 << i)) ? 'on' : 'off') : 'any';
@@ -545,7 +545,7 @@ function ruleDrawer(idx) {
   }
   function count() {
     var nrec = records(draftSet()).length;
-    countEl.textContent = 'Relay controller records: ' + nrec + ' of ' + MAX_RECORDS + '.';
+    countEl.textContent = 'Dry contact interface records: ' + nrec + ' of ' + MAX_RECORDS + '.';
     countEl.classList.toggle('ts-error', nrec > MAX_RECORDS);
   }
   count();
@@ -555,7 +555,7 @@ function ruleDrawer(idx) {
     var problem = !x.name ? 'Give the rule a name.'
       : !x.condition.mask ? 'Set at least one input to On or Off.'
       : !(x.relays.relay1 || x.relays.relay2 || x.notify) ? 'Pick at least one action.'
-      : records(draftSet()).length > MAX_RECORDS ? 'That needs more than ' + MAX_RECORDS + ' records on the relay controller.'
+      : records(draftSet()).length > MAX_RECORDS ? 'That needs more than ' + MAX_RECORDS + ' records on the dry contact interface.'
       : null;
     if (problem) { ui.toast(problem, 'error'); return; }
     commit(draftSet(), creating ? 'Rule added' : 'Rule saved');
@@ -592,7 +592,7 @@ tb.boundDatasource().then(function (ds) {
   return findDevice(ds).then(function (got) {
     state.device = got[0];
     state.bound = got[1];
-    if (!state.device) { fail('This station’s device has no relay controller.'); return; }
+    if (!state.device) { fail('This station’s device has no dry contact interface.'); return; }
     return Promise.all([loadDevice(), tb.currentUser(), tb.canWrite(deviceEntity())]).then(function (all) {
       state.me = all[1];
       state.writeDevice = all[2];
