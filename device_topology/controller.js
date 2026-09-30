@@ -11,8 +11,9 @@
  *   bus    LOGR3, LOGR4: positions from `topology.p<POS>.*`, sources from
  *          `subscriptions.*` and the stored telemetry keys, each with its
  *          interval and whether it is enabled; configurable by command.
- *   logr2  the LOGR and its one or two sensors, fixed in its firmware, so
- *          read-only: readings grouped by their peripheral prefix; the register.
+ *   logr2  the LOGR and its one or two sensors, fixed in its firmware:
+ *          readings grouped by their peripheral prefix; a sensor no longer
+ *          used can be removed, its readings deleted; the register.
  *   other  any other device: its readings in one card; the register.
  *
  * A bus source's state is its latest reading: a value newer than its
@@ -22,9 +23,8 @@
  * `dl_dispatch` sends it and `dl_ack` turns the answer into `cmd.lastResult`
  * (DOWNLINK.md).
  *
- * Connecting writes what the channel-map editor writes: the STATION -> DEVICE
- * `Contains` relation, the station's `config.channelMap`, then a resolve. A
- * station keeps one source device (CHANNEL_MAP.md §3), so connecting to a
+ * Connecting writes the STATION -> DEVICE `Contains` relation, the station's
+ * `config.channelMap`, then a resolve. A station keeps one source device (CHANNEL_MAP.md §3), so connecting to a
  * station fed by another device replaces it and keeps the channels this one
  * reports. The relay controller's `drycRule.*` channels belong to the DRYC
  * widget and are kept. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
@@ -748,6 +748,49 @@ function disconnect(b) {
   });
 }
 
+/** Every stored key of a LOGR2 sensor, its bookkeeping and the relay controller's
+ * rule matches included. */
+function sensorKeys(part) {
+  return Object.keys(state.latest).filter(function (k) {
+    return k.indexOf(part.id + '.') === 0 || (part.id === 'dryc' && RULE_SOURCE.test(k));
+  });
+}
+
+/** A LOGR2 sensor no longer used: delete its readings on the device, and take
+ * its channels off the stations the user may write. Station history stays. */
+function removeSensor(part) {
+  var keys = sensorKeys(part);
+  var fed = [];
+  state.bindings.forEach(function (b) {
+    var channels = b.map.channels || {};
+    var gone = Object.keys(channels).filter(function (c) { return keys.indexOf(channels[c]) >= 0; });
+    if (gone.length && b.writable) { fed.push({ binding: b, gone: gone }); }
+  });
+  var device = esc(state.device.label || state.device.name);
+  var text = 'Remove the <b>' + esc(part.label) + '</b> from <b>' + device + '</b>? Its ' + keys.length +
+    ' measurements and their history on the device are deleted.' +
+    (fed.length ? ' These station channels stop receiving values and keep their history: <ul>' + fed.map(function (f) {
+      return '<li>' + esc(f.binding.station.name) + ' · ' + f.gone.map(esc).join(', ') + '</li>';
+    }).join('') + '</ul>' : '') +
+    ' A sensor that still reports comes back with its next reading.';
+  ui.confirm(text, 'Remove').then(function (ok) {
+    if (!ok) { return; }
+    return tb.del('/api/plugins/telemetry/DEVICE/' + state.device.id.id + '/timeseries/delete',
+      { keys: keys.join(','), deleteAllDataForKeys: 'true', rewriteLatestIfDeleted: 'false' }).then(function () {
+      return Promise.all(fed.map(function (f) {
+        var channels = Object.assign({}, f.binding.map.channels);
+        f.gone.forEach(function (c) { delete channels[c]; });
+        return tb.saveAttrs(f.binding.station, { 'config.channelMap': Object.assign({}, f.binding.map, { channels: channels }) });
+      }));
+    }).then(function () {
+      return fed.length ? tb.resolveStations(fed.map(function (f) { return f.binding.station; })) : null;
+    }).then(function () {
+      ui.toast(part.label + ' removed');
+      return refresh();
+    }).catch(function (err) { ui.toast('Not removed: ' + errText(err), 'error'); });
+  });
+}
+
 // -- register -------------------------------------------------------------------------------
 
 /** Hand-kept facts a device cannot report (ATTRIBUTES.md §3): the four
@@ -992,6 +1035,11 @@ function partCard(part, pos) {
   if (pos === null) { num.remove(); } else { num.textContent = pos; }
   box.querySelector('.ts-pos-name').textContent = part.label || 'LOGR itself';
   var logger = part.id === 'logr';
+  if (LOGR2_SENSORS[part.id] && state.writable) {
+    var drop = h('<button type="button" class="ts-btn" data-a="remove-sensor">Remove sensor</button>');
+    drop.addEventListener('click', function () { removeSensor(part); });
+    box.querySelector('.ts-pos-head').appendChild(drop);
+  }
   if (!part.keys.length) {
     box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty">No reading yet.</span></div>'));
   } else if (logger && !state.showBoard) {

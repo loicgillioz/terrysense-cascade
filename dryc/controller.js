@@ -6,7 +6,8 @@
  * Rules live in `dryc.rules` (SHARED_SCOPE) on the DEVICE. Saving also gives
  * each notifying rule its station channel `drycRule-<n>`, mapped to
  * `drycRule.<id>` with a boolean alarm at the rule's severity; `dryc_rules`
- * fills that value on every DRYC status. Send writes one `cmd.request`
+ * fills that value on every DRYC status. The labelled inputs, the outputs and
+ * the voltage go onto the station too, for display and history. Send writes one `cmd.request`
  * DRYC_RULES, which `dl_dispatch` sends through the LOGR2 integration.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
@@ -211,9 +212,28 @@ function stationWrites(set, stationAttrs) {
     delete channels[key];
     Object.keys(stationAttrs).forEach(function (a) { if (a.indexOf('channel.' + key + '.') === 0) { remove.push(a); } });
   });
+  readingChannels(set, channels, stationAttrs, write, remove);
   map.channels = channels;
   write['config.channelMap'] = map;
   return { write: write, remove: remove };
+}
+
+/** The DRYC's readings on the station (DRYC.md §3): each labelled input, both
+ * outputs and the supply voltage, each named after its input or relay. */
+function readingChannels(set, channels, stationAttrs, write, remove) {
+  function named(key, target, label) {
+    channels[key] = target;
+    if (label) { write['channel.' + key + '.label'] = label; } else if (('channel.' + key + '.label') in stationAttrs) { remove.push('channel.' + key + '.label'); }
+  }
+  for (var i = 1; i <= INPUTS; i++) {
+    var key = 'drycInput' + i, label = ((set.inputs || [])[i - 1] || {}).label;
+    if (label) { named(key, LIVE_PREFIX + key, label); } else if (channels[key] === LIVE_PREFIX + key) {
+      delete channels[key];
+      if (('channel.' + key + '.label') in stationAttrs) { remove.push('channel.' + key + '.label'); }
+    }
+  }
+  for (var r = 1; r <= RELAYS; r++) { named('drycOutput' + r, LIVE_PREFIX + 'drycOutput' + r, ((set.relays || [])[r - 1] || {}).label); }
+  channels.drycVoltage = LIVE_PREFIX + 'drycVoltage';
 }
 
 function save(set) {
