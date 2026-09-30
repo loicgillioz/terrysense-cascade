@@ -10,7 +10,7 @@
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
  * and Settings views; checked for public access).
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and calculations.js; loads
  * Leaflet, Leaflet.markercluster and Leaflet-Geoman itself.
  */
 
@@ -22,6 +22,7 @@ var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
+var calc = window.TerrySenseCalculations(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
@@ -105,14 +106,15 @@ var openDashboard = tb.openDashboard;
 // -- data --------------------------------------------------------------------------------
 
 var state = {
-  entity: null, owner: null, names: {}, projectAttrs: {}, stations: [], loadedAt: 0,
+  entity: null, owner: null, names: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null,
   publicReport: null, templates: null
 };
 
 function loadNames() {
-  return tb.io.fetchDefaults().then(function (d) { return d ? tb.attrsMap(d) : {}; }).then(function (a) {
-    state.names = parseJson(a['config.channelNames']) || {};
+  return calc.loadMeta().then(function (meta) {
+    state.names = meta.names;
+    state.calcAttributes = meta.attributes;
   });
 }
 
@@ -490,7 +492,7 @@ function stationRow(entry) {
     el.querySelector('.ts-row-meta').textContent += ' · No charts dashboard yet';
   }
   if (state.canEdit) {
-    var assign = h('<button type="button" class="ts-icon-btn" title="' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '">' +
+    var assign = h('<button type="button" class="ts-icon-btn" data-a="assign" title="' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '">' +
       (entry.dashboardId ? ICON.edit : ICON.plus) + '</button>');
     assign.addEventListener('click', function () { openAssign(entry); });
     side.appendChild(assign);
@@ -623,9 +625,41 @@ function stationChannels(entry) {
   return Object.keys(resolver.channelsFromAttrs(entry.attrs, state.names));
 }
 
-function fitOf(template, have) {
-  var missing = template.channels.filter(function (c) { return have.indexOf(c) < 0; });
-  return { missing: missing, fits: template.channels.length > 0 && !missing.length };
+function calcMeta() { return { names: state.names, attributes: state.calcAttributes }; }
+
+function labelsOf(entry, keys) {
+  return keys.map(function (k) { return calc.channelLabel(calcMeta(), entry.attrs, k); });
+}
+
+function attrLabels(attrs) {
+  return attrs.map(function (a) { return (state.calcAttributes[a] || {}).label || a; });
+}
+
+/** A template row: its title, what it shows or lacks, and whose it is. */
+function templateOption(entry, r) {
+  var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
+    '<div class="ts-opt-side"></div></div>');
+  if (r.t.id === entry.dashboardId) { o.classList.add('selected'); }
+  o.querySelector('.ts-opt-label').textContent = r.t.title;
+  var side = o.querySelector('.ts-opt-side');
+  var desc = r.fit.fits ? 'Shows ' + calc.listText(labelsOf(entry, r.t.channels))
+    : !r.t.channels.length ? 'Shows no measurement'
+    : r.fit.missing.length ? 'Not measured here: ' + calc.listText(labelsOf(entry, r.fit.missing))
+    : 'Needs ' + calc.listText(attrLabels(r.fit.needs)) + ' to calculate ' + calc.listText(labelsOf(entry, r.t.channels.filter(function (c) {
+      return !(c in resolver.channelsFromAttrs(entry.attrs, state.names));
+    })));
+  o.querySelector('.ts-opt-desc').textContent = desc;
+  if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
+  else if (!r.fit.missing.length && r.fit.needs.length) {
+    side.appendChild(h('<span class="ts-chip warn">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
+  }
+  side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
+  function pick() {
+    if (!r.fit.missing.length && r.fit.needs.length) { openSetup(entry, r.t, r.fit.needs); } else { assign(entry, r.t); }
+  }
+  o.addEventListener('click', pick);
+  o.addEventListener('keydown', function (e) { if (e.key === 'Enter') { pick(); } });
+  return o;
 }
 
 function openAssign(entry) {
@@ -633,25 +667,22 @@ function openAssign(entry) {
   dr.body.appendChild(h('<div class="ts-loading">Loading the templates…</div>'));
   loadTemplates().then(function (templates) {
     dr.body.innerHTML = '';
-    var have = stationChannels(entry);
-    var rows = templates.map(function (t) { return { t: t, fit: fitOf(t, have) }; }).sort(function (a, b) {
-      return (b.fit.fits - a.fit.fits) || (a.fit.missing.length - b.fit.missing.length) || a.t.title.localeCompare(b.t.title);
-    });
-    dr.body.appendChild(h('<div class="ts-row-meta">A template fits when the station carries every measurement it shows.</div>'));
+    var rows = templates.map(function (t) { return { t: t, fit: resolver.templateFit(t.channels, entry.attrs, state.names) }; })
+      .sort(function (a, b) {
+        return (a.fit.missing.length - b.fit.missing.length) || (a.fit.needs.length - b.fit.needs.length) || a.t.title.localeCompare(b.t.title);
+      });
+    var groups = [
+      ['Ready for this station', rows.filter(function (r) { return r.fit.fits; })],
+      ['One step away: a setting to enter', rows.filter(function (r) { return !r.fit.fits && !r.fit.missing.length && r.fit.needs.length; })],
+      ['Other templates', rows.filter(function (r) { return r.fit.missing.length || !r.t.channels.length; })]
+    ];
     if (!rows.length) { dr.body.appendChild(h('<div class="ts-empty">No template yet.</div>')); }
-    rows.forEach(function (r) {
-      var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
-        '<div class="ts-opt-side"></div></div>');
-      if (r.t.id === entry.dashboardId) { o.classList.add('selected'); }
-      o.querySelector('.ts-opt-label').textContent = r.t.title;
-      o.querySelector('.ts-opt-desc').textContent = r.fit.fits ? 'Shows ' + r.t.channels.join(', ')
-        : r.t.channels.length ? 'Misses ' + r.fit.missing.join(', ') : 'Binds no measurement';
-      var side = o.querySelector('.ts-opt-side');
-      side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
-      if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
-      o.addEventListener('click', function () { assign(entry, r.t, dr); });
-      o.addEventListener('keydown', function (e) { if (e.key === 'Enter') { assign(entry, r.t, dr); } });
-      dr.body.appendChild(o);
+    groups.forEach(function (g) {
+      if (!g[1].length) { return; }
+      var box = h('<div class="ts-opt-group"><div class="ts-section-head"></div></div>');
+      box.firstChild.textContent = g[0];
+      g[1].forEach(function (r) { box.appendChild(templateOption(entry, r)); });
+      dr.body.appendChild(box);
     });
     dr.foot.hidden = false;
     dr.foot.innerHTML = '';
@@ -678,7 +709,49 @@ function openAssign(entry) {
   });
 }
 
-function assign(entry, template, dr) {
+/** The constants `needs` names, entered on the station; `done(written)` after the save and resolve. */
+function setupDrawer(entry, title, intro, needs, action, done, back) {
+  var dr = ui.openDrawer(esc(title), esc(entry.station.name));
+  dr.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = intro;
+  var f = calc.form(entry.station, entry.attrs, needs, calcMeta());
+  dr.body.appendChild(f.el);
+  dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
+  dr.onBack(back);
+  var go = ui.drawerActions(dr, action);
+  function check() { go.disabled = !f.values(); }
+  f.onChange(check);
+  check();
+  setTimeout(f.focus, 0);
+  go.addEventListener('click', function () {
+    var write = f.values();
+    if (!write) { return; }
+    go.disabled = true;
+    done(write).catch(function (err) {
+      go.disabled = false;
+      ui.toast('Not saved: ' + errText(err), 'error');
+    });
+  });
+}
+
+/** A template one setting away: enter the constants, then the station opens it. */
+function openSetup(entry, template, needs) {
+  var turnsOn = resolver.calculationPlan(entry.attrs, state.names).filter(function (p) {
+    return !p.on && p.needs.every(function (a) { return needs.indexOf(a) >= 0; }) && template.channels.indexOf(p.name) >= 0;
+  }).map(function (p) { return p.name; });
+  setupDrawer(entry, 'Set up ' + template.title,
+    template.title + ' shows ' + calc.listText(labelsOf(entry, turnsOn)) + ', calculated from this station\'s readings and the ' +
+      (needs.length === 1 ? 'setting' : 'settings') + ' below.',
+    needs, 'Save and assign', function (write) {
+      write[DASHBOARD_KEY] = template.id;
+      return calc.save(entry.station, write).then(function () {
+        ui.closeDrawer();
+        ui.toast(entry.station.name + ' opens ' + template.title);
+        return refresh();
+      });
+    }, function () { openAssign(entry); });
+}
+
+function assign(entry, template) {
   tb.saveAttrs(entry.station, { 'config.stationDashboard': template.id }).then(function () {
     ui.closeDrawer();
     ui.toast(entry.station.name + ' opens ' + template.title);
@@ -695,7 +768,7 @@ function channelList(entry) {
   });
 }
 
-function openCreate(entry) {
+function openCreate(entry, use) {
   var channels = channelList(entry);
   var dr = ui.openDrawer('Create template', esc(entry.station.name));
   var form = h('<div><div class="ts-field"><label class="ts-field-label">Name</label><div class="ts-proj-name">' +
@@ -703,6 +776,7 @@ function openCreate(entry) {
     '<div class="ts-field-hint">What kind of station it shows, so the next station of that kind can reuse it.</div></div>' +
     '<div class="ts-section-head">A value and a chart for each of</div><div class="ts-proj-chans"></div></div>');
   var input = form.querySelector('input');
+  input.value = use || '';
   var list = form.querySelector('.ts-proj-chans');
   channels.forEach(function (c) {
     var row = h('<div class="ts-proj-chan"><span></span><span class="ts-mono"></span></div>');
@@ -711,6 +785,25 @@ function openCreate(entry) {
     list.appendChild(row);
   });
   if (!channels.length) { list.appendChild(h('<div class="ts-empty">The station maps no measurement yet.</div>')); }
+  var waiting = resolver.calculationPlan(entry.attrs, state.names).filter(function (p) { return !p.on; });
+  if (waiting.length) {
+    form.appendChild(h('<div class="ts-section-head ts-proj-waiting">Calculated, once a setting is entered</div>'));
+    waiting.forEach(function (p) {
+      var row = h('<div class="ts-proj-chan" data-calc-name="' + esc(p.name) + '"><span></span><button type="button" class="ts-btn ghost">Enter</button></div>');
+      row.firstChild.textContent = calc.channelLabel(calcMeta(), entry.attrs, p.name) + ' — needs ' + calc.listText(attrLabels(p.needs));
+      row.querySelector('button').addEventListener('click', function () {
+        var typed = input.value;
+        setupDrawer(entry, 'Calculated measurement', calc.channelLabel(calcMeta(), entry.attrs, p.name) + ' is calculated from this station\'s readings and the ' +
+          (p.needs.length === 1 ? 'setting' : 'settings') + ' below.', p.needs, 'Save', function (write) {
+          return calc.save(entry.station, write).then(function () { return tb.attrsMap(entry.station); }).then(function (attrs) {
+            entry.attrs = attrs;
+            openCreate(entry, typed);
+          });
+        }, function () { openCreate(entry, typed); });
+      });
+      form.appendChild(row);
+    });
+  }
   form.appendChild(h('<div class="ts-row-meta">The template opens in ThingsBoard afterwards, to arrange as you like. ' +
     (state.me.authority === 'TENANT_ADMIN' ? 'It is saved with the in-terra templates, shared with every customer.' : 'Only your organisation sees it.') + '</div>'));
   dr.body.appendChild(form);

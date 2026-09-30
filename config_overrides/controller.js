@@ -6,7 +6,7 @@
  * alarm limits on its own source keys and retention only (CONFIG_CASCADE.md §1).
  * Every save re-resolves the stations or devices it reaches (CONFIG_RESOLVER.md §5).
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; styles are
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and calculations.js; styles are
  * shared/theme.css. Design: logr-product-docs/cloud/CASCADE_EDITOR.md.
  */
 
@@ -18,6 +18,7 @@ var tb = window.TerrySenseTbIo(ctx);
 var io = tb.io;
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
+var calc = window.TerrySenseCalculations(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info, sevDot = ui.sevDot;
 
 var CH = resolver.CHANNEL_PREFIX;
@@ -43,7 +44,7 @@ var SECTIONS = ALL_SECTIONS;
 var state = {
   origin: null, own: {}, ancestors: [], names: {}, kinds: {}, channelKinds: {},
   stationCount: 0, readOnly: true, showInherited: false, customerId: null, users: null, defaultsShared: true,
-  deviceBranch: false, sourceKeys: []
+  deviceBranch: false, sourceKeys: [], calcMeta: { names: {}, attributes: {} }
 };
 
 // -- values and lookups ------------------------------------------------------
@@ -198,6 +199,7 @@ function load() {
         state.defaultsShared = !!defaults;
         state.names = parseVal((defaults || { attrs: {} }).attrs['config.channelNames']) || {};
         state.kinds = parseVal((defaults || { attrs: {} }).attrs['config.kinds']) || {};
+        state.calcMeta = { names: state.names, attributes: parseVal((defaults || { attrs: {} }).attrs['config.calcAttributes']) || {} };
         renderHead();
         render();
       });
@@ -321,6 +323,7 @@ function render() {
   }
   if (!sec.querySelector('.ts-row')) { sec.appendChild(emptyLine('measurement')); }
   bodyEl.appendChild(sec);
+  if (state.origin.kind === 'Station') { renderCalculations(); }
 
   SECTIONS.forEach(function (s) {
     var el = h('<div class="ts-section"><div class="ts-section-head">' + s[1] + ' ' + info(s[0]) + '</div></div>');
@@ -352,6 +355,89 @@ function render() {
     if (!el.querySelector('.ts-row')) { el.appendChild(emptyLine(s[0])); }
     bodyEl.appendChild(el);
   });
+}
+
+// -- calculated measurements (measurement/vocabulary.md §4) ---------------------------
+
+function calcOwnAttributes(name) { return ((state.names[name] || {}).calculated || {}).attributes || []; }
+function calcAttrName(attr) { return (state.calcMeta.attributes[attr] || {}).label || attr; }
+function calcInputs(name) {
+  return (((state.names[name] || {}).calculated || {}).channels || []).map(function (c) { return calc.channelLabel(state.calcMeta, state.own, c); });
+}
+
+function renderCalculations() {
+  var plan = resolver.calculationPlan(state.own, state.names);
+  if (!plan.length) { return; }
+  var sec = h('<div class="ts-section ts-calc"><div class="ts-section-head">Calculated measurements</div></div>');
+  plan.forEach(function (p) {
+    var set = p.reads.filter(function (a) { return state.own[resolver.CALC_PREFIX + a] != null; }).map(function (a) {
+      var spec = state.calcMeta.attributes[a] || {};
+      return calcAttrName(a) + ' ' + state.own[resolver.CALC_PREFIX + a] + (spec.unit ? ' ' + spec.unit : '');
+    });
+    var meta = [(state.names[p.name] || {}).description].concat(p.reads.length ? set : ['Automatic from ' + calc.listText(calcInputs(p.name))]);
+    var editable = !state.readOnly && p.reads.length > 0;
+    var row = h('<div class="ts-row' + (editable ? '' : ' static') + '"' + (editable ? ' tabindex="0"' : '') + ' data-calc-name="' + esc(p.name) + '">' +
+      '<div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div><div class="ts-row-value"></div></div>');
+    row.querySelector('.ts-row-label').textContent = calc.channelLabel(state.calcMeta, state.own, p.name);
+    row.querySelector('.ts-row-meta').textContent = meta.filter(Boolean).join(' · ');
+    var badge = row.querySelector('.ts-row-value').appendChild(h('<span class="ts-chip ' + (p.on ? 'accent' : 'warn') + '"></span>'));
+    badge.textContent = p.on ? 'On' : 'Needs ' + calc.listText(p.needs.map(calcAttrName));
+    if (editable) { row.addEventListener('click', function () { openCalculation(p, plan); }); }
+    sec.appendChild(row);
+  });
+  bodyEl.appendChild(sec);
+}
+
+function openCalculation(p, plan) {
+  var station = state.origin, label = calc.channelLabel(state.calcMeta, state.own, p.name);
+  var dr = ui.openDrawer('Calculated measurement', esc(station.name));
+  var intro = h('<p class="ts-calc-intro"></p>');
+  var desc = (state.names[p.name] || {}).description;
+  intro.textContent = (desc ? desc + '. ' : '') + 'Calculated from ' + calc.listText(calcInputs(p.name)) +
+    ' and the setting' + (p.reads.length > 1 ? 's' : '') + ' below.';
+  dr.body.appendChild(intro);
+  var form = calc.form(station, state.own, p.reads, state.calcMeta);
+  dr.body.appendChild(form.el);
+  dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
+  var save = ui.drawerActions(dr, p.needs.length ? 'Turn on' : 'Save');
+  function sync() { save.disabled = !form.values(); }
+  form.onChange(sync);
+  sync();
+  save.addEventListener('click', function () {
+    save.disabled = true;
+    calc.save(station, form.values()).then(function () {
+      ui.closeDrawer();
+      ui.toast(p.needs.length ? label + ' is on' : 'Saved');
+      return load();
+    }).catch(function (err) {
+      save.disabled = false;
+      ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+    });
+  });
+  var own = calcOwnAttributes(p.name);
+  if (own.length && own.every(function (a) { return state.own[resolver.CALC_PREFIX + a] != null; })) {
+    var off = h('<button type="button" class="ts-btn" data-a="turn-off">Turn off</button>');
+    dr.foot.insertBefore(off, dr.foot.firstChild);
+    off.addEventListener('click', function () {
+      var goes = plan.filter(function (q) {
+        return q.on && q.reads.some(function (a) { return own.indexOf(a) >= 0; });
+      }).map(function (q) { return calc.channelLabel(state.calcMeta, state.own, q.name); });
+      ui.confirm('Turn off <b>' + esc(calc.listText(goes)) + '</b> on ' + esc(station.name) + '? The values stored so far are kept.', 'Turn off')
+        .then(function (ok) {
+          if (!ok) { return; }
+          off.disabled = true;
+          return calc.clear(station, own).then(function () {
+            ui.closeDrawer();
+            ui.toast(label + ' is off');
+            return load();
+          });
+        }).catch(function (err) {
+          off.disabled = false;
+          ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+        });
+    });
+  }
+  form.focus();
 }
 
 // -- saving ------------------------------------------------------------------------

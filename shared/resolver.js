@@ -493,6 +493,51 @@ function calculatedChannels(mapped, attrs, names) {
   return found;
 }
 
+/** Every calculated name the station's mapped channels can feed, in dependency
+ * order, as `{name, on, needs, reads}`: `reads` every `calc.*` attribute it
+ * depends on, through the calculated names it reads too; `needs` those unset.
+ * `on` matches `calculatedChannels`. */
+function calculationPlan(attrs, names) {
+  var parsed = parseJson(attrs && attrs[CONFIG_PREFIX + 'channelMap']);
+  var mapped = (parsed && parsed.channels) || {};
+  var known = {}, plan = [], byName = {}, added = true;
+  Object.keys(mapped).forEach(function (c) { known[splitChannelKey(c).name] = true; });
+  while (added) {
+    var fresh = Object.keys(names).filter(function (name) {
+      var calc = (names[name] || {}).calculated;
+      return !!calc && !(name in known) && (calc.channels || []).every(function (c) { return c in known; });
+    });
+    fresh.forEach(function (name) {
+      var calc = names[name].calculated, reads = [];
+      (calc.channels || []).forEach(function (c) {
+        (byName[c] ? byName[c].reads : []).forEach(function (a) { if (reads.indexOf(a) < 0) { reads.push(a); } });
+      });
+      (calc.attributes || []).forEach(function (a) { if (reads.indexOf(a) < 0) { reads.push(a); } });
+      var needs = reads.filter(function (a) { return attrs[CALC_PREFIX + a] == null; });
+      byName[name] = { name: name, on: !needs.length, needs: needs, reads: reads };
+      known[name] = true;
+      plan.push(byName[name]);
+    });
+    added = fresh.length > 0;
+  }
+  return plan;
+}
+
+/** How a template's channels meet a station: `missing` the channels it neither
+ * measures nor can calculate, `needs` the `calc.*` attributes that would turn
+ * the rest on; it `fits` when both are empty. */
+function templateFit(channels, attrs, names) {
+  var have = channelsFromAttrs(attrs, names), plan = {}, missing = [], needs = [];
+  calculationPlan(attrs, names).forEach(function (p) { plan[p.name] = p; });
+  channels.forEach(function (c) {
+    if (c in have) { return; }
+    var p = plan[splitChannelKey(c).name];
+    if (!p) { missing.push(c); return; }
+    p.needs.forEach(function (a) { if (needs.indexOf(a) < 0) { needs.push(a); } });
+  });
+  return { missing: missing, needs: needs, fits: channels.length > 0 && !missing.length && !needs.length };
+}
+
 function channelMapOf(entity, names, io) {
   return io.fetchAttrs(entity).then(function (attrs) { return channelsFromAttrs(attrs, names); });
 }
@@ -697,6 +742,9 @@ return {
   discoverChannels: discoverChannels,
   channelsFromAttrs: channelsFromAttrs,
   calculatedChannels: calculatedChannels,
+  calculationPlan: calculationPlan,
+  templateFit: templateFit,
+  CALC_PREFIX: CALC_PREFIX,
   mapEntries: mapEntries,
   buildMap: buildMap,
   mapDevices: mapDevices,
