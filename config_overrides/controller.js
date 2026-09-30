@@ -1,8 +1,10 @@
 /*
  * Settings — the CA-2/CA-3 widget. One widget type, bound to a CUSTOMER,
- * PROJECT, LOCATION or STATION: shows only what is set on that entity, grouped
- * into measurements, notifications and retention, and edits it in side panels.
- * Every save re-resolves the stations below (CONFIG_RESOLVER.md §5).
+ * PROJECT or STATION, or on the device branch to a DEVICE or a DeviceDefaults
+ * asset: shows only what is set on that entity, grouped into measurements,
+ * notifications and retention, and edits it in side panels. A device has
+ * alarm limits on its own source keys and retention only (CONFIG_CASCADE.md §1).
+ * Every save re-resolves the stations or devices it reaches (CONFIG_RESOLVER.md §5).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; styles are
  * shared/theme.css. Design: logr-product-docs/cloud/CASCADE_EDITOR.md.
@@ -24,7 +26,8 @@ var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // The settings this widget edits outside the per-measurement ones.
 var SCALARS = [
-  { key: 'config.notify.contacts', label: 'Contacts', section: 'notifications', type: 'contacts', tip: 'contacts' },
+  { key: 'config.notify.contacts', label: 'Measurement alarm contacts', section: 'notifications', type: 'contacts', tip: 'contacts' },
+  { key: 'config.notify.deviceContacts', label: 'Device alarm contacts', section: 'notifications', type: 'contacts', tip: 'deviceContacts' },
   { key: 'config.sms.enabled', label: 'SMS', section: 'notifications', type: 'bool', tip: 'channels' },
   { key: 'config.email.enabled', label: 'E-mail', section: 'notifications', type: 'bool', tip: 'channels' },
   { key: 'config.alarmText.created', label: 'Message when an alarm starts', section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
@@ -32,14 +35,15 @@ var SCALARS = [
   { key: 'config.alarmText.cleared', label: 'Message when an alarm ends', section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
   { key: 'config.emailText.cleared', label: 'E-mail when an alarm ends', section: 'notifications', type: 'text', nestedIn: 'config.alarmText.cleared' },
   { key: 'config.language', label: 'Message language', section: 'notifications', type: 'lang' },
-  { key: 'config.ttlDays', label: 'Keep data for', section: 'retention', type: 'days', tip: 'retention' },
-  { key: 'config.staleAfterHours', label: 'Stale after', section: 'reporting', type: 'hours', tip: 'stale' }
+  { key: 'config.ttlDays', label: 'Keep data for', section: 'retention', type: 'days', tip: 'retention' }
 ];
-var SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention'], ['reporting', 'Reporting']];
+var ALL_SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention']];
+var SECTIONS = ALL_SECTIONS;
 
 var state = {
   origin: null, own: {}, ancestors: [], names: {}, kinds: {}, channelKinds: {},
-  stationCount: 0, readOnly: true, showInherited: false, customerId: null, users: null, defaultsShared: true
+  stationCount: 0, readOnly: true, showInherited: false, customerId: null, users: null, defaultsShared: true,
+  deviceBranch: false, sourceKeys: []
 };
 
 // -- values and lookups ------------------------------------------------------
@@ -76,11 +80,17 @@ function isOwn(key) { return state.own[key] !== undefined && state.own[key] !== 
 
 // A channel is a station key: a name, or `<name>-<n>` for one instance of a
 // repeatable name. Its dictionary entry is the name's (measurement/vocabulary.md §3).
-function entryOf(ch) { return state.names[resolver.splitChannelKey(ch).name] || {}; }
-function channelKind(ch) { return entryOf(ch).kind || state.channelKinds[ch] || null; }
+// On the device branch a channel is a device source key (`logr.batteryVoltage`,
+// `p0.voltage`); its entry is the vocabulary name after its prefix.
+function nameOf(ch) { return ch.indexOf('.') >= 0 ? ch.split('.').pop() : resolver.splitChannelKey(ch).name; }
+function entryOf(ch) { return state.names[nameOf(ch)] || {}; }
+function channelKind(ch) {
+  return entryOf(ch).kind || state.channelKinds[ch] || (ch.indexOf('.') >= 0 ? resolver.deviceKeyKind(ch, state.names) : null);
+}
 function kindSpec(ch) { return resolver.kindSpec(channelKind(ch), state.kinds) || {}; }
 function alarmClass(ch) { return kindSpec(ch).alarm || 'numeric'; }
 function chLabel(ch) {
+  if (ch.indexOf('.') >= 0) { return entryOf(ch).label || ch; }
   var split = resolver.splitChannelKey(ch);
   var label = entryOf(ch).label || split.name;
   return split.instance ? label + ' ' + split.instance : label;
@@ -113,8 +123,10 @@ function stateText(ch, v) {
 // Every per-channel key this widget manages.
 var ALARM_RE = /^alarm\.([a-z]+)\.(thresholdMax|thresholdMin|state)$/;
 var FIELDS = ['label', 'unit', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
+// The channel may hold dots on the device branch, so the field is matched from the end.
+var KEY_RE = /^channel\.(.+?)\.(alarm\.[a-z]+\.(?:thresholdMax|thresholdMin|state)|label|unit|hysteresis|textWhenTrue|textWhenFalse)$/;
 function parseKey(key) {
-  var m = /^channel\.([^.]+)\.(.+)$/.exec(key);
+  var m = KEY_RE.exec(key);
   if (!m) { return null; }
   var a = ALARM_RE.exec(m[2]);
   if (a && G.rank(a[1]) >= 0) {
@@ -159,17 +171,22 @@ function load() {
   // The contacts' phone numbers and addresses stay off a public link.
   if (tb.isPublicView()) { fail('Settings are not shown on a public link.'); return Promise.resolve(); }
   return tb.boundDatasource().then(function (ds) {
-    if (!ds) { fail('No entity bound — bind a customer, project, location or station in the widget\'s Data tab.'); return; }
+    if (!ds) { fail('No entity bound — bind a customer, project, station or device in the widget\'s Data tab.'); return; }
     return tb.loadEntity(ds).then(function (origin) {
       state.origin = origin;
+      state.deviceBranch = origin.entityType === 'DEVICE' || origin.kind === resolver.DEVICE_DEFAULTS_KIND;
+      SECTIONS = state.deviceBranch ? ALL_SECTIONS.filter(function (x) { return x[0] === 'retention'; }) : ALL_SECTIONS;
       return Promise.all([
-        resolver.buildChain(origin, io), io.fetchAttrs(origin), resolver.discoverChannels(origin, io), tb.canWrite(origin)
+        resolver.buildChain(origin, io), io.fetchAttrs(origin),
+        state.deviceBranch ? Promise.resolve({ channels: {}, stations: [] }) : resolver.discoverChannels(origin, io),
+        tb.canWrite(origin), state.deviceBranch ? sourceKeysOf(origin) : Promise.resolve([])
       ]);
     }).then(function (got) {
       var chain = got[0];
       state.own = got[1];
       state.channelKinds = got[2].channels;
       state.stationCount = got[2].stations.length;
+      state.sourceKeys = got[4];
       state.readOnly = !got[3];
       var customer = chain.filter(function (l) { return l.role === 'customer'; })[0];
       state.customerId = state.origin.entityType === 'CUSTOMER' ? state.origin.id : (customer ? customer.id : null);
@@ -206,6 +223,23 @@ function renderHead() {
     add.addEventListener('click', openAdd);
     left.appendChild(add);
   }
+}
+
+/** The source keys a device reports — for a DeviceDefaults asset, those of a
+ * few devices of its profile. Provenance and fault keys carry no limit. */
+function sourceKeysOf(origin) {
+  var skip = /^(uplinkCause|uplinkLatest|rssi|snr)$|\.status$/;
+  var devices = origin.entityType === 'DEVICE' ? Promise.resolve([origin])
+    : (io.fetchProfileDevices ? io.fetchProfileDevices(origin.name) : Promise.resolve([])).then(function (l) { return l.slice(0, 8); });
+  return devices.then(function (list) {
+    return Promise.all(list.map(function (d) {
+      return tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/keys/timeseries').catch(function () { return []; });
+    }));
+  }).then(function (lists) {
+    var seen = {};
+    lists.forEach(function (l) { (l || []).forEach(function (k) { if (!skip.test(k)) { seen[k] = true; } }); });
+    return Object.keys(seen).sort();
+  });
 }
 
 // -- main list ---------------------------------------------------------------------
@@ -326,10 +360,11 @@ function render() {
  * below; asks first when more than one station is affected. */
 function commit(write, remove, what, button) {
   if (button) { button.disabled = true; }
+  var noun = state.deviceBranch ? 'device' : 'station';
   return resolver.affectedStations(state.origin, io).then(function (stations) {
     var n = stations.length;
     var ask = n > 1
-      ? ui.confirm('This changes <b>' + esc(what) + '</b> for <b>' + n + ' stations</b> under ' + esc(state.origin.name) + '.', 'Apply to ' + n + ' stations')
+      ? ui.confirm('This changes <b>' + esc(what) + '</b> for <b>' + n + ' ' + noun + 's</b> under ' + esc(state.origin.name) + '.', 'Apply to ' + n + ' ' + noun + 's')
       : Promise.resolve(true);
     return ask.then(function (ok) {
       if (!ok) { if (button) { button.disabled = false; } return; }
@@ -338,7 +373,7 @@ function commit(write, remove, what, button) {
         .then(function () { return tb.resolveStations(stations); })
         .then(function () {
           ui.closeDrawer();
-          ui.toast(n === 0 ? 'Saved' : n === 1 ? '1 station updated' : n + ' stations updated');
+          ui.toast(n === 0 ? 'Saved' : n === 1 ? '1 ' + noun + ' updated' : n + ' ' + noun + 's updated');
           return load();
         });
     });
@@ -359,10 +394,12 @@ function resetScalar(d) {
 function openAdd() {
   var dr = ui.openDrawer('Add setting', esc(state.origin.kind + ' · ' + state.origin.name));
   var tiles = h('<div class="ts-tiles"></div>');
-  [['measurement', ICON.gauge, 'Measurement', 'Alarm thresholds or conditions, unit and hysteresis for one measurement'],
-   ['notifications', ICON.bell, 'Notifications', 'Contacts, SMS and e-mail on or off, message wording, language'],
-   ['retention', ICON.archive, 'Data retention', 'How long measured data is kept'],
-   ['reporting', ICON.info, 'Reporting', 'How long a station may stay silent before it shows Stale']].forEach(function (t) {
+  [['measurement', ICON.gauge, 'Measurement', state.deviceBranch ? 'Alarm limits on one of the device\'s own readings'
+     : 'Alarm thresholds or conditions, unit and hysteresis for one measurement'],
+   ['notifications', ICON.bell, 'Notifications', 'Contacts for measurement and device alarms, SMS and e-mail on or off, message wording, language'],
+   ['retention', ICON.archive, 'Data retention', 'How long measured data is kept']].filter(function (t) {
+    return !state.deviceBranch || t[0] !== 'notifications';
+  }).forEach(function (t) {
     var el = h('<button type="button" class="ts-tile"><span class="ts-tile-icon">' + t[1] + '</span><span><b>' + t[2] + '</b><span>' + t[3] + '</span></span></button>');
     el.addEventListener('click', function () { if (t[0] === 'measurement') { openMeasurementPicker(true); } else { openScalar(t[0], true); } });
     tiles.appendChild(el);
@@ -371,6 +408,7 @@ function openAdd() {
 }
 
 function openMeasurementPicker(fromAdd) {
+  if (state.deviceBranch) { openSourcePicker(fromAdd); return; }
   var dr = ui.openDrawer('Choose a measurement', 'Grouped by kind');
   if (fromAdd) { dr.onBack(openAdd); }
   var own = channelsWith(state.own);
@@ -394,6 +432,22 @@ function openMeasurementPicker(fromAdd) {
       dr.body.appendChild(o);
     });
   }
+}
+
+/** The device branch: pick one of the device's own source keys, the LOGR's
+ * diagnostics included — they are what a device alarm is about. */
+function openSourcePicker(fromAdd) {
+  var dr = ui.openDrawer('Choose a reading', esc(state.origin.name));
+  if (fromAdd) { dr.onBack(openAdd); }
+  var own = channelsWith(state.own);
+  var keys = state.sourceKeys.slice();
+  Object.keys(own).forEach(function (k) { if (keys.indexOf(k) < 0) { keys.push(k); } });
+  if (!keys.length) { dr.body.appendChild(h('<div class="ts-empty">No reading stored yet.</div>')); return; }
+  keys.sort().forEach(function (k) {
+    var o = ui.nameOption(k, { label: chLabel(k), description: kindLabel(k) }, own[k] ? '<span class="ts-chip">set here</span>' : '', '');
+    o.addEventListener('click', function () { openChannel(k, fromAdd); });
+    dr.body.appendChild(o);
+  });
 }
 
 function openChannel(ch, fromAdd) {

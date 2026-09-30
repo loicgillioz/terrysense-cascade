@@ -1,17 +1,17 @@
 /*
- * Project — a project's locations on a map and its stations in a list, each
- * station with its state and the age of its last reading (EU-1). A station
- * opens its station view, and its charts on its own station dashboard; an
- * editor assigns one, or creates a template for it, and places, renames and
- * deletes locations, and places the project area and stations. A gear opens
- * the Settings view of the project or of a location.
+ * Project — a project's stations on a map and in a list, each with its state,
+ * its stale channels and the age of its last reading (EU-1). Stations close
+ * together at the current zoom merge into one cluster. A station opens its
+ * station view, and its charts on its own station dashboard; an editor assigns
+ * one, or creates a template for it, places and removes a station's position
+ * and draws the project area. A gear opens the Settings view of the project.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
  * and Settings views; checked for public access).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
- * Leaflet and Leaflet-Geoman itself.
+ * Leaflet, Leaflet.markercluster and Leaflet-Geoman itself.
  */
 
 window.TerrySenseProjectOverview = function (ctx, container, opts) {
@@ -25,9 +25,8 @@ var ui = window.TerrySenseUi(root);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
-var MAX_DEPTH = 4;
-var HOUR = 3600000;
 var LEAFLET = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/';
+var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var GEOMAN = 'https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.17.0/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var TEMPLATE_GROUP = 'Station dashboards';
@@ -36,9 +35,7 @@ var STARTER_USE = 'New template';
 var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
 var DASHBOARD_KEY = 'config.stationDashboard';
 var HOME_KEY = 'config.homeDashboard';
-var NO_LOCATION = '';
 var STATUS = {
-  stale: { label: 'Stale', color: 'var(--ts-stale)', rank: 3 },
   nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
   ok: { label: 'OK', color: 'var(--ts-ok)', rank: 1 },
   none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
@@ -47,7 +44,6 @@ var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
 var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
-var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
 
 function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
@@ -93,10 +89,14 @@ function loadOnce(tag, url) {
 }
 
 function loadMapLibraries() {
-  var css = Promise.all([loadOnce('link', LEAFLET + 'leaflet.css'), loadOnce('link', GEOMAN + 'leaflet-geoman.css')]);
+  var css = Promise.all([loadOnce('link', LEAFLET + 'leaflet.css'), loadOnce('link', GEOMAN + 'leaflet-geoman.css'),
+    loadOnce('link', CLUSTER + 'MarkerCluster.css')]);
   var leaflet = window.L && window.L.version && window.L.version >= '1.9' ? Promise.resolve() : loadOnce('script', LEAFLET + 'leaflet.js');
   return Promise.all([css, leaflet.then(function () {
-    return window.L.PM ? null : loadOnce('script', GEOMAN + 'leaflet-geoman.js');
+    return Promise.all([
+      window.L.PM ? null : loadOnce('script', GEOMAN + 'leaflet-geoman.js'),
+      window.L.MarkerClusterGroup ? null : loadOnce('script', CLUSTER + 'leaflet.markercluster.js')
+    ]);
   })]);
 }
 
@@ -105,7 +105,7 @@ var openDashboard = tb.openDashboard;
 // -- data --------------------------------------------------------------------------------
 
 var state = {
-  entity: null, owner: null, names: {}, projectAttrs: {}, locations: [], stations: [], loadedAt: 0,
+  entity: null, owner: null, names: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null,
   publicReport: null, templates: null
 };
@@ -116,73 +116,54 @@ function loadNames() {
   });
 }
 
-/** Locations and stations below the bound entity over `Contains`. A station
- * belongs to its nearest location, or to none. */
-function walkTree(entity) {
-  var locations = [], stations = [];
-  function walk(level, location, path, depth) {
-    if (depth > MAX_DEPTH) { return Promise.resolve(); }
-    return tb.io.fetchChildren(level).then(function (children) {
-      return Promise.all(children.map(function (c) {
-        if (c.kind === 'Station') { stations.push({ station: c, parent: level, locationId: location ? location.id : NO_LOCATION }); return null; }
-        if (c.kind !== 'Location') { return null; }
-        var loc = { entity: c, id: c.id, name: path ? path + ' › ' + c.name : c.name, parent: level };
-        locations.push(loc);
-        return walk(c, loc, loc.name, depth + 1);
-      }));
-    });
-  }
-  return walk(entity, null, '', 0).then(function () { return { locations: locations, stations: stations }; });
+function latLngOf(attrs) {
+  var lat = Number(attrs.latitude), lng = Number(attrs.longitude);
+  return attrs.latitude != null && attrs.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
 }
 
-function loadLocation(loc) {
-  return tb.attrsMap(loc.entity).then(function (a) {
-    var lat = Number(a.latitude), lng = Number(a.longitude);
-    loc.latLng = a.latitude != null && a.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
-    return loc;
-  });
-}
-
-function loadStation(entry) {
-  var s = entry.station, url = '/api/plugins/telemetry/ASSET/' + s.id + '/values/timeseries';
-  return tb.attrsMap(s).then(function (attrs) {
+function loadStation(station) {
+  var entry = { station: station };
+  var url = '/api/plugins/telemetry/ASSET/' + station.id + '/values/timeseries';
+  return tb.attrsMap(station).then(function (attrs) {
     entry.attrs = attrs;
+    entry.latLng = latLngOf(attrs);
     entry.dashboardId = attrs[DASHBOARD_KEY] || null;
-    entry.staleAfterMs = Number(attrs['effective.staleAfterHours']) * HOUR || 0;
-    var keys = Object.keys(((parseJson(attrs['config.channelMap']) || {}).channels) || {});
+    var keys = Object.keys(resolver.channelsFromAttrs(attrs, state.names));
     return Promise.all([
       keys.length ? tb.get(url, { keys: keys.join(',') }).catch(function () { return {}; }) : {},
-      tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
+      tb.get('/api/alarm/ASSET/' + station.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
     ]);
   }).then(function (got) {
-    entry.lastTs = Object.keys(got[0] || {}).reduce(function (m, k) {
+    var latest = {};
+    Object.keys(got[0] || {}).forEach(function (k) {
       var p = got[0][k] && got[0][k][0];
-      return p && p.value !== null && p.value !== undefined ? Math.max(m, Number(p.ts)) : m;
-    }, 0);
+      if (p && p.value !== null && p.value !== undefined) { latest[k] = Number(p.ts); }
+    });
+    entry.lastTs = Object.keys(latest).reduce(function (m, k) { return Math.max(m, latest[k]); }, 0);
     entry.alarms = (got[1] && got[1].data) || [];
     entry.status = statusOf(entry);
+    return tb.channelFreshness(entry.attrs, latest, state.names);
+  }).then(function (fresh) {
+    entry.fresh = fresh;
     return entry;
   });
 }
 
 function load() {
   var e = state.entity;
-  var tree = walkTree(e);
-  return Promise.all([tree, tb.attrsMap(e)]).then(function (got) {
+  return Promise.all([tb.io.fetchChildren(e), tb.attrsMap(e)]).then(function (got) {
     state.projectAttrs = got[1];
-    return Promise.all([
-      Promise.all(got[0].locations.map(loadLocation)),
-      Promise.all(got[0].stations.map(loadStation))
-    ]);
-  }).then(function (got) {
-    state.locations = got[0].sort(function (a, b) { return a.name.localeCompare(b.name); });
-    state.stations = got[1].sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
+    return Promise.all(got[0].filter(function (c) { return c.kind === 'Station'; }).map(loadStation));
+  }).then(function (stations) {
+    state.stations = stations.sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
     state.loadedAt = Date.now();
   });
 }
 
 // -- model -------------------------------------------------------------------------------
 
+/** A station's state: its worst active alarm, else No data or OK. Staleness is
+ * per channel (HEALTH.md §2) and shown beside it, never as a station state. */
 function statusOf(entry) {
   var worst = entry.alarms.reduce(function (w, a) {
     return !w || G.rank(a.severity.toLowerCase()) > G.rank(w.toLowerCase()) ? a.severity : w;
@@ -192,7 +173,6 @@ function statusOf(entry) {
     return { id: 'alarm', label: G.severity(id).label, color: 'var(--sev-' + id + ')', rank: 10 + G.rank(id) };
   }
   if (!entry.lastTs) { return Object.assign({ id: 'nodata' }, STATUS.nodata); }
-  if (entry.staleAfterMs && Date.now() - entry.lastTs > entry.staleAfterMs) { return Object.assign({ id: 'stale' }, STATUS.stale); }
   return Object.assign({ id: 'ok' }, STATUS.ok);
 }
 
@@ -200,11 +180,12 @@ function worstOf(entries) {
   return entries.reduce(function (w, s) { return !w || s.status.rank > w.rank ? s.status : w; }, null) || STATUS.none;
 }
 
-function stationsAt(locationId) {
-  return state.stations.filter(function (s) { return s.locationId === locationId; });
+function staleText(entry) {
+  var f = entry.fresh || {}, stale = f.stale || [];
+  return stale.length ? stale.length + ' of ' + f.total + (f.total === 1 ? ' channel' : ' channels') + ' stale' : '';
 }
 
-function locationById(id) { return state.locations.filter(function (l) { return l.id === id; })[0] || null; }
+function entryById(id) { return state.stations.filter(function (s) { return s.station.id === id; })[0] || null; }
 
 function chip(status) {
   var el = h('<span class="ts-chip ts-proj-sev"></span>');
@@ -248,7 +229,11 @@ function fail(text) {
 
 // -- map ---------------------------------------------------------------------------------
 
-var map = null, markerLayer = null, areaLayer = null, markers = {}, fitted = false;
+var map = null, clusterLayer = null, areaLayer = null, markers = {}, fitted = false;
+
+function pinHtml(color, text) {
+  return '<span class="ts-pin" style="--c:' + color + '"><b>' + esc(text) + '</b></span>';
+}
 
 function initMap() {
   var L = window.L;
@@ -261,7 +246,22 @@ function initMap() {
     { maxZoom: 20, attribution: '&copy; swisstopo' });
   osm.addTo(map);
   L.control.layers({ 'Map': osm, 'Swiss map': swiss, 'Aerial': aerial }, null, { position: 'topright' }).addTo(map);
-  markerLayer = L.layerGroup().addTo(map);
+  // Stations close together at the current zoom are one cluster, coloured by the
+  // worst of them (FRONTEND.md *Project dashboard*).
+  clusterLayer = L.markerClusterGroup({
+    showCoverageOnHover: false, maxClusterRadius: 40, zoomToBoundsOnClick: false,
+    iconCreateFunction: function (cluster) {
+      var entries = cluster.getAllChildMarkers().map(function (m) { return m.options.entry; });
+      return L.divIcon({ className: 'ts-pin-wrap', iconSize: [30, 30], iconAnchor: [15, 15],
+        html: pinHtml(worstOf(entries).color, String(entries.length)) });
+    }
+  }).addTo(map);
+  clusterLayer.on('clusterclick', function (ev) {
+    var ids = ev.layer.getAllChildMarkers().map(function (m) { return m.options.entry.station.id; });
+    state.filter = ids;
+    renderList();
+    ev.layer.zoomToBounds({ padding: [30, 30] });
+  });
   map.pm.setGlobalOptions({ allowSelfIntersection: false });
   map.on('click', onMapClick);
   map.on('pm:create', function (e) {
@@ -299,31 +299,35 @@ function saveArea() {
 
 function drawMarkers() {
   var L = window.L;
-  markerLayer.clearLayers();
+  clusterLayer.clearLayers();
   markers = {};
   var bounds = [];
-  state.locations.forEach(function (loc) {
-    if (!loc.latLng) { return; }
-    var here = stationsAt(loc.id), worst = worstOf(here);
-    var icon = L.divIcon({ className: 'ts-pin-wrap', iconSize: [26, 26], iconAnchor: [13, 13],
-      html: '<span class="ts-pin" style="--c:' + worst.color + '"><b>' + here.length + '</b></span>' });
-    var m = L.marker(loc.latLng, { icon: icon, draggable: state.editMap, keyboard: true, title: loc.name, pmIgnore: true }).addTo(markerLayer);
-    m.bindTooltip(esc(loc.name) + ' · ' + here.length + (here.length === 1 ? ' station' : ' stations') + ' · ' + esc(worst.label), { direction: 'top', offset: [0, -12] });
+  state.stations.forEach(function (entry) {
+    if (!entry.latLng) { return; }
+    var icon = L.divIcon({ className: 'ts-pin-wrap', iconSize: [22, 22], iconAnchor: [11, 11],
+      html: pinHtml(entry.status.color, '') });
+    var m = L.marker(entry.latLng, { icon: icon, draggable: state.editMap, keyboard: true, title: entry.station.name,
+      pmIgnore: true, entry: entry });
+    var stale = staleText(entry);
+    m.bindTooltip(esc(entry.station.name) + ' · ' + esc(entry.status.label) + (stale ? ' · ' + esc(stale) : ''),
+      { direction: 'top', offset: [0, -10] });
     m.on('click', function (ev) {
       L.DomEvent.stopPropagation(ev);
-      state.filter = state.filter === loc.id ? null : loc.id;
+      var only = state.filter && state.filter.length === 1 && state.filter[0] === entry.station.id;
+      state.filter = only ? null : [entry.station.id];
       renderList();
       drawMarkers();
     });
     m.on('dragend', function () {
       var p = m.getLatLng();
-      savePosition(loc, [p.lat, p.lng]);
+      savePosition(entry, [p.lat, p.lng]);
     });
-    m.on('add', function () { dropTarget(m.getElement(), loc.id); });
-    if (m.getElement()) { dropTarget(m.getElement(), loc.id); }
-    if (state.filter === loc.id) { m.getElement() && m.getElement().classList.add('selected'); }
-    markers[loc.id] = m;
-    bounds.push(loc.latLng);
+    clusterLayer.addLayer(m);
+    if (state.filter && state.filter.length === 1 && state.filter[0] === entry.station.id && m.getElement()) {
+      m.getElement().classList.add('selected');
+    }
+    markers[entry.station.id] = m;
+    bounds.push(entry.latLng);
   });
   if (areaLayer) { bounds = bounds.concat(areaLayer.getLatLngs()[0].map(function (p) { return [p.lat, p.lng]; })); }
   if (!fitted && bounds.length) {
@@ -332,9 +336,10 @@ function drawMarkers() {
   }
 }
 
-function highlight(locationId, on) {
-  var m = markers[locationId];
-  if (m && m.getElement()) { m.getElement().classList.toggle('hover', on); }
+function highlight(stationId, on) {
+  var m = markers[stationId];
+  var el = m && (clusterLayer.getVisibleParent(m) || m).getElement();
+  if (el) { el.classList.toggle('hover', on); }
 }
 
 function setEditMap(on) {
@@ -347,7 +352,7 @@ function setEditMap(on) {
     map.pm.addControls({ position: 'topleft', drawMarker: false, drawCircleMarker: false, drawPolyline: false,
       drawRectangle: false, drawCircle: false, drawText: false, cutPolygon: false, rotateMode: false,
       dragMode: false, drawPolygon: true, editMode: true, removalMode: true });
-    ui.toast('Click the map to add a location; drag a pin to move it; drag a station onto a location');
+    ui.toast('Drag a station to move it; Place puts a station without a position on the map');
   } else {
     map.pm.disableDraw();
     map.pm.disableGlobalEditMode();
@@ -359,149 +364,34 @@ function setEditMap(on) {
 }
 
 function onMapClick(ev) {
-  if (!state.editMap || map.pm.globalDrawModeEnabled() || map.pm.globalEditModeEnabled() || map.pm.globalRemovalModeEnabled()) { return; }
-  var latLng = [ev.latlng.lat, ev.latlng.lng];
-  if (state.placing) {
-    var loc = locationById(state.placing);
-    state.placing = null;
-    cardEl.classList.remove('placing');
-    savePosition(loc, latLng);
-    return;
-  }
-  newLocationPopup(ev.latlng);
+  if (!state.editMap || !state.placing || map.pm.globalDrawModeEnabled() || map.pm.globalEditModeEnabled()
+      || map.pm.globalRemovalModeEnabled()) { return; }
+  var entry = entryById(state.placing);
+  state.placing = null;
+  cardEl.classList.remove('placing');
+  if (entry) { savePosition(entry, [ev.latlng.lat, ev.latlng.lng]); }
 }
 
-function newLocationPopup(latlng) {
-  var form = h('<form class="ts-proj-newloc"><div class="ts-field-label">New location here</div>' +
-    '<input class="ts-input" placeholder="Location name" required><div class="ts-confirm-actions">' +
-    '<button type="submit" class="ts-btn primary">Create</button></div></form>');
-  var popup = window.L.popup({ closeButton: true, minWidth: 220 }).setLatLng(latlng).setContent(form).openOn(map);
-  var input = form.querySelector('input');
-  setTimeout(function () { input.focus(); }, 0);
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var name = input.value.trim();
-    if (!name) { return; }
-    form.querySelector('button').disabled = true;
-    createLocation(name, [latlng.lat, latlng.lng]).then(function () {
-      map.closePopup(popup);
-    }).catch(function (err) {
-      form.querySelector('button').disabled = false;
-      ui.toast('Location not created: ' + errText(err), 'error');
-    });
-  });
-}
-
-function createLocation(name, latLng) {
-  var owner = state.owner;
-  var body = { name: name, type: 'Location' };
-  if (owner.entityType === 'CUSTOMER') { body.customerId = owner; }
-  return tb.post('/api/asset', body).then(function (asset) {
-    return tb.post('/api/relation', { from: { entityType: 'ASSET', id: state.entity.id }, to: asset.id, type: 'Contains', typeGroup: 'COMMON' })
-      .then(function () { return tb.saveAttrs({ entityType: 'ASSET', id: asset.id.id }, { latitude: latLng[0], longitude: latLng[1] }); });
-  }).then(function () {
-    ui.toast('Location "' + name + '" created');
-    return refresh();
-  });
-}
-
-function savePosition(loc, latLng) {
-  tb.saveAttrs(loc.entity, { latitude: latLng[0], longitude: latLng[1] }).then(function () {
-    loc.latLng = latLng;
-    ui.toast(loc.name + ' placed');
+function savePosition(entry, latLng) {
+  tb.saveAttrs(entry.station, { latitude: latLng[0], longitude: latLng[1] }).then(function () {
+    entry.latLng = latLng;
+    ui.toast(entry.station.name + ' placed');
     drawMarkers();
     renderList();
   }).catch(function (err) { ui.toast('Position not saved: ' + errText(err), 'error'); drawMarkers(); });
 }
 
-function renameLocation(loc) {
-  var dr = ui.openDrawer('Rename location', esc(loc.entity.name));
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Name</span></div>' +
-    '<div class="ts-ctl"><input class="ts-input" type="text" data-f="name"></div></div>'));
-  var input = dr.body.querySelector('[data-f=name]');
-  input.value = loc.entity.name;
-  ui.drawerActions(dr, 'Save').addEventListener('click', function () {
-    var name = input.value.trim();
-    if (!name || name === loc.entity.name) { ui.closeDrawer(); return; }
-    tb.getAsset(loc.id).then(function (asset) {
-      asset.name = name;
-      return tb.post('/api/asset', asset);
-    }).then(function () {
-      ui.toast('Location renamed');
-      ui.closeDrawer();
-      return refresh();
-    }).catch(function (err) { ui.toast('Not renamed: ' + errText(err), 'error'); });
-  });
-}
-
-/** The stations below `loc`, in its sub-locations too. */
-function stationsBelow(loc) {
-  function inside(l) { return !!l && (l.id === loc.id || inside(locationById(l.parent && l.parent.id))); }
-  return state.stations.filter(function (s) { return inside(locationById(s.locationId)); });
-}
-
-/** Delete a location; what it contains moves up to its parent first, and the
- * stations below it re-resolve, since they now inherit from another place. */
-function deleteLocation(loc) {
-  var parent = loc.parent, below = stationsBelow(loc);
-  ui.confirm('Delete location <b>' + esc(loc.entity.name) + '</b>?' + (below.length
-    ? ' Its ' + below.length + (below.length === 1 ? ' station moves' : ' stations move') + ' to <b>' + esc(parent.name) +
-      '</b> and inherit its settings: thresholds, units, texts and contacts.' : ''), 'Delete').then(function (ok) {
-    if (!ok) { return null; }
-    return tb.io.fetchChildren(loc.entity).then(function (children) {
-      return Promise.all(children.map(function (c) {
-        return tb.post('/api/relation', { from: { entityType: 'ASSET', id: parent.id }, to: { entityType: 'ASSET', id: c.id },
-          type: 'Contains', typeGroup: 'COMMON' });
-      }));
-    }).then(function () {
-      return tb.del('/api/asset/' + loc.id);
-    }).then(function () {
-      return tb.resolveStations(below.map(function (s) { return s.station; }));
-    }).then(function () {
-      if (state.filter === loc.id) { state.filter = null; }
-      ui.toast('Location deleted');
-      return refresh();
-    });
-  }).catch(function (err) { ui.toast('Location not deleted: ' + errText(err), 'error'); });
-}
-
-// -- moving a station --------------------------------------------------------------------
-
-var dragged = null;
-
-function dropTarget(el, locationId) {
-  if (!el || el.getAttribute('data-drop')) { return; }
-  el.setAttribute('data-drop', '1');
-  el.addEventListener('dragover', function (e) { if (dragged) { e.preventDefault(); el.classList.add('drop'); } });
-  el.addEventListener('dragleave', function () { el.classList.remove('drop'); });
-  el.addEventListener('drop', function (e) {
-    e.preventDefault();
-    el.classList.remove('drop');
-    if (dragged) { moveStation(dragged, locationId); }
-  });
-}
-
-function moveStation(entry, locationId) {
-  if (entry.locationId === locationId) { return; }
-  var target = locationId === NO_LOCATION ? state.entity : locationById(locationId).entity;
-  var where = locationId === NO_LOCATION ? 'directly under ' + esc(state.entity.name) : 'to ' + esc(target.name);
-  ui.confirm('Move <b>' + esc(entry.station.name) + '</b> ' + where + '? It then inherits the settings of its new place: thresholds, units, texts and contacts.', 'Move')
+function removePosition(entry) {
+  ui.confirm('Remove the position of <b>' + esc(entry.station.name) + '</b>? It leaves the map and is listed under No position.', 'Remove')
     .then(function (ok) {
       if (!ok) { return null; }
-      var s = entry.station;
-      return tb.io.fetchParent(s).then(function (parent) {
-        return parent ? tb.del('/api/relation', { fromId: parent.id, fromType: 'ASSET', relationType: 'Contains',
-          relationTypeGroup: 'COMMON', toId: s.id, toType: 'ASSET' }) : null;
-      }).then(function () {
-        return tb.post('/api/relation', { from: { entityType: 'ASSET', id: target.id }, to: { entityType: 'ASSET', id: s.id },
-          type: 'Contains', typeGroup: 'COMMON' });
-      }).then(function () {
-        return tb.resolveStations([s]);
-      }).then(function () {
-        ui.toast(s.name + ' moved');
-        return refresh();
+      return tb.deleteAttrs(entry.station, ['latitude', 'longitude']).then(function () {
+        entry.latLng = null;
+        ui.toast(entry.station.name + ' has no position');
+        drawMarkers();
+        renderList();
       });
-    }).catch(function (err) { ui.toast('Station not moved: ' + errText(err), 'error'); });
+    }).catch(function (err) { ui.toast('Position not removed: ' + errText(err), 'error'); });
 }
 
 // -- list --------------------------------------------------------------------------------
@@ -521,71 +411,36 @@ function renderHeader() {
 
 function renderList() {
   listEl.innerHTML = '';
-  if (!state.stations.length && !state.locations.length) {
-    fail('No station in this project yet.' + (state.canEdit && map ? ' Use Edit map to add a location.' : ''));
+  if (!state.stations.length) {
+    fail('No station in this project yet.');
     return;
   }
+  var shown = state.filter ? state.stations.filter(function (s) { return state.filter.indexOf(s.station.id) >= 0; }) : state.stations;
   if (state.filter) {
-    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every location">' + ICON.close + '</button></div>');
-    bar.querySelector('span').textContent = 'Showing ' + locationById(state.filter).name;
+    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every station">' + ICON.close + '</button></div>');
+    bar.querySelector('span').textContent = shown.length === 1 ? 'Showing ' + shown[0].station.name : 'Showing ' + shown.length + ' stations';
     bar.querySelector('button').addEventListener('click', function () { state.filter = null; renderList(); drawMarkers(); });
     listEl.appendChild(bar);
   }
-  var groups = state.locations.map(function (l) { return { id: l.id, name: l.name, loc: l }; });
-  groups.push({ id: NO_LOCATION, name: 'No location', loc: null });
-  groups.forEach(function (g) {
-    if (state.filter && state.filter !== g.id) { return; }
-    var here = stationsAt(g.id);
-    if (!g.loc && !here.length && !state.canEdit) { return; }
-    var card = listEl.appendChild(h('<div class="ts-proj-loc' + (g.loc ? '' : ' unplaced') + '"></div>'));
-    card.appendChild(groupHead(g, here));
-    var body = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
-    here.forEach(function (entry) { body.appendChild(stationRow(entry)); });
-    if (!here.length) {
-      body.appendChild(h('<div class="ts-row-meta ts-proj-none"></div>')).textContent = g.loc ? 'No station here yet.' : 'Drop a station here to take it out of its location.';
-    }
-    if (state.canEdit) { dropTarget(card, g.id); }
-  });
-}
-
-function groupHead(g, here) {
-  var el = h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + (g.loc ? ICON.map : ICON_UNPLACE) + '</span>' +
-    '<span class="ts-proj-group-name"></span><span class="ts-count"></span><span class="ts-spacer"></span></div>');
-  el.querySelector('.ts-proj-group-name').textContent = g.name;
-  el.querySelector('.ts-count').textContent = here.length;
-  if (g.loc && !g.loc.latLng) {
-    el.appendChild(h('<span class="ts-row-meta">not on the map</span>'));
+  var placed = shown.filter(function (s) { return s.latLng; });
+  var unplaced = shown.filter(function (s) { return !s.latLng; });
+  var body = listEl.appendChild(h('<div class="ts-proj-loc"><div class="ts-proj-loc-body"></div></div>')).firstChild;
+  placed.forEach(function (entry) { body.appendChild(stationRow(entry)); });
+  if (unplaced.length) {
+    var card = listEl.appendChild(h('<div class="ts-proj-loc unplaced"></div>'));
+    var head = card.appendChild(h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + ICON_UNPLACE + '</span>' +
+      '<span class="ts-proj-group-name">No position</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
+    head.querySelector('.ts-count').textContent = unplaced.length;
+    head.appendChild(chip(worstOf(unplaced)));
+    var ubody = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
+    unplaced.forEach(function (entry) { ubody.appendChild(stationRow(entry)); });
   }
-  if (g.loc && state.editMap) {
-    var place = h('<button type="button" class="ts-btn ghost">' + (g.loc.latLng ? 'Move pin' : 'Place') + '</button>');
-    place.addEventListener('click', function () {
-      state.placing = g.id;
-      cardEl.classList.add('placing');
-      ui.toast('Click the map where ' + g.loc.name + ' is');
-    });
-    el.appendChild(place);
-    var rename = h('<button type="button" class="ts-icon-btn" data-a="rename" title="Rename">' + ICON.edit + '</button>');
-    rename.addEventListener('click', function () { renameLocation(g.loc); });
-    el.appendChild(rename);
-    var remove = h('<button type="button" class="ts-icon-btn" data-a="delete" title="Delete">' + ICON_TRASH + '</button>');
-    remove.addEventListener('click', function () { deleteLocation(g.loc); });
-    el.appendChild(remove);
-  }
-  if (here.length) { el.appendChild(chip(worstOf(here))); }
-  if (g.loc && !tb.isPublicView()) {
-    var gear = h('<button type="button" class="ts-icon-btn" data-a="settings" title="Settings of this location">' + ICON.gear + '</button>');
-    gear.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'settings', g.loc); });
-    el.appendChild(gear);
-  }
-  if (g.loc) {
-    el.addEventListener('mouseenter', function () { highlight(g.id, true); });
-    el.addEventListener('mouseleave', function () { highlight(g.id, false); });
-  }
-  return el;
 }
 
 function lastReading(entry) {
-  return entry.lastTs ? 'Last reading ' + ago(entry.lastTs) : 'No reading yet';
+  var text = entry.lastTs ? 'Last reading ' + ago(entry.lastTs) : 'No reading yet';
+  var stale = staleText(entry);
+  return stale ? text + ' · ' + stale : text;
 }
 
 /** Public access of one station for a public link: null before the check,
@@ -611,6 +466,11 @@ function stationRow(entry) {
   el.setAttribute('data-station', entry.station.name);
   el.querySelector('.ts-proj-st-name').textContent = entry.station.name;
   el.querySelector('.ts-row-meta').textContent = lastReading(entry);
+  var fresh = entry.fresh || {};
+  if ((fresh.stale || []).length) {
+    el.querySelector('.ts-row-meta').setAttribute('data-tip', 'Stale: ' + fresh.stale.join(', ') +
+      ' — older than three measurement intervals of their source');
+  }
   var side = el.querySelector('.ts-proj-st-side');
   var pub = state.canEdit && publicState(entry);
   if (pub) { side.appendChild(publicIcon(pub)); }
@@ -634,22 +494,23 @@ function stationRow(entry) {
       (entry.dashboardId ? ICON.edit : ICON.plus) + '</button>');
     assign.addEventListener('click', function () { openAssign(entry); });
     side.appendChild(assign);
-    if (entry.locationId !== NO_LOCATION) {
-      var unplace = h('<button type="button" class="ts-icon-btn" title="Take out of its location">' + ICON_UNPLACE + '</button>');
-      unplace.addEventListener('click', function () { moveStation(entry, NO_LOCATION); });
+  }
+  if (state.canEdit && state.editMap) {
+    var place = h('<button type="button" class="ts-btn ghost">' + (entry.latLng ? 'Move' : 'Place') + '</button>');
+    place.addEventListener('click', function () {
+      state.placing = entry.station.id;
+      cardEl.classList.add('placing');
+      ui.toast('Click the map where ' + entry.station.name + ' is');
+    });
+    side.appendChild(place);
+    if (entry.latLng) {
+      var unplace = h('<button type="button" class="ts-icon-btn" title="Remove position">' + ICON_UNPLACE + '</button>');
+      unplace.addEventListener('click', function () { removePosition(entry); });
       side.appendChild(unplace);
     }
-    el.draggable = true;
-    el.addEventListener('dragstart', function (e) {
-      dragged = entry;
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', entry.station.name);
-      cardEl.classList.add('dragging');
-    });
-    el.addEventListener('dragend', function () { dragged = null; cardEl.classList.remove('dragging'); });
   }
-  el.addEventListener('mouseenter', function () { highlight(entry.locationId, true); });
-  el.addEventListener('mouseleave', function () { highlight(entry.locationId, false); });
+  el.addEventListener('mouseenter', function () { highlight(entry.station.id, true); });
+  el.addEventListener('mouseleave', function () { highlight(entry.station.id, false); });
   return el;
 }
 
@@ -664,8 +525,6 @@ function renderPublic() {
     lines.push(r.reason);
   } else {
     if (r.denied[state.entity.id]) { lines.push('this project is in no public group'); }
-    var locs = state.locations.filter(function (l) { return r.denied[l.id]; });
-    if (locs.length) { lines.push(locs.length + (locs.length === 1 ? ' location is' : ' locations are') + ' in no public group'); }
     var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
     if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station is' : ' stations are') + ' in no public group'); }
     var dash = state.stations.filter(function (s) { return s.dashboardId && r.denied[s.dashboardId]; });
@@ -703,7 +562,6 @@ function checkPublic() {
       body: JSON.stringify({ publicId: pub.id.id }) }).then(function (r) { return r.json(); }).then(function (auth) {
       var headers = { 'X-Authorization': 'Bearer ' + auth.token };
       var checks = [['asset', state.entity.id]]
-        .concat(state.locations.map(function (l) { return ['asset', l.id]; }))
         .concat(state.stations.map(function (s) { return ['asset', s.station.id]; }))
         .concat(state.stations.filter(function (s) { return s.dashboardId; }).map(function (s) { return ['dashboard', s.dashboardId]; }));
       if (opts.projectDashboardId) { checks.push(['dashboard', opts.projectDashboardId]); }

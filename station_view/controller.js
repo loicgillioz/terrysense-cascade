@@ -1,11 +1,13 @@
 /*
  * Station — one station: which measurement feeds each of its channels, and
- * the latest value of each (left); the device that measures them and the
- * project the station stands in, with its location (right). Read-only for everyone.
- * Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
+ * the latest value of each, with the channels gone stale (left); the devices
+ * that measure them and the project the station stands in (right). Read-only
+ * for everyone. Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
  *
  * Channels are the keys of `config.channelMap`, each fed by a source key of
- * the station's device; labels and units are `effective.<channel>.*`. A name
+ * the device its entry names; labels and units are `effective.<channel>.*`. A
+ * channel is stale after three measurement intervals of its source (HEALTH.md
+ * §2). A name
  * the vocabulary marks diagnostic is folded away unless it is in alarm. A
  * channel with an active `<channel>.max|min|state` alarm carries its severity;
  * the station's other alarms are listed under the channels.
@@ -27,7 +29,6 @@ var ui = window.TerrySenseUi(root);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
-var HOUR = 3600000;
 var SOURCE_KEY_RE = /^p(\d+)\.([a-z][A-Za-z0-9]*)(?:\.g(\d+))?(?:\.i(\d+))?$/;
 var CHANNEL_ALARM_RE = /^(.+)\.(max|min|state)$/;
 var OTHER_ALARMS = [
@@ -82,11 +83,11 @@ function loadDefaults() {
   });
 }
 
-function channelOf(name, sourceKey, attrs, latest) {
+function channelOf(name, entry, attrs, latest) {
   var base = state.names[resolver.splitChannelKey(name).name] || {};
   var raw = latest[name] && latest[name][0];
   return {
-    name: name, sourceKey: sourceKey,
+    name: name, sourceKey: entry.key, device: entry.device, stale: null,
     label: attrs['effective.' + name + '.label'] || base.label || name,
     unit: attrs['effective.' + name + '.unit'] || '',
     diagnostic: !!base.diagnostic,
@@ -98,15 +99,15 @@ function channelOf(name, sourceKey, attrs, latest) {
   };
 }
 
-/** The devices the station contains, plus the map's `sourceDeviceId` if no relation names it. */
-function loadDevices(station, map) {
+/** The devices the station contains, and any its map names that no relation does. */
+function loadDevices(station, entries) {
   var query = {
     parameters: { rootId: station.id, rootType: 'ASSET', direction: 'FROM', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
     filters: [{ relationType: 'Contains', entityTypes: ['DEVICE'] }]
   };
   return tb.post('/api/relations', query).catch(function () { return []; }).then(function (rels) {
     var ids = (rels || []).map(function (r) { return r.to.id; });
-    if (map.sourceDeviceId && ids.indexOf(map.sourceDeviceId) < 0) { ids.push(map.sourceDeviceId); }
+    resolver.mapDevices(entries).forEach(function (d) { if (ids.indexOf(d) < 0) { ids.push(d); } });
     return Promise.all(ids.map(loadDevice));
   });
 }
@@ -126,17 +127,16 @@ function loadDevice(id) {
 function load() {
   var s = state.station, url = '/api/plugins/telemetry/ASSET/' + s.id + '/values/timeseries';
   return Promise.all([tb.attrsMap(s), tb.ancestors(s)]).then(function (got) {
-    var attrs = got[0], map = parseJson(attrs['config.channelMap']) || {};
-    var channels = map.channels || {};
-    var names = Object.keys(channels);
+    var attrs = got[0], entries = resolver.mapEntries(attrs['config.channelMap']);
+    var names = Object.keys(entries);
     state.attrs = attrs;
     state.chain = got[1];
     return Promise.all([
       names.length ? tb.get(url, { keys: names.join(',') }).catch(function () { return {}; }) : {},
       tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }),
-      loadDevices(s, map)
+      loadDevices(s, entries)
     ]).then(function (r) {
-      state.channels = names.map(function (n) { return channelOf(n, channels[n], attrs, r[0] || {}); })
+      state.channels = names.map(function (n) { return channelOf(n, entries[n], attrs, r[0] || {}); })
         .sort(function (a, b) { return a.label.localeCompare(b.label); });
       var byName = {};
       state.channels.forEach(function (c) { byName[c.name] = c; });
@@ -147,6 +147,11 @@ function load() {
       });
       state.devices = r[2];
       state.loadedAt = Date.now();
+      var latest = {};
+      state.channels.forEach(function (c) { if (c.latest) { latest[c.name] = c.latest.ts; } });
+      return tb.channelFreshness(attrs, latest, state.names).then(function (fresh) {
+        state.channels.forEach(function (c) { c.stale = (fresh.channels[c.name] || {}).stale; });
+      });
     });
   });
 }
@@ -168,7 +173,7 @@ function display(c) {
 /** What feeds a channel, in words: the measurement and, on a bus, its position and peripheral. */
 function measurement(c) {
   var m = SOURCE_KEY_RE.exec(c.sourceKey || '');
-  var dev = state.devices.filter(function (d) { return !d.hidden; })[0];
+  var dev = state.devices.filter(function (d) { return !d.hidden && d.id === c.device; })[0];
   if (!m) { return ((state.names[c.sourceKey] || {}).label) || c.sourceKey || '?'; }
   var pos = Number(m[1]), kind = m[2];
   var type = dev && dev.client['topology.p' + pos + '.type'];
@@ -186,8 +191,6 @@ function stationStatus() {
   if (sev) { return { id: 'alarm', label: G.severity(sev.toLowerCase()).label, color: 'var(--sev-' + sev.toLowerCase() + ')' }; }
   var last = state.channels.reduce(function (m, c) { return Math.max(m, c.latest ? c.latest.ts : 0); }, 0);
   if (!last) { return { id: 'nodata', label: 'No data', color: 'var(--ts-nodata)' }; }
-  var staleMs = Number(state.attrs['effective.staleAfterHours']) * HOUR || 0;
-  if (staleMs && Date.now() - last > staleMs) { return { id: 'stale', label: 'Stale', color: 'var(--ts-stale)' }; }
   return { id: 'ok', label: 'OK', color: 'var(--ts-ok)' };
 }
 
@@ -275,7 +278,12 @@ function channelRow(c) {
   row.querySelector('.ts-mono').textContent = c.name;
   var d = display(c);
   row.querySelector('b').textContent = d.text + (d.unit ? ' ' + d.unit : '');
-  row.querySelector('.ts-stv-val .ts-row-meta').textContent = c.latest ? ago(c.latest.ts) : 'no reading yet';
+  var age = row.querySelector('.ts-stv-val .ts-row-meta');
+  age.textContent = (c.latest ? ago(c.latest.ts) : 'no reading yet') + (c.stale ? ' · stale' : '');
+  if (c.stale) {
+    row.classList.add('stale');
+    age.setAttribute('data-tip', 'Older than three measurement intervals of its source');
+  }
   if (c.alarm) {
     row.classList.add('alarm');
     row.style.setProperty('--c', 'var(--sev-' + c.alarm.toLowerCase() + ')');
@@ -336,13 +344,14 @@ function renderSide() {
     }
   });
 
-  var parent = state.chain[0], project = state.chain.filter(function (a) { return a.kind === 'Project'; })[0];
+  var project = state.chain.filter(function (a) { return a.kind === 'Project'; })[0];
   if (!project) {
     line(sideCard('Project', ICON.map, 'No project'), 'The station is in no project.');
     return;
   }
   var pr = sideCard('Project', ICON.map, project.name);
-  line(pr, parent && parent.kind === 'Location' ? 'Location: ' + parent.name : 'At no location', 'ts-row-meta');
+  var stale = state.channels.filter(function (c) { return c.stale; }).length;
+  if (stale) { line(pr, stale + ' of ' + state.channels.length + ' channels stale', 'ts-row-meta'); }
   if (opts.projectDashboardId) {
     linkCard(pr, function () { tb.openDashboard(opts.projectDashboardId, 'project', project); });
     pr.querySelector('.ts-stv-card-head .ts-spacer').insertAdjacentHTML('afterend', '<span class="ts-stv-go">Open project</span>');

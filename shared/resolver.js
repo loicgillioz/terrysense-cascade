@@ -9,10 +9,12 @@
  * Port of `logr-cloud-tool/terrysense/operations/config_resolver.py` — keep
  * the two in sync by hand (`logr-product-docs/cloud/CONFIG_CASCADE.md`).
  *
- * Chain (nearest first): STATION -> (LOCATION) -> PROJECT, via `Contains`,
- * then CUSTOMER (the top asset's owner, skipped when tenant-owned), then the
- * DEFAULTS asset (tenant-owned, shared read-only with customers). The TENANT
- * entity itself is never read — a customer-admin user gets 403 on it.
+ * Chain (nearest first): STATION -> PROJECT, via `Contains`, then CUSTOMER
+ * (the project's owner, skipped when tenant-owned), then the DEFAULTS asset
+ * (tenant-owned, shared read-only with customers). A DEVICE: the device, the
+ * DeviceDefaults asset named after its profile, then DEFAULTS
+ * (CONFIG_CASCADE.md §1). The TENANT entity itself is never read — a
+ * customer-admin user gets 403 on it.
  *
  * `io` contract (every method returns a Promise, so this loads identically
  * against real ThingsBoard services or a synchronous test fixture wrapped in
@@ -28,12 +30,20 @@
  *
  *   fetchCustomerStations(customer) -> [station]      stations the customer owns
  *   fetchAllStations()              -> [station]      every station, for DEFAULTS
+ *   fetchAllDevices()               -> [device]       every device, for DEFAULTS
+ *
+ * For the device branch:
+ *
+ *   fetchDeviceDefaults(profile)    -> {entityType:'ASSET', id, name} | null
+ *   fetchProfileDevices(profile)    -> [device]       the devices of one profile
  *
  * `entity` / level objects carry `{entityType, id, name, kind}` — `kind` is
  * the ThingsBoard asset *type* string ("Station", "Project", "Defaults", …),
  * never the measurement kind. A resolved chain level also carries `role`:
- * `"chain"` for an ordinary Contains-linked asset (Station/Location/Project),
- * `"customer"` for the CUSTOMER rung, `"defaults"` for the DEFAULTS asset.
+ * `"chain"` for an ordinary Contains-linked asset (Station/Project),
+ * `"customer"` for the CUSTOMER rung, `"defaults"` for the DEFAULTS asset,
+ * `"device"` for a DEVICE (its `kind` is the device profile) and
+ * `"deviceDefaults"` for a DeviceDefaults asset.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -59,10 +69,14 @@ var ALARM_TEXT_EVENTS = ['created', 'cleared'];
 // Entity scalars beyond ttlDays (the only one the hot path consumes as a unit —
 // CONFIG_RESOLVER.md §3) and notify.contacts (platform users are expanded to
 // their addresses), which are handled apart.
-var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled', 'staleAfterHours']
+var SCALAR_KEYS = ['language', 'url', 'sms.enabled', 'email.enabled']
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'alarmText.' + e; }))
   .concat(ALARM_TEXT_EVENTS.map(function (e) { return 'emailText.' + e; }));
 var CONTACTS_KEY = 'notify.contacts';
+// Who receives the device alarms of a station's devices, resolved on its own so
+// a station replacing one list keeps the other (ALARMING.md §1.2).
+var DEVICE_CONTACTS_KEY = 'notify.deviceContacts';
+var DEVICE_DEFAULTS_KIND = 'DeviceDefaults';
 // The DEFAULTS asset's alarm texts per language: {lang: {'alarmText.created': …}}
 // (ALARMING.md §4). A text set below DEFAULTS wins over it.
 var TEXT_CATALOGUE_KEY = 'alarmTextByLanguage';
@@ -111,6 +125,8 @@ function levelDisplay(level) {
   // meaningless if Y reads differently depending on which resolver produced it.
   if (level.role === 'customer') { return 'Customer defaults · ' + level.name; }
   if (level.role === 'defaults') { return 'in-terra defaults'; }
+  if (level.role === 'deviceDefaults') { return 'Device defaults · ' + level.name; }
+  if (level.role === 'device') { return 'Device · ' + level.name; }
   return (level.kind || 'Asset') + ' · ' + level.name;
 }
 
@@ -123,6 +139,17 @@ function buildChain(origin, io) {
   }
   if (String(origin.kind || '').toLowerCase() === 'defaults') {
     return Promise.resolve([{ entityType: 'ASSET', id: origin.id, name: origin.name, kind: origin.kind, role: 'defaults' }]);
+  }
+  if (origin.kind === DEVICE_DEFAULTS_KIND) {
+    return appendDefaults([{ entityType: 'ASSET', id: origin.id, name: origin.name, kind: DEVICE_DEFAULTS_KIND, role: 'deviceDefaults' }], io);
+  }
+  if (origin.entityType === 'DEVICE') {
+    var own = [{ entityType: 'DEVICE', id: origin.id, name: origin.name, kind: origin.kind, role: 'device' }];
+    var profileDefaults = io.fetchDeviceDefaults ? Promise.resolve(io.fetchDeviceDefaults(origin.kind)) : Promise.resolve(null);
+    return profileDefaults.then(function (dd) {
+      if (dd) { own.push({ entityType: 'ASSET', id: dd.id, name: dd.name, kind: DEVICE_DEFAULTS_KIND, role: 'deviceDefaults' }); }
+      return appendDefaults(own, io);
+    });
   }
 
   var chain = [{ entityType: 'ASSET', id: origin.id, name: origin.name, kind: origin.kind, role: 'chain' }];
@@ -239,7 +266,9 @@ function fromDisplay(value, kind, unit, kinds) {
 
 function resolveField(chain, channel, kind, field, io, cache) {
   cache = cache || createCache();
-  var split = splitChannelKey(channel);
+  // A device source key (`logr.batteryVoltage`) falls back to the name after
+  // its prefix; it has no instances.
+  var split = channel.indexOf('.') >= 0 ? { name: channel.split('.').pop(), instance: null } : splitChannelKey(channel);
   var chanKey = CHANNEL_PREFIX + channel + '.' + field;
   if (split.instance && field === 'label') {
     // An instance keeps its number unless it has a label of its own.
@@ -311,7 +340,6 @@ function expandContacts(raw, io) {
 function resolveScalars(chain, io, cache) {
   var entries = [];
   var ttlKey = CONFIG_PREFIX + 'ttlDays';
-  var contactsKey = CONFIG_PREFIX + CONTACTS_KEY;
   var work = firstSet(chain, ttlKey, io, cache).then(function (hit) {
     if (!hit) { return; }
     var n = Number(hit.value);
@@ -320,14 +348,16 @@ function resolveScalars(chain, io, cache) {
       value: Number.isFinite(n) ? Math.trunc(n) : hit.value,
       source: levelDisplay(hit.level), level: hit.level
     });
-  }).then(function () {
-    return firstSet(chain, contactsKey, io, cache);
-  }).then(function (hit) {
-    if (!hit) { return; }
-    return expandContacts(hit.value, io).then(function (contacts) {
-      entries.push({
-        effectiveKey: EFFECTIVE_PREFIX + CONTACTS_KEY, overrideKey: contactsKey,
-        value: contacts, source: levelDisplay(hit.level), level: hit.level
+  });
+  [CONTACTS_KEY, DEVICE_CONTACTS_KEY].forEach(function (name) {
+    var key = CONFIG_PREFIX + name;
+    work = work.then(function () { return firstSet(chain, key, io, cache); }).then(function (hit) {
+      if (!hit) { return; }
+      return expandContacts(hit.value, io).then(function (contacts) {
+        entries.push({
+          effectiveKey: EFFECTIVE_PREFIX + name, overrideKey: key,
+          value: contacts, source: levelDisplay(hit.level), level: hit.level
+        });
       });
     });
   });
@@ -367,6 +397,20 @@ function resolveScalars(chain, io, cache) {
   return work.then(function () { return entries; });
 }
 
+/** A device resolves only its retention among the scalars. */
+function resolveDeviceScalars(chain, io, cache) {
+  var ttlKey = CONFIG_PREFIX + 'ttlDays';
+  return firstSet(chain, ttlKey, io, cache).then(function (hit) {
+    if (!hit) { return []; }
+    var n = Number(hit.value);
+    return [{
+      effectiveKey: EFFECTIVE_PREFIX + 'ttlDays', overrideKey: ttlKey,
+      value: Number.isFinite(n) ? Math.trunc(n) : hit.value,
+      source: levelDisplay(hit.level), level: hit.level
+    }];
+  });
+}
+
 // -- channel discovery ------------------------------------------------------
 // Station: its own config.channelMap, each channel's kind from the tenant
 // dictionary (`config.channelNames` on the DEFAULTS asset). Location/Project:
@@ -388,6 +432,37 @@ function defaultsJson(name, io, cache) {
 }
 
 function channelNamesOf(io, cache) { return defaultsJson('channelNames', io, cache); }
+
+/** A station's map as `{channel: {device, key}}` (CHANNEL_MAP.md §1). A plain
+ * string entry is the source key of the map's `sourceDeviceId`. Mirrors
+ * `channel_maps.entries()` in logr-cloud-tool. */
+function mapEntries(raw) {
+  var parsed = parseJson(raw) || {};
+  var out = {};
+  Object.keys(parsed.channels || {}).forEach(function (c) {
+    var e = parsed.channels[c];
+    if (e && typeof e === 'object') { out[c] = { device: e.device || null, key: e.key }; }
+    else if (typeof e === 'string') { out[c] = { device: parsed.sourceDeviceId || null, key: e }; }
+  });
+  return out;
+}
+
+/** `entries` as the `config.channelMap` value — the one shape the tools write. */
+function buildMap(entries) {
+  var channels = {};
+  Object.keys(entries).forEach(function (c) { channels[c] = { device: entries[c].device, key: entries[c].key }; });
+  return JSON.stringify({ channels: channels });
+}
+
+/** The devices a map names, in first-use order — the station's `Contains`. */
+function mapDevices(entries) {
+  var seen = [];
+  Object.keys(entries).forEach(function (c) {
+    var d = entries[c].device;
+    if (d && seen.indexOf(d) < 0) { seen.push(d); }
+  });
+  return seen;
+}
 
 function channelsFromAttrs(attrs, names) {
   var parsed = parseJson(attrs && attrs[CONFIG_PREFIX + 'channelMap']);
@@ -448,12 +523,18 @@ function descendantAssets(entity, io, maxDepth) {
  * go through the optional `io.fetchCustomerStations` / `io.fetchAllStations`. */
 function affectedStations(entity, io) {
   var kind = String(entity.kind || '').toLowerCase();
-  if (kind === 'station') { return Promise.resolve([entity]); }
+  if (kind === 'station' || entity.entityType === 'DEVICE') { return Promise.resolve([entity]); }
+  if (entity.kind === DEVICE_DEFAULTS_KIND) {
+    return io.fetchProfileDevices ? Promise.resolve(io.fetchProfileDevices(entity.name)) : Promise.resolve([]);
+  }
   if (entity.entityType === 'CUSTOMER') {
     return io.fetchCustomerStations ? Promise.resolve(io.fetchCustomerStations(entity)) : Promise.resolve([]);
   }
   if (kind === 'defaults') {
-    return io.fetchAllStations ? Promise.resolve(io.fetchAllStations()) : Promise.resolve([]);
+    return Promise.all([
+      io.fetchAllStations ? Promise.resolve(io.fetchAllStations()) : [],
+      io.fetchAllDevices ? Promise.resolve(io.fetchAllDevices()) : []
+    ]).then(function (got) { return got[0].concat(got[1]); });
   }
   return descendantAssets(entity, io).then(function (all) {
     return all.filter(function (e) { return String(e.kind || '').toLowerCase() === 'station'; });
@@ -475,14 +556,54 @@ function discoverChannels(entity, io) {
   });
 }
 
+// -- device branch ----------------------------------------------------------
+
+/** The source key a device-branch override names —
+ * `channel.logr.batteryVoltage.alarm.warning.thresholdMin` -> `logr.batteryVoltage`
+ * — or null. Mirrors `device_source_key()` in config_resolver.py. */
+function deviceSourceKey(attrKey) {
+  if (String(attrKey).indexOf(CHANNEL_PREFIX) !== 0) { return null; }
+  var parts = String(attrKey).substring(CHANNEL_PREFIX.length).split('.');
+  var at = parts.indexOf('alarm', 1);
+  if (at > 0 && parts.length >= at + 3) { return parts.slice(0, at).join('.'); }
+  if (parts.length >= 2 && PER_KEY_FIELDS.indexOf(parts[parts.length - 1]) >= 0) { return parts.slice(0, -1).join('.'); }
+  return null;
+}
+
+/** A device source key's kind: the kind segment of a LOGR key, else the
+ * vocabulary kind of the name after its prefix, or of the key itself. */
+function deviceKeyKind(key, names) {
+  var m = /^p\d+\.([a-z][A-Za-z0-9]*)/.exec(key);
+  if (m) { return m[1]; }
+  return (names[String(key).split('.').pop()] || {}).kind || null;
+}
+
+/** `{sourceKey: kind}` configured on a device's own levels — the device and its
+ * DeviceDefaults asset, never the DEFAULTS asset's station channel names. */
+function deviceChannels(chain, io, cache) {
+  var own = chain.filter(function (l) { return l.role === 'device' || l.role === 'deviceDefaults'; });
+  return Promise.all(own.map(function (l) { return attrsOf(l, io, cache); }).concat([channelNamesOf(io, cache)])).then(function (got) {
+    var names = got.pop(), out = {};
+    got.forEach(function (attrs) {
+      Object.keys(attrs || {}).forEach(function (k) {
+        var key = deviceSourceKey(k);
+        if (key) { out[key] = deviceKeyKind(key, names); }
+      });
+    });
+    return out;
+  });
+}
+
 // -- resolve a station --------------------------------------------------
 
-/** Side-effect-free resolution of one STATION's full `effective.*` block. */
+/** Side-effect-free resolution of one STATION's full `effective.*` block — or
+ * a DEVICE's: its own limits and retention, no notification key. */
 function resolveStation(station, io, cache) {
   cache = cache || createCache();
+  var device = station.entityType === 'DEVICE';
   return buildChain(station, io).then(function (chain) {
     return Promise.all([attrsOf(chain[0], io, cache), channelNamesOf(io, cache)]).then(function (got) {
-      return Promise.resolve(channelsFromAttrs(got[0], got[1])).then(function (keys) {
+      return (device ? deviceChannels(chain, io, cache) : Promise.resolve(channelsFromAttrs(got[0], got[1]))).then(function (keys) {
         var channelEntries = [];
         var fields = channelFields();
         var work = Promise.resolve();
@@ -502,7 +623,7 @@ function resolveStation(station, io, cache) {
           });
         });
 
-        return work.then(function () { return resolveScalars(chain, io, cache); }).then(function (scalarEntries) {
+        return work.then(function () { return device ? resolveDeviceScalars(chain, io, cache) : resolveScalars(chain, io, cache); }).then(function (scalarEntries) {
           var entries = scalarEntries.concat(channelEntries);
           var effective = {};
           entries.forEach(function (e) { effective[e.effectiveKey] = e.value; });
@@ -553,7 +674,8 @@ function inheritedValue(entity, descriptor, io, cache) {
 return {
   CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX,
   EFFECTIVE_PREFIX: EFFECTIVE_PREFIX,
-  SEVERITIES: SEVERITIES, SCALAR_KEYS: SCALAR_KEYS, CONTACTS_KEY: CONTACTS_KEY, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
+  SEVERITIES: SEVERITIES, SCALAR_KEYS: SCALAR_KEYS, CONTACTS_KEY: CONTACTS_KEY, DEVICE_CONTACTS_KEY: DEVICE_CONTACTS_KEY,
+  DEVICE_DEFAULTS_KIND: DEVICE_DEFAULTS_KIND, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
   ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS, TEXT_CATALOGUE_KEY: TEXT_CATALOGUE_KEY, DEFAULT_LANGUAGE: DEFAULT_LANGUAGE,
 
   camelKind: camelKind,
@@ -574,6 +696,13 @@ return {
   affectedStations: affectedStations,
   discoverChannels: discoverChannels,
   channelsFromAttrs: channelsFromAttrs,
+  calculatedChannels: calculatedChannels,
+  mapEntries: mapEntries,
+  buildMap: buildMap,
+  mapDevices: mapDevices,
+  deviceSourceKey: deviceSourceKey,
+  deviceKeyKind: deviceKeyKind,
+  deviceChannels: deviceChannels,
   inheritedValue: inheritedValue
 };
 

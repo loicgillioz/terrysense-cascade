@@ -63,6 +63,7 @@ root.TerrySenseTbIo = function (ctx) {
 
   function getAsset(id) { return toPromise(getService('assetService').getAsset(id)); }
   function assetLevel(a) { return { entityType: 'ASSET', id: a.id.id, name: a.name, kind: a.type }; }
+  function deviceLevel(d) { return { entityType: 'DEVICE', id: d.id.id, name: d.name, kind: d.type }; }
 
   function relatedAssets(entityId, direction) {
     var query = {
@@ -120,6 +121,21 @@ root.TerrySenseTbIo = function (ctx) {
     fetchAllStations: function () {
       return getAll('/api/user/assets', { type: 'Station' }).then(function (list) { return list.map(assetLevel); });
     },
+    // The device branch (CONFIG_CASCADE.md §1): the DeviceDefaults asset named
+    // after a profile, shared read-only with every customer like DEFAULTS.
+    fetchDeviceDefaults: function (profile) {
+      return get('/api/user/assets', { type: resolver.DEVICE_DEFAULTS_KIND, textSearch: profile, pageSize: '50', page: '0' })
+        .then(function (page) {
+          var item = ((page && page.data) || []).filter(function (a) { return a.name === profile; })[0];
+          return item ? { entityType: 'ASSET', id: item.id.id, name: item.name, kind: resolver.DEVICE_DEFAULTS_KIND } : null;
+        }).catch(function () { return null; });
+    },
+    fetchProfileDevices: function (profile) {
+      return getAll('/api/user/devices', { type: profile }).then(function (list) { return list.map(deviceLevel); });
+    },
+    fetchAllDevices: function () {
+      return getAll('/api/user/devices', {}).then(function (list) { return list.map(deviceLevel); });
+    },
     // A user's own notification switches ride along as `switches`; a user
     // whose attributes this viewer cannot read keeps them all on.
     fetchUser: function (id) {
@@ -150,6 +166,13 @@ root.TerrySenseTbIo = function (ctx) {
     if (ds.entityType === 'CUSTOMER') {
       return toPromise(getService('customerService').getCustomer(ds.entityId)).then(function (c) {
         return { entityType: 'CUSTOMER', id: ds.entityId, name: c.title || c.name, kind: 'Customer', ownerId: ds.entityId };
+      });
+    }
+    if (ds.entityType === 'DEVICE') {
+      return toPromise(getService('deviceService').getDevice(ds.entityId)).then(function (d) {
+        var level = deviceLevel(d);
+        level.ownerId = d.ownerId && d.ownerId.id;
+        return level;
       });
     }
     return getAsset(ds.entityId).then(function (a) {
@@ -198,6 +221,57 @@ root.TerrySenseTbIo = function (ctx) {
     }));
   }
 
+  // -- channel staleness (HEALTH.md §2) ---------------------------------------
+  // A channel is stale when its newest reading is older than three measurement
+  // intervals of its own source: the device's `subscriptions.<key>.interval` on
+  // a LOGR3 or LOGR4, its `register.intervalSeconds` on any other device.
+  var STALE_FACTOR = 3;
+  var intervalCache = {};
+
+  function deviceIntervals(deviceId) {
+    if (!intervalCache[deviceId]) {
+      var base = '/api/plugins/telemetry/DEVICE/' + deviceId + '/values/attributes/';
+      intervalCache[deviceId] = Promise.all([
+        get(base + 'CLIENT_SCOPE').catch(function () { return []; }),
+        get(base + 'SERVER_SCOPE', { keys: 'register.intervalSeconds' }).catch(function () { return []; })
+      ]).then(function (got) {
+        var m = {};
+        (got[0] || []).concat(got[1] || []).forEach(function (a) { m[a.key] = a.value; });
+        return m;
+      });
+    }
+    return intervalCache[deviceId];
+  }
+
+  /** `{channels: {channel: {ts, intervalS, stale}}, stale: [channel], total}` for a
+   * station, from its attributes and `latest` (`{channel: ts}`). `stale` is null
+   * for a channel whose interval is unknown. A calculated channel is stale when
+   * one of its inputs is. */
+  function channelFreshness(stationAttrs, latest, names) {
+    var entries = resolver.mapEntries(stationAttrs['config.channelMap']);
+    var channels = Object.keys(entries);
+    return Promise.all(channels.map(function (c) {
+      var e = entries[c];
+      return e.device ? deviceIntervals(e.device) : Promise.resolve({});
+    })).then(function (intervals) {
+      var out = {}, now = Date.now();
+      channels.forEach(function (c, i) {
+        var a = intervals[i], key = entries[c].key;
+        var s = Number(a['subscriptions.' + key + '.interval'] || a['register.intervalSeconds'] || a['status.baseIntervalSeconds']) || 0;
+        var ts = latest[c] || 0;
+        out[c] = { ts: ts, intervalS: s || null, stale: s ? !ts || now - ts > STALE_FACTOR * s * 1000 : null };
+      });
+      resolver.calculatedChannels(entries, stationAttrs, names || {}).forEach(function (c) {
+        var inputs = (((names || {})[c] || {}).calculated || {}).channels || [];
+        var known = inputs.filter(function (x) { return out[x] && out[x].stale !== null; });
+        out[c] = { ts: latest[c] || 0, intervalS: null,
+          stale: known.length ? known.some(function (x) { return out[x].stale; }) : null };
+      });
+      var names_ = Object.keys(out);
+      return { channels: out, stale: names_.filter(function (c) { return out[c].stale === true; }), total: names_.length };
+    });
+  }
+
   /** A LOGR3 or LOGR4 has a bus and remote configuration (DEVICE_VIEW.md §2). */
   function isComplexDevice(type) { return type === 'logr3' || type === 'logr4'; }
 
@@ -238,8 +312,9 @@ root.TerrySenseTbIo = function (ctx) {
 
   return {
     io: io, get: get, getAll: getAll, post: post, del: del, attrsMap: attrsMap, saveAttrs: saveAttrs, deleteAttrs: deleteAttrs,
-    getAsset: getAsset, assetLevel: assetLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
+    getAsset: getAsset, assetLevel: assetLevel, deviceLevel: deviceLevel, boundDatasource: boundDatasource, loadEntity: loadEntity,
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
+    channelFreshness: channelFreshness,
     isComplexDevice: isComplexDevice,
     ancestors: ancestors, openDashboard: openDashboard, isPublicView: isPublicView
   };

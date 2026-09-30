@@ -11,8 +11,9 @@
  *   project   the Project view of the bound project, or of the project above it
  *   station   the station view of the bound station
  *   charts    the station's own template dashboard, `config.stationDashboard`
- *   settings  the Settings view of the bound customer, project, location or
- *             station; never on a public link
+ *   settings  the Settings view of the bound customer, project or station, in
+ *             the Project dashboard; of the bound device, in the Devices
+ *             dashboard; never on a public link
  * and `devicesDashboardId`, `projectDashboardId`. A link that does not apply to
  * the bound entity is left out.
  *
@@ -101,8 +102,9 @@ function charts(e) {
 }
 
 function settings(e) {
-  if (tb.isPublicView() || e.entityType === 'DEVICE') { return; }
-  button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(opts.projectDashboardId, 'settings', e); });
+  if (tb.isPublicView()) { return; }
+  var dashboard = e.entityType === 'DEVICE' ? opts.devicesDashboardId : opts.projectDashboardId;
+  button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(dashboard, 'settings', e); });
 }
 
 var LINKS = { fleet: fleet, device: device, relays: relays, projects: projects, project: project,

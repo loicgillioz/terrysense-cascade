@@ -11,11 +11,10 @@
 'use strict';
 
 var TERMS = {
-  cascade: 'Settings flow down: <b>in-terra defaults → Customer → Project → Location → Station</b>. The nearest level that sets a value wins. A value set here applies to every station below.',
+  cascade: 'Settings flow down: <b>in-terra defaults → Customer → Project → Station</b>, and for a device <b>in-terra defaults → Device defaults → Device</b>. The nearest level that sets a value wins. A value set here applies to every station or device below.',
   measurements: 'Alarm thresholds, display unit and hysteresis, set per measurement.',
-  notifications: 'Who receives alarm messages, by SMS and e-mail, and what the messages say.',
+  notifications: 'Who receives alarm messages, by SMS and e-mail, and what the messages say. Measurement alarms and device alarms each have their own contacts.',
   retention: 'How long measured data is kept before it is deleted. A change applies to new data only.',
-  stale: 'A station with no reading for this long shows Stale on the project map and list.',
   debounce: 'How many readings in a row must meet an alarm condition before anyone is notified. The alarm is recorded from the first reading but stays pending until then. Empty or 1 notifies on the first reading.',
   hysteresis: 'An absolute margin, zero or positive, in the measurement unit. The alarm clears only once the value is back past the threshold by this margin, so a value hovering at the limit does not trigger alarms repeatedly.',
   unit: 'The unit shown in dashboards and alarm messages. Leave empty to use the standard unit of the measurement.',
@@ -27,7 +26,8 @@ var TERMS = {
   boolText: 'How the two values read in dashboards and alarm messages, e.g. “open” and “closed”.',
   alarmText: 'The wording of the SMS, also used for the e-mail unless a longer e-mail text is set. Insert fields such as the measured value; they are filled in when the message is sent.',
   smsLength: 'One SMS holds 160 characters, or 70 when the text contains a character outside the SMS alphabet (e.g. ê, ç, emoji). Longer texts are split and billed per part. Fields count at a typical length, the dashboard link at 30.',
-  contacts: 'People who receive alarm messages: platform users, whose e-mail and phone come from their profile, or external contacts. Each contact receives only the severities ticked for them.',
+  contacts: 'People who receive the measurement alarms of a station — a pH too high, a level too low: platform users, whose e-mail and phone come from their profile, or external contacts. Each contact receives only the severities ticked for them.',
+  deviceContacts: 'People who receive the device alarms of the station’s loggers — a low battery, a self-diagnostic fault, a unit moved. Usually the technicians, set once for the customer. A station that names its own measurement contacts keeps these.',
   channels: 'Master switches. When off, or never set, no message of that type leaves this level or any level below, whatever the contacts say.',
   noPhone: 'No phone number in this user’s profile. Add one in the user settings to send SMS.',
   channelName: 'The name a measurement is stored under. It stays the same when the LOGR or sensor is replaced, so the history is continuous.',

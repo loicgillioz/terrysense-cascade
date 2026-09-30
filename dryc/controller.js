@@ -204,8 +204,14 @@ function deviceEntity() {
 /** The station side of the rules: a `drycRule-<n>` channel per notifying rule,
  * keeping the key a rule already has so its stored series stays continuous. */
 function stationWrites(set, stationAttrs) {
-  var map = parseJson(stationAttrs['config.channelMap']) || {};
-  var channels = Object.assign({}, map.channels || {});
+  // The relay controller's own channels, as {channel: sourceKey}; another
+  // device's channels on the same station stay as they are (CHANNEL_MAP.md §1).
+  var me = state.device.id.id;
+  var entries = resolver.mapEntries(stationAttrs['config.channelMap']);
+  var channels = {}, others = {};
+  Object.keys(entries).forEach(function (c) {
+    if (!entries[c].device || entries[c].device === me) { channels[c] = entries[c].key; } else { others[c] = entries[c]; }
+  });
   var byRule = {};
   Object.keys(channels).forEach(function (key) {
     var m = /^drycRule\.(.+)$/.exec(channels[key]);
@@ -213,6 +219,7 @@ function stationWrites(set, stationAttrs) {
   });
   var used = {};
   Object.keys(byRule).forEach(function (id) { used[byRule[id]] = true; });
+  Object.keys(others).forEach(function (c) { used[c] = true; });
   var write = {}, remove = [];
   var keep = {};
   set.rules.forEach(function (r) {
@@ -239,8 +246,9 @@ function stationWrites(set, stationAttrs) {
     Object.keys(stationAttrs).forEach(function (a) { if (a.indexOf('channel.' + key + '.') === 0) { remove.push(a); } });
   });
   readingChannels(set, channels, stationAttrs, write, remove);
-  map.channels = channels;
-  write['config.channelMap'] = map;
+  var next = Object.assign({}, others);
+  Object.keys(channels).forEach(function (c) { next[c] = { device: me, key: channels[c] }; });
+  write['config.channelMap'] = resolver.buildMap(next);
   return { write: write, remove: remove };
 }
 

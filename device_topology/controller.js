@@ -219,14 +219,14 @@ function loadBindings(id) {
       var station = tb.assetLevel(a);
       station.ownerId = a.ownerId && a.ownerId.id;
       return Promise.all([tb.attrsMap(station), tb.canWrite(station)]).then(function (got) {
-        return { station: station, attrs: got[0], map: parseJson(got[0]['config.channelMap']) || {}, writable: got[1] };
+        return { station: station, attrs: got[0], entries: resolver.mapEntries(got[0]['config.channelMap']), writable: got[1] };
       });
     }));
   }).then(function (list) {
     state.bindings = list.sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
     state.wiring = {};
     list.forEach(function (b) {
-      var channels = b.map.channels || {};
+      var channels = mineOf(b.entries);
       Object.keys(channels).forEach(function (key) {
         (state.wiring[channels[key]] = state.wiring[channels[key]] || []).push({
           station: b.station.name, channel: key, label: b.attrs['effective.' + key + '.label'] || ''
@@ -498,22 +498,43 @@ function commandsSection() {
 
 function ownerOf() { return state.device.ownerId || {}; }
 
+/** This device's channels among a station's map entries: `{channel: sourceKey}`. */
+function mineOf(entries) {
+  var out = {};
+  Object.keys(entries || {}).forEach(function (c) {
+    if (entries[c].device === state.device.id.id) { out[c] = entries[c].key; }
+  });
+  return out;
+}
+
+/** The channels of `entries` another device feeds. */
+function othersOf(entries) {
+  return Object.keys(entries || {}).filter(function (c) { return entries[c].device && entries[c].device !== state.device.id.id; });
+}
+
+/** Make the station's `Contains` relations to devices follow its map. */
+function relateToMap(stationId, entries) {
+  var wanted = resolver.mapDevices(entries);
+  return stationDevices(stationId).then(function (current) {
+    return Promise.all(wanted.filter(function (d) { return current.indexOf(d) < 0; }).map(function (d) { return relate(stationId, d, 'DEVICE'); })
+      .concat(current.filter(function (d) { return wanted.indexOf(d) < 0; }).map(function (d) { return unrelate(stationId, d); })));
+  });
+}
+
 function stationsToPick() {
   var owner = ownerOf();
   return owner.entityType === 'CUSTOMER' ? tb.io.fetchCustomerStations({ id: owner.id }) : tb.io.fetchAllStations();
 }
 
-/** Where a new station can go: the projects and locations of the device's owner. */
+/** Where a new station can go: the projects of the device's owner. */
 function parentsToPick() {
   var owner = ownerOf().id;
-  return Promise.all(['Project', 'Location'].map(function (type) {
-    return tb.getAll('/api/user/assets', { type: type }).catch(function () { return []; });
-  })).then(function (got) {
-    return got[0].concat(got[1]).filter(function (a) { return a.ownerId && a.ownerId.id === owner; }).map(function (a) {
+  return tb.getAll('/api/user/assets', { type: 'Project' }).catch(function () { return []; }).then(function (list) {
+    return list.filter(function (a) { return a.ownerId && a.ownerId.id === owner; }).map(function (a) {
       var level = tb.assetLevel(a);
       level.ownerId = owner;
       return level;
-    }).sort(function (a, b) { return a.kind.localeCompare(b.kind) * -1 || a.name.localeCompare(b.name); });
+    }).sort(function (a, b) { return a.name.localeCompare(b.name); });
   });
 }
 
@@ -549,7 +570,7 @@ function bindDrawer(binding) {
   var dr = ui.openDrawer(binding ? 'Channels of ' + esc(binding.station.name) : 'Connect to a station', 'from ' + esc(state.device.label || state.device.name));
   dr.el.classList.add('wide');
   var picked = binding ? binding.station : null;
-  var pickedMap = binding ? binding.map : null;
+  var pickedEntries = binding ? binding.entries : null;
   var rows = mappable();
   var body = dr.body;
 
@@ -558,7 +579,7 @@ function bindDrawer(binding) {
   var newFields = h('<div data-f="new" hidden><div class="ts-field"><div class="ts-field-label"><span>Name of the new station</span></div>' +
     '<div class="ts-ctl"><input class="ts-input wide" type="text" data-f="newName"></div></div>' +
     '<div class="ts-field"><div class="ts-field-label"><span>In</span></div><div class="ts-ctl">' +
-    '<select class="ts-select wide" data-f="parent"><option value="">Pick a project or location</option></select></div></div></div>');
+    '<select class="ts-select wide" data-f="parent"><option value="">Pick a project</option></select></div></div></div>');
   var parents = [];
   if (binding) {
     stationField.querySelector('.ts-ctl').appendChild(h('<b></b>')).textContent = binding.station.name;
@@ -577,24 +598,25 @@ function bindDrawer(binding) {
       parents = list;
       var psel = newFields.querySelector('[data-f=parent]');
       list.forEach(function (p) {
-        var o = document.createElement('option'); o.value = p.id; o.textContent = p.name + ' (' + p.kind.toLowerCase() + ')'; psel.appendChild(o);
+        var o = document.createElement('option'); o.value = p.id; o.textContent = p.name; psel.appendChild(o);
       });
     });
     sel.addEventListener('change', function () {
       var creating = sel.value === NEW_STATION;
       newFields.hidden = !creating;
       picked = sel.value && !creating ? { entityType: 'ASSET', id: sel.value, name: sel.selectedOptions[0].dataset.name, kind: 'Station' } : null;
-      pickedMap = null;
+      pickedEntries = null;
       hint.textContent = '';
       tick(null);
       if (!picked) { return; }
       tb.attrsMap(picked).then(function (a) {
-        pickedMap = parseJson(a['config.channelMap']) || {};
-        var other = pickedMap.sourceDeviceId && pickedMap.sourceDeviceId !== state.device.id.id;
-        hint.textContent = other
-          ? 'This station is fed by another device. Connecting replaces it: the station keeps its history and the channels this device also reports.'
+        pickedEntries = resolver.mapEntries(a['config.channelMap']);
+        var others = othersOf(pickedEntries);
+        hint.textContent = others.length
+          ? 'Other devices feed ' + others.length + (others.length === 1 ? ' channel' : ' channels') + ' of this station (' + others.join(', ') +
+            '); they stay theirs. A channel name picked here that one of them uses moves to this device, its history kept.'
           : '';
-        tick(pickedMap);
+        tick(pickedEntries);
       });
     });
   }
@@ -664,10 +686,8 @@ function bindDrawer(binding) {
   /** Dim what is not stored, name the channel key each ticked row gets, count per group. */
   function update() {
     var chosen = chosenRows(), keys = {}, error = null;
-    var map = pickedMap || {};
-    var replacing = !!(map.sourceDeviceId && map.sourceDeviceId !== state.device.id.id);
     try {
-      var channels = channelsFor(map.channels || {}, chosen, replacing);
+      var channels = channelsFor(mineOf(pickedEntries), chosen);
       Object.keys(channels).forEach(function (c) { keys[channels[c]] = c; });
     } catch (e) { error = e.message; }
     rows.forEach(function (r) {
@@ -688,8 +708,8 @@ function bindDrawer(binding) {
 
   /** Tick what the station already takes from this device, else every
    * non-diagnostic measurement whose name is still free or repeats. */
-  function tick(map) {
-    var mine = map && (!map.sourceDeviceId || map.sourceDeviceId === state.device.id.id) ? map.channels || {} : {};
+  function tick(entries) {
+    var mine = mineOf(entries);
     var mapped = Object.keys(mine).length > 0;
     var used = {};
     rows.forEach(function (r) {
@@ -706,7 +726,7 @@ function bindDrawer(binding) {
     });
     update();
   }
-  tick(pickedMap);
+  tick(pickedEntries);
 
   ui.drawerActions(dr, 'Save').addEventListener('click', function () {
     var chosen = chosenRows();
@@ -719,7 +739,7 @@ function bindDrawer(binding) {
       return;
     }
     if (!picked) { ui.toast('Pick a station', 'error'); return; }
-    save(picked, pickedMap || {}, chosen, null);
+    save(picked, pickedEntries || {}, chosen, null);
   });
 }
 
@@ -727,10 +747,10 @@ function bindDrawer(binding) {
  * a repeatable name picked several times becomes numbered instances, in bus
  * order. A channel the station already has for a measurement keeps its key, so
  * its history keeps it too. */
-function channelsFor(old, chosen, replacing) {
+function channelsFor(old, chosen) {
   var channels = {};
-  // The relay controller's rule channels stay with the station's device.
-  if (!replacing) { Object.keys(old).forEach(function (c) { if (RULE_SOURCE.test(old[c])) { channels[c] = old[c]; } }); }
+  // The relay controller's rule channels stay with this device.
+  Object.keys(old).forEach(function (c) { if (RULE_SOURCE.test(old[c])) { channels[c] = old[c]; } });
   var byName = {};
   chosen.forEach(function (c) { (byName[c.name] = byName[c.name] || []).push(c); });
   Object.keys(byName).forEach(function (name) {
@@ -755,34 +775,35 @@ function channelsFor(old, chosen, replacing) {
   return channels;
 }
 
-function save(station, map, chosen, create) {
-  var old = map.channels || {};
-  var replacing = !!(map.sourceDeviceId && map.sourceDeviceId !== state.device.id.id);
-  var channels;
-  try { channels = channelsFor(old, chosen, replacing); } catch (e) { ui.toast(e.message, 'error'); return; }
+function save(station, entries, chosen, create) {
+  var me = state.device.id.id, channels;
+  try { channels = channelsFor(mineOf(entries), chosen); } catch (e) { ui.toast(e.message, 'error'); return; }
+  // This device's channels replace its old ones; another device's channel stays
+  // unless a name picked here takes it over (DEVICE_VIEW.md §2).
+  var next = {}, takenOver = [];
+  Object.keys(entries).forEach(function (c) {
+    if (entries[c].device === me) { return; }
+    if (channels[c] !== undefined) { takenOver.push(c); return; }
+    next[c] = entries[c];
+  });
+  Object.keys(channels).forEach(function (c) { next[c] = { device: me, key: channels[c] }; });
   var n = chosen.length + (chosen.length === 1 ? ' measurement' : ' measurements');
   var device = esc(state.device.label || state.device.name);
   var text = create
     ? 'Create station <b>' + esc(create.name) + '</b> in <b>' + esc(create.parent.name) + '</b> and store ' + n + ' of <b>' + device + '</b> on it?'
-    : replacing
-      ? 'Replace the device of <b>' + esc(station.name) + '</b> with <b>' + device + '</b>? The history stays on the station.'
-      : 'Store ' + n + ' on <b>' + esc(station.name) + '</b>?';
+    : 'Store ' + n + ' of <b>' + device + '</b> on <b>' + esc(station.name) + '</b>?' + (takenOver.length
+      ? ' These channels move from another device to this one, their history kept: <b>' + takenOver.map(esc).join(', ') + '</b>.' : '');
   ui.confirm(text, 'Save').then(function (ok) {
     if (!ok) { return; }
     return (create ? createStation(create.name, create.parent) : Promise.resolve(station)).then(function (s) {
       station = s;
-      return stationDevices(station.id);
-    }).then(function (current) {
-      var others = current.filter(function (id) { return id !== state.device.id.id; });
-      return Promise.all(others.map(function (id) { return unrelate(station.id, id); })).then(function () {
-        return current.indexOf(state.device.id.id) < 0 ? relate(station.id, state.device.id.id, 'DEVICE') : null;
-      });
+      return tb.saveAttrs(station, { 'config.channelMap': resolver.buildMap(next) });
     }).then(function () {
-      return tb.saveAttrs(station, { 'config.channelMap': { sourceDeviceId: state.device.id.id, channels: channels } });
+      return relateToMap(station.id, next);
     }).then(function () {
       return tb.resolveStations([station]);
     }).then(function () {
-      ui.toast(create ? 'Station created, device connected' : replacing ? 'Device replaced' : 'Saved');
+      ui.toast(create ? 'Station created, device connected' : 'Saved');
       ui.closeDrawer();
       return refresh();
     }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
@@ -791,11 +812,14 @@ function save(station, map, chosen, create) {
 
 function disconnect(b) {
   ui.confirm('Disconnect <b>' + esc(state.device.label || state.device.name) + '</b> from <b>' + esc(b.station.name) +
-    '</b>? The station keeps its history and its channel names, and stops receiving values.', 'Disconnect').then(function (ok) {
+    '</b>? Its channels leave the station, which keeps their history.', 'Disconnect').then(function (ok) {
     if (!ok) { return; }
-    var map = Object.assign({}, b.map, { sourceDeviceId: null });
-    return unrelate(b.station.id, state.device.id.id).then(function () {
-      return tb.saveAttrs(b.station, { 'config.channelMap': map });
+    var next = {};
+    Object.keys(b.entries).forEach(function (c) { if (b.entries[c].device !== state.device.id.id) { next[c] = b.entries[c]; } });
+    return tb.saveAttrs(b.station, { 'config.channelMap': resolver.buildMap(next) }).then(function () {
+      return relateToMap(b.station.id, next);
+    }).then(function () {
+      return tb.resolveStations([b.station]);
     }).then(function () {
       ui.toast('Disconnected');
       return refresh();
@@ -817,7 +841,7 @@ function deleteSensorData(part) {
   var keys = sensorKeys(part);
   var fed = [];
   state.bindings.forEach(function (b) {
-    var channels = b.map.channels || {};
+    var channels = mineOf(b.entries);
     var gone = Object.keys(channels).filter(function (c) { return keys.indexOf(channels[c]) >= 0; });
     if (gone.length && b.writable) { fed.push({ binding: b, gone: gone }); }
   });
@@ -833,9 +857,9 @@ function deleteSensorData(part) {
     return tb.del('/api/plugins/telemetry/DEVICE/' + state.device.id.id + '/timeseries/delete',
       { keys: keys.join(','), deleteAllDataForKeys: 'true', rewriteLatestIfDeleted: 'false' }).then(function () {
       return Promise.all(fed.map(function (f) {
-        var channels = Object.assign({}, f.binding.map.channels);
-        f.gone.forEach(function (c) { delete channels[c]; });
-        return tb.saveAttrs(f.binding.station, { 'config.channelMap': Object.assign({}, f.binding.map, { channels: channels }) });
+        var next = Object.assign({}, f.binding.entries);
+        f.gone.forEach(function (c) { delete next[c]; });
+        return tb.saveAttrs(f.binding.station, { 'config.channelMap': resolver.buildMap(next) });
       }));
     }).then(function () {
       return fed.length ? tb.resolveStations(fed.map(function (f) { return f.binding.station; })) : null;
@@ -843,6 +867,101 @@ function deleteSensorData(part) {
       ui.toast(part.label + ' data deleted');
       return refresh();
     }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
+  });
+}
+
+// -- replace device (DEVICE_VIEW.md §2) -------------------------------------------------------
+
+var PROVENANCE_KEY = /^(uplinkCause|uplinkLatest|rssi|snr)$|\.status$/;
+
+/** Replace this device by another of the same owner on every station it feeds:
+ * each of its channels moves to a source key of the replacement — the same key
+ * when it reports one, else one of the same kind — and a channel left unmatched
+ * leaves the station, which keeps its history. This device keeps its own. */
+function replaceDrawer() {
+  var me = state.device.id.id, owner = ownerOf();
+  var dr = ui.openDrawer('Replace device', esc(state.device.label || state.device.name));
+  dr.el.classList.add('wide');
+  var field = dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Replacement</span></div>' +
+    '<div class="ts-ctl"><select class="ts-select wide" data-f="device"><option value="">Pick a device</option></select></div>' +
+    '<div class="ts-field-hint">Every channel this device feeds moves to the replacement; each station keeps its history, this device keeps its own.</div></div>'));
+  var sel = field.querySelector('select');
+  var table = dr.body.appendChild(h('<div class="ts-binds"></div>'));
+  var url = owner.entityType === 'CUSTOMER' ? '/api/customer/' + owner.id + '/devices' : '/api/tenant/devices';
+  tb.getAll(url, {}).then(function (list) {
+    list.filter(function (d) { return d.id.id !== me; }).sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (d) {
+      var o = document.createElement('option');
+      o.value = d.id.id;
+      o.textContent = d.name + (d.label ? ' · ' + d.label : '') + ' (' + d.type + ')';
+      sel.appendChild(o);
+    });
+  });
+  var bound = state.bindings.filter(function (b) { return b.writable && Object.keys(mineOf(b.entries)).length; });
+  sel.addEventListener('change', function () {
+    table.innerHTML = '';
+    if (!sel.value) { return; }
+    // What the replacement reports, and — for a LOGR3 or LOGR4 not yet heard
+    // from — what it subscribes to.
+    Promise.all([
+      tb.get('/api/plugins/telemetry/DEVICE/' + sel.value + '/keys/timeseries').catch(function () { return []; }),
+      tb.attrsMap({ entityType: 'DEVICE', id: sel.value }, 'CLIENT_SCOPE')
+    ]).then(function (got) {
+      var seen = {};
+      (got[0] || []).forEach(function (k) { seen[k] = true; });
+      Object.keys(got[1] || {}).forEach(function (a) {
+        var m = /^subscriptions\.(.+)\.(?:enabled|interval)$/.exec(a);
+        if (m) { seen[m[1]] = true; }
+      });
+      var offered = Object.keys(seen).filter(function (k) { return !PROVENANCE_KEY.test(k); }).sort();
+      bound.forEach(function (b) {
+        var mine = mineOf(b.entries);
+        var grp = table.appendChild(h('<div class="ts-bind-group" open><div class="ts-section-head"></div></div>'));
+        grp.firstChild.textContent = b.station.name;
+        Object.keys(mine).sort().forEach(function (c) {
+          var key = mine[c], kind = resolver.deviceKeyKind(key, state.names);
+          var same = offered.filter(function (k) { return resolver.deviceKeyKind(k, state.names) === kind; });
+          var guess = offered.indexOf(key) >= 0 ? key : same.length === 1 ? same[0] : '';
+          var row = grp.appendChild(h('<div class="ts-bindrow"><span class="ts-grow"><span class="ts-bind-name"></span><span class="ts-mono"></span></span>' +
+            '<span class="ts-dev-arrow">→</span><select class="ts-select"></select></div>'));
+          row.querySelector('.ts-bind-name').textContent = c;
+          row.querySelector('.ts-mono').textContent = key;
+          var pick = row.querySelector('select');
+          pick.dataset.station = b.station.id;
+          pick.dataset.channel = c;
+          pick.appendChild(h('<option value="">leaves the station</option>'));
+          (same.length ? same : offered).forEach(function (k) {
+            var o = document.createElement('option'); o.value = k; o.textContent = k; pick.appendChild(o);
+          });
+          pick.value = guess;
+        });
+      });
+    }).catch(function (err) { ui.toast('Could not read the replacement: ' + errText(err), 'error'); });
+  });
+  ui.drawerActions(dr, 'Replace').addEventListener('click', function () {
+    var target = sel.value;
+    if (!target) { ui.toast('Pick the replacement', 'error'); return; }
+    var picks = Array.prototype.slice.call(table.querySelectorAll('select[data-station]'));
+    var dropped = picks.filter(function (p) { return !p.value; }).map(function (p) { return p.dataset.channel; });
+    ui.confirm('Move ' + (picks.length - dropped.length) + ' channel(s) to <b>' + esc(sel.selectedOptions[0].textContent) + '</b>?' +
+      (dropped.length ? ' These leave their station, which keeps their history: <b>' + dropped.map(esc).join(', ') + '</b>.' : ''), 'Replace')
+      .then(function (ok) {
+        if (!ok) { return; }
+        return Promise.all(bound.map(function (b) {
+          var next = {};
+          Object.keys(b.entries).forEach(function (c) {
+            if (b.entries[c].device !== me) { next[c] = b.entries[c]; return; }
+            var p = picks.filter(function (x) { return x.dataset.station === b.station.id && x.dataset.channel === c; })[0];
+            if (p && p.value) { next[c] = { device: target, key: p.value }; }
+          });
+          return tb.saveAttrs(b.station, { 'config.channelMap': resolver.buildMap(next) }).then(function () {
+            return relateToMap(b.station.id, next);
+          }).then(function () { return tb.resolveStations([b.station]); });
+        })).then(function () {
+          ui.toast('Device replaced');
+          ui.closeDrawer();
+          return refresh();
+        });
+      }).catch(function (err) { ui.toast('Not replaced: ' + errText(err), 'error'); });
   });
 }
 
@@ -1032,6 +1151,11 @@ function renderStations(pane) {
     var add = h('<button type="button" class="ts-btn ts-reg-edit" data-a="connect">' + ICON.plus + 'Connect or create a station</button>');
     add.addEventListener('click', function () { bindDrawer(null); });
     sec.firstChild.appendChild(add);
+    if (state.bindings.some(function (b) { return b.writable && Object.keys(mineOf(b.entries)).length; })) {
+      var swap = h('<button type="button" class="ts-btn ts-reg-edit" data-a="replace">' + ICON.reset + 'Replace device</button>');
+      swap.addEventListener('click', replaceDrawer);
+      sec.firstChild.appendChild(swap);
+    }
   }
   if (!state.bindings.length) {
     sec.appendChild(h('<div class="ts-empty"><span class="ts-chip warn">on no station</span> Its readings are stored on the device only.</div>'));
@@ -1039,7 +1163,7 @@ function renderStations(pane) {
   }
   var nodes = topology();
   state.bindings.forEach(function (b) {
-    var channels = b.map.sourceDeviceId === undefined || b.map.sourceDeviceId === null || b.map.sourceDeviceId === state.device.id.id ? b.map.channels || {} : {};
+    var channels = mineOf(b.entries);
     var names = Object.keys(channels).sort(function (x, y) { return channels[x].localeCompare(channels[y]) || x.localeCompare(y); });
     var card = h('<details class="ts-dev-station"><summary class="ts-dev-station-head"><span class="ts-pos-chev">' + ICON.chev + '</span>' +
       '<span class="ts-dev-station-icon">' + ICON_STATION + '</span><span class="ts-dev-station-name"></span><span class="ts-count"></span>' +
