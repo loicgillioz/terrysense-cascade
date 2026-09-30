@@ -333,21 +333,26 @@ function namesForKind(kind) {
  * without its peripheral prefix. */
 function mappable() {
   if (family() !== 'bus') {
-    return readings().map(function (key) {
-      return { key: key, label: labelOf(key), names: null, name: nameOf(key), diagnostic: !!(entryOf(key) || {}).diagnostic };
-    });
+    var parts = family() === 'logr2' ? logr2Parts(readings()) : [{ id: 'device', label: state.device.type || 'Device', keys: readings() }];
+    return [].concat.apply([], parts.map(function (part) {
+      return part.keys.map(function (key) {
+        return { key: key, label: labelOf(key), group: part.id, groupLabel: part.label || 'LOGR itself', names: null, name: nameOf(key),
+                 diagnostic: part.id === 'logr' || !!(entryOf(key) || {}).diagnostic };
+      });
+    }));
   }
   var nodes = topology();
   return sources().sort(function (a, b) { return a.position - b.position || a.sourceKey.localeCompare(b.sourceKey); }).map(function (s) {
-    var m = measureOf(s, nodes[s.position]);
+    var node = nodes[s.position], p = node && state.peripherals[node.type];
+    var m = measureOf(s, node);
     var name = m && state.names[m.defaultName] ? m.defaultName : namesForKind(s.kind)[0] || null;
     return {
-      key: s.sourceKey, label: sourceLabel(s, nodes[s.position]) + (s.position ? ' · position ' + s.position : ' · the LOGR itself'),
+      key: s.sourceKey, label: sourceLabel(s, node), group: 'p' + s.position,
+      groupLabel: s.position === 0 ? 'LOGR itself' : s.position + ' · ' + (p ? p.displayName : node ? node.type : 'Unknown peripheral'),
       names: namesForKind(s.kind), name: name, diagnostic: s.position === 0 || !!(name && (state.names[name] || {}).diagnostic)
     };
   }).filter(function (r) { return r.names.length; });
 }
-
 
 // -- commands (CA-4, TC-8/9) ---------------------------------------------------------------
 
@@ -394,7 +399,7 @@ function send(commands, retryOf) {
   var list = commands.map(function (c) { return '<li>' + esc(commandText(c)) + '</li>'; }).join('');
   return ui.confirm('Send to <b>' + esc(state.device.label || state.device.name) + '</b>?<ul>' + list + '</ul>' +
     'It is delivered after the device’s next uplink.', 'Send').then(function (ok) {
-    if (!ok) { return; }
+    if (!ok) { return false; }
     var dev = deviceEntity();
     var request = { commands: commands, by: (state.me && state.me.email) || null, issuedAt: Date.now() };
     return (retryOf ? tb.deleteAttrs(dev, [retryOf]) : Promise.resolve()).then(function () {
@@ -403,38 +408,11 @@ function send(commands, retryOf) {
       ui.toast('Queued: delivered after the next uplink');
       ui.closeDrawer();
       setTimeout(refresh, 1500);
+      return true;
     }).catch(function (err) {
       ui.toast('Not sent: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+      return false;
     });
-  });
-}
-
-function sourceDrawer(s, node) {
-  var dr = ui.openDrawer(esc(sourceLabel(s, node)), '<span class="ts-mono">' + esc(s.sourceKey) + '</span>');
-  var enabled = !(s.enabled === false || s.enabled === 'false');
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Measurement interval</span></div>' +
-    '<div class="ts-ctl"><span><input class="ts-input num" type="number" min="1" step="1"> s</span> ' +
-    '<button type="button" class="ts-btn" data-a="interval">Set interval</button></div>' +
-    '<div class="ts-field-hint"></div></div>'));
-  var input = dr.body.querySelector('input');
-  input.value = s.interval || '';
-  dr.body.querySelector('.ts-field-hint').textContent = s.interval ? 'The device reports ' + s.interval + ' s.' : 'The device has not reported this interval.';
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Subscription</span></div><div class="ts-ctl">' +
-    '<button type="button" class="ts-btn" data-a="toggle"></button> <button type="button" class="ts-btn" data-a="remove">Remove subscription</button></div></div>'));
-  dr.body.querySelector('[data-a=toggle]').textContent = enabled ? 'Disable' : 'Enable';
-  dr.body.addEventListener('click', function (e) {
-    var a = e.target.closest('[data-a]');
-    if (!a) { return; }
-    var t = sourceTarget(s);
-    if (a.dataset.a === 'interval') {
-      var v = Number(input.value);
-      if (!(v >= 1 && v <= 65535 && Math.floor(v) === v)) { ui.toast('An interval is a whole number of seconds, 1 to 65535', 'error'); return; }
-      send([{ op: 'SET_INTERVAL', target: t, interval_s: v }]);
-    } else if (a.dataset.a === 'toggle') {
-      send([{ op: 'SET_ENABLED', target: t, enabled: !enabled }]);
-    } else if (a.dataset.a === 'remove') {
-      send([{ op: 'DELETE_SUBSCRIPTION', target: t }]);
-    }
   });
 }
 
@@ -568,7 +546,8 @@ function createStation(name, parent) {
 
 /** Pick a station, a new one included, or the channels of one already fed. */
 function bindDrawer(binding) {
-  var dr = ui.openDrawer(binding ? esc(binding.station.name) : 'Connect to a station', esc(state.device.label || state.device.name));
+  var dr = ui.openDrawer(binding ? 'Channels of ' + esc(binding.station.name) : 'Connect to a station', 'from ' + esc(state.device.label || state.device.name));
+  dr.el.classList.add('wide');
   var picked = binding ? binding.station : null;
   var pickedMap = binding ? binding.map : null;
   var rows = mappable();
@@ -622,29 +601,90 @@ function bindDrawer(binding) {
   body.appendChild(stationField);
   body.appendChild(newFields);
 
-  var list = h('<div class="ts-field"><div class="ts-field-label"><span>Measurements stored on the station ' + info('channelName') + '</span></div><div class="ts-binds"></div>' +
-    '<div class="ts-field-hint"></div></div>');
+  var list = h('<div class="ts-field"><div class="ts-field-label"><span>Measurements to store ' + info('channelName') + '</span>' +
+    '<span class="ts-spacer"></span><span class="ts-bind-count"></span></div><div class="ts-field-hint"></div><div class="ts-binds"></div></div>');
   list.querySelector('.ts-field-hint').textContent = family() === 'bus'
-    ? 'Each measurement is stored under the channel name picked beside it.'
-    : 'Each reading keeps its own name on the station.';
+    ? 'Tick what the station stores. On the right, the channel each measurement is stored under.'
+    : 'Tick what the station stores. Each reading keeps its own name on the station.';
   var boxes = list.querySelector('.ts-binds');
+  var countEl = list.querySelector('.ts-bind-count');
+  var groups = [], byGroup = {};
   rows.forEach(function (r) {
-    var row = h('<div class="ts-bindrow"><label class="ts-switch"><input type="checkbox"> <span></span></label></div>');
-    row.querySelector('input').dataset.key = r.key;
-    row.querySelector('span').textContent = r.label + (r.label !== r.key ? ' (' + r.key + ')' : '');
-    if (r.names) {
-      var names = h('<select class="ts-select"></select>');
-      names.dataset.nameFor = r.key;
-      r.names.forEach(function (n) {
-        var o = document.createElement('option'); o.value = n; o.textContent = (state.names[n].label || n) + ' (' + n + ')'; names.appendChild(o);
-      });
-      names.value = r.name;
-      row.appendChild(names);
-    }
-    boxes.appendChild(row);
+    if (!byGroup[r.group]) { byGroup[r.group] = { id: r.group, label: r.groupLabel, rows: [] }; groups.push(byGroup[r.group]); }
+    byGroup[r.group].rows.push(r);
+  });
+  groups.forEach(function (g) {
+    var sec = boxes.appendChild(h('<details class="ts-bind-group"><summary><span class="ts-pos-chev">' + ICON.chev + '</span><span class="ts-bind-glabel"></span>' +
+      '<span class="ts-count"></span><span class="ts-spacer"></span><button type="button" class="ts-btn ghost" data-a="all">All</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="none">None</button></summary></details>'));
+    sec.dataset.group = g.id;
+    sec.querySelector('.ts-bind-glabel').textContent = g.label;
+    sec.querySelector('summary').addEventListener('click', function (e) {
+      var a = e.target.closest('[data-a]');
+      if (!a) { return; }
+      e.preventDefault();
+      sec.querySelectorAll('input[data-key]').forEach(function (b) { b.checked = a.dataset.a === 'all'; });
+      update();
+    });
+    g.rows.forEach(function (r) {
+      var row = sec.appendChild(h('<div class="ts-bindrow"><label class="ts-bind-src"><input type="checkbox"><span class="ts-grow"><span class="ts-bind-name"></span>' +
+        '<span class="ts-mono"></span></span><span class="ts-bind-val"></span></label><span class="ts-dev-arrow">→</span><div class="ts-bind-dst"></div></div>'));
+      row.dataset.key = r.key;
+      row.querySelector('input').dataset.key = r.key;
+      row.querySelector('.ts-bind-name').textContent = r.label;
+      row.querySelector('.ts-mono').textContent = r.key;
+      var v = state.latest[r.key];
+      var unit = family() === 'bus' ? unitOf(parseSource(r.key)) : readingUnit(r.key);
+      row.querySelector('.ts-bind-val').textContent = v ? fmtValue(v.value) + (unit ? ' ' + unit : '') : '';
+      var dst = row.querySelector('.ts-bind-dst');
+      if (r.names) {
+        var names = dst.appendChild(h('<select class="ts-select"></select>'));
+        names.dataset.nameFor = r.key;
+        r.names.forEach(function (n) {
+          var o = document.createElement('option'); o.value = n; o.textContent = state.names[n].label || n; names.appendChild(o);
+        });
+        names.value = r.name;
+      } else {
+        dst.appendChild(h('<span class="ts-bind-fixed"></span>')).textContent = labelOf(r.key);
+      }
+      dst.appendChild(h('<span class="ts-bind-key"></span>'));
+    });
   });
   if (!rows.length) { boxes.appendChild(h('<div class="ts-empty">Nothing measured by this device yet.</div>')); }
+  boxes.addEventListener('change', update);
   body.appendChild(list);
+
+  function chosenRows() {
+    return rows.filter(function (r) { return boxes.querySelector('input[data-key="' + r.key + '"]').checked; }).map(function (r) {
+      var names = boxes.querySelector('[data-name-for="' + r.key + '"]');
+      return { key: r.key, name: names ? names.value : r.name, fixed: !names };
+    });
+  }
+
+  /** Dim what is not stored, name the channel key each ticked row gets, count per group. */
+  function update() {
+    var chosen = chosenRows(), keys = {}, error = null;
+    var map = pickedMap || {};
+    var replacing = !!(map.sourceDeviceId && map.sourceDeviceId !== state.device.id.id);
+    try {
+      var channels = channelsFor(map.channels || {}, chosen, replacing);
+      Object.keys(channels).forEach(function (c) { keys[channels[c]] = c; });
+    } catch (e) { error = e.message; }
+    rows.forEach(function (r) {
+      var row = boxes.querySelector('.ts-bindrow[data-key="' + r.key + '"]');
+      var on = row.querySelector('input').checked;
+      row.classList.toggle('off', !on);
+      var names = row.querySelector('select');
+      if (names) { names.disabled = !on; }
+      row.querySelector('.ts-bind-key').textContent = on ? (keys[r.key] ? 'stored as ' + keys[r.key] : '') : 'not stored';
+    });
+    groups.forEach(function (g) {
+      var n = g.rows.filter(function (r) { return boxes.querySelector('input[data-key="' + r.key + '"]').checked; }).length;
+      boxes.querySelector('.ts-bind-group[data-group="' + g.id + '"] .ts-count').textContent = n + ' of ' + g.rows.length;
+    });
+    countEl.classList.toggle('ts-error', !!error);
+    countEl.textContent = error || chosen.length + ' of ' + rows.length + ' stored';
+  }
 
   /** Tick what the station already takes from this device, else every
    * non-diagnostic measurement whose name is still free or repeats. */
@@ -660,16 +700,16 @@ function bindDrawer(binding) {
       var names = boxes.querySelector('[data-name-for="' + r.key + '"]');
       if (names) { names.value = channel && r.names.indexOf(resolver.splitChannelKey(channel).name) >= 0 ? resolver.splitChannelKey(channel).name : r.name; }
     });
+    groups.forEach(function (g) {
+      boxes.querySelector('.ts-bind-group[data-group="' + g.id + '"]').open =
+        g.rows.some(function (r) { return !r.diagnostic || boxes.querySelector('input[data-key="' + r.key + '"]').checked; });
+    });
+    update();
   }
   tick(pickedMap);
 
   ui.drawerActions(dr, 'Save').addEventListener('click', function () {
-    var chosen = [];
-    rows.forEach(function (r) {
-      if (!boxes.querySelector('input[data-key="' + r.key + '"]').checked) { return; }
-      var names = boxes.querySelector('[data-name-for="' + r.key + '"]');
-      chosen.push({ key: r.key, name: names ? names.value : r.name, fixed: !names });
-    });
+    var chosen = chosenRows();
     if (!chosen.length) { ui.toast('Pick at least one measurement', 'error'); return; }
     if (!binding && sel.value === NEW_STATION) {
       var name = newFields.querySelector('[data-f=newName]').value.trim();
@@ -1001,9 +1041,12 @@ function renderStations(pane) {
   state.bindings.forEach(function (b) {
     var channels = b.map.sourceDeviceId === undefined || b.map.sourceDeviceId === null || b.map.sourceDeviceId === state.device.id.id ? b.map.channels || {} : {};
     var names = Object.keys(channels).sort(function (x, y) { return channels[x].localeCompare(channels[y]) || x.localeCompare(y); });
-    var card = h('<div class="ts-dev-station"><div class="ts-dev-station-head"><span class="ts-dev-station-icon">' + ICON_STATION + '</span>' +
-      '<span class="ts-dev-station-name"></span><span class="ts-count"></span><span class="ts-spacer"></span><div class="ts-rule-acts"></div></div>' +
-      '<div class="ts-dev-map"></div></div>');
+    var card = h('<details class="ts-dev-station"><summary class="ts-dev-station-head"><span class="ts-pos-chev">' + ICON.chev + '</span>' +
+      '<span class="ts-dev-station-icon">' + ICON_STATION + '</span><span class="ts-dev-station-name"></span><span class="ts-count"></span>' +
+      '<span class="ts-spacer"></span><div class="ts-rule-acts"></div></summary><div class="ts-dev-map"></div></details>');
+    var foldId = 'station.' + b.station.id;
+    card.open = !!state.open[foldId];
+    card.addEventListener('toggle', function () { state.open[foldId] = card.open; });
     card.dataset.station = b.station.name;
     card.querySelector('.ts-dev-station-name').textContent = b.station.name;
     card.querySelector('.ts-count').textContent = names.length ? names.length + (names.length === 1 ? ' channel' : ' channels') : 'no channel from this device';
@@ -1019,22 +1062,18 @@ function renderStations(pane) {
       if (label !== c) { row.querySelector('.ts-dev-ch .ts-mono').textContent = c; } else { row.querySelector('.ts-dev-ch .ts-mono').remove(); }
     });
     var acts = card.querySelector('.ts-rule-acts');
+    function act(html, fn) {
+      var btn = acts.appendChild(h(html));
+      btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); fn(); });
+    }
     if (state.writable && b.writable) {
-      var edit = h('<button type="button" class="ts-icon-btn" data-a="edit" title="Choose the channels">' + ICON.edit + '</button>');
-      edit.addEventListener('click', function (e) { e.stopPropagation(); bindDrawer(b); });
-      var off = h('<button type="button" class="ts-icon-btn" data-a="disconnect" title="Disconnect">' + ICON.close + '</button>');
-      off.addEventListener('click', function (e) { e.stopPropagation(); disconnect(b); });
-      acts.appendChild(edit);
-      acts.appendChild(off);
+      act('<button type="button" class="ts-btn ghost" data-a="edit">' + ICON.edit + 'Channels</button>', function () { bindDrawer(b); });
+      act('<button type="button" class="ts-icon-btn" data-a="disconnect" title="Disconnect">' + ICON.close + '</button>', function () { disconnect(b); });
     }
     if (opts.projectDashboardId) {
-      card.classList.add('link');
-      card.tabIndex = 0;
-      card.setAttribute('role', 'button');
-      acts.appendChild(h('<span class="ts-dev-go">' + ICON.chev + '</span>'));
-      var go = function () { tb.openDashboard(opts.projectDashboardId, 'station', b.station); };
-      card.addEventListener('click', go);
-      card.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === card) { go(); } });
+      act('<button type="button" class="ts-btn ghost" data-a="open">Station view' + ICON.chev + '</button>', function () {
+        tb.openDashboard(opts.projectDashboardId, 'station', b.station);
+      });
     }
     sec.appendChild(card);
   });
@@ -1105,7 +1144,7 @@ function loggerCard() {
 /** A LOGR2 part or another device, read-only: its readings and the station channel each feeds. */
 function partCard(part, pos) {
   var logger = part.id === 'logr';
-  var box = foldable('part.' + part.id, true);
+  var box = foldable('part.' + part.id, false);
   box.dataset.part = part.id;
   var num = box.querySelector('.ts-pos-num');
   if (pos === null) { num.remove(); } else { num.textContent = pos; }
@@ -1149,7 +1188,7 @@ function wireText(key) {
 function positionCard(pos, node, srcs) {
   var own = srcs.filter(function (s) { return s.position === pos; }).sort(function (a, b) { return a.sourceKey.localeCompare(b.sourceKey); });
   var bad = own.filter(function (s) { return sourceState(s).state === 'fault' || state.faults[s.sourceKey]; });
-  var box = foldable('p' + pos, true);
+  var box = foldable('p' + pos, false);
   box.dataset.position = pos;
   var flags = box.querySelector('.ts-pos-head .ts-grow').appendChild(h('<div class="ts-pos-flags"></div>'));
   box.querySelector('.ts-pos-num').textContent = pos;
@@ -1272,22 +1311,33 @@ function joined(items, sep) {
 
 function truthyFlag(v) { return v === true || v === 'true' || v === 1; }
 
+var UNITS = [{ s: 1, label: 's' }, { s: 60, label: 'min' }, { s: 3600, label: 'h' }];
+
+/** The unit an interval reads best in: the largest that divides it. */
+function unitFor(sec) {
+  return UNITS.slice().reverse().filter(function (u) { return sec >= u.s && sec % u.s === 0; })[0] || UNITS[0];
+}
+
+/** A command still waiting for its ACK that targets this source. */
+function queuedFor(s) {
+  return pending().some(function (p) {
+    return p.commands.some(function (c) {
+      var t = c.target || {};
+      return t.mode === 'SOURCE' && t.position === s.position && t.kind === wireKind(s.kind) &&
+        (t.group || 0) === s.group && (t.index === undefined || t.index === s.index);
+    });
+  });
+}
+
 function sourceRow(s, node) {
   var st = sourceState(s);
-  var row = h('<div class="ts-tsrc"><div class="ts-tsrc-top"><div class="ts-row-label"></div><div class="ts-tsrc-value"></div></div>' +
-    '<div class="ts-tsrc-meta"><span class="ts-mono"></span><span class="ts-tsrc-state"></span></div></div>');
+  var row = h('<div class="ts-tsrc"><div class="ts-tsrc-top"><div class="ts-tsrc-name"><div class="ts-row-label"></div><span class="ts-mono"></span></div>' +
+    '<div class="ts-tsrc-value"></div><span class="ts-tsrc-state"></span></div><div class="ts-tsrc-meta"></div></div>');
   row.dataset.source = s.sourceKey;
   row.dataset.state = st.state;
   row.querySelector('.ts-row-label').textContent = sourceLabel(s, node);
   row.querySelector('.ts-mono').textContent = s.sourceKey;
   var meta = row.querySelector('.ts-tsrc-meta'), stateEl = row.querySelector('.ts-tsrc-state'), valueEl = row.querySelector('.ts-tsrc-value');
-  if (s.interval) {
-    meta.insertBefore(h('<span class="ts-tsrc-every" data-interval="' + esc(s.interval) + '"></span>'), stateEl).textContent = 'every ' + fmtDuration(s.interval);
-  }
-  if (s.enabled !== undefined && st.state !== 'disabled') {
-    var on = truthyFlag(s.enabled);
-    meta.insertBefore(h('<span class="ts-chip' + (on ? '' : ' warn') + '" data-enabled="' + on + '">' + (on ? 'enabled' : 'disabled') + '</span>'), stateEl);
-  }
   if (st.state === 'fault') {
     var code = G.STATUS_CODES[st.code];
     stateEl.innerHTML = '<span class="ts-chip fault"></span>';
@@ -1308,11 +1358,8 @@ function sourceRow(s, node) {
     valueEl.innerHTML = '<span class="ts-row-meta">subscribed, nothing received yet</span>';
   }
   if (state.faults[s.sourceKey]) { stateEl.appendChild(h('<span class="ts-chip fault" title="Active peripheralFault alarm">' + ICON.bell + '</span>')); }
-  if (state.writable) {
-    var act = h('<button type="button" class="ts-icon-btn ts-src-act" title="Change this subscription">' + ICON.edit + '</button>');
-    act.addEventListener('click', function () { sourceDrawer(s, node); });
-    stateEl.appendChild(act);
-  }
+  if (queuedFor(s)) { stateEl.insertBefore(h('<span class="ts-chip warn" data-queued="1" title="A change waits for the next uplink">change queued</span>'), stateEl.firstChild); }
+  if (state.writable) { meta.appendChild(sourceControls(s)); } else { sourceFacts(s, meta); }
   var feeds = state.wiring[s.sourceKey] || [];
   if (feeds.length || s.position !== 0) {
     var wire = row.appendChild(h('<div class="ts-wire"></div>'));
@@ -1324,11 +1371,67 @@ function sourceRow(s, node) {
   return row;
 }
 
+/** Read-only: the interval and whether the subscription is on, as the device last reported. */
+function sourceFacts(s, meta) {
+  if (s.enabled !== undefined) {
+    var on = truthyFlag(s.enabled);
+    meta.appendChild(h('<span class="ts-chip' + (on ? ' ok' : '') + '" data-enabled="' + on + '">' + (on ? 'enabled' : 'disabled') + '</span>'));
+  }
+  if (s.interval) {
+    meta.appendChild(h('<span class="ts-tsrc-every" data-interval="' + esc(s.interval) + '"></span>')).textContent = 'every ' + fmtDuration(s.interval);
+  }
+}
+
+/** A switch that enables or disables the subscription, and its interval, each sent as a command. */
+function sourceControls(s) {
+  var on = !(s.enabled === false || s.enabled === 'false');
+  var ctl = h('<div class="ts-src-act"><label class="ts-switch ts-src-toggle"><input type="checkbox"><span></span></label>' +
+    '<span class="ts-tsrc-every">every <input class="ts-input num sm ts-src-int" type="number" min="1" step="1">' +
+    '<select class="ts-select sm ts-src-unit"></select><button type="button" class="ts-btn primary sm" data-a="interval" hidden>Set</button></span>' +
+    '<span class="ts-spacer"></span><button type="button" class="ts-icon-btn" data-a="remove" title="Remove this subscription">' + ICON.close + '</button></div>');
+  var toggle = ctl.querySelector('.ts-src-toggle');
+  toggle.dataset.enabled = String(on);
+  var box = toggle.querySelector('input');
+  box.checked = on;
+  toggle.querySelector('span').textContent = on ? 'enabled' : 'disabled';
+  box.addEventListener('change', function () {
+    send([{ op: 'SET_ENABLED', target: sourceTarget(s), enabled: box.checked }]).then(function (sent) { if (!sent) { box.checked = on; } });
+  });
+  var every = ctl.querySelector('.ts-tsrc-every'), input = ctl.querySelector('.ts-src-int'), unit = ctl.querySelector('.ts-src-unit');
+  var setBtn = ctl.querySelector('[data-a=interval]');
+  UNITS.forEach(function (u) { var o = document.createElement('option'); o.value = u.s; o.textContent = u.label; unit.appendChild(o); });
+  var current = Number(s.interval) || 0;
+  if (current) {
+    every.dataset.interval = s.interval;
+    var u = unitFor(current);
+    unit.value = u.s;
+    input.value = current / u.s;
+  } else {
+    unit.value = 60;
+    input.placeholder = '?';
+  }
+  function seconds() { return Number(input.value) * Number(unit.value); }
+  function changed() { setBtn.hidden = !input.value || seconds() === current; }
+  input.addEventListener('input', changed);
+  unit.addEventListener('change', changed);
+  setBtn.addEventListener('click', function () {
+    var v = seconds();
+    if (!(v >= 1 && v <= 65535 && Math.floor(v) === v)) { ui.toast('An interval is a whole number of seconds, 1 to 65535', 'error'); return; }
+    send([{ op: 'SET_INTERVAL', target: sourceTarget(s), interval_s: v }]);
+  });
+  ctl.querySelector('[data-a=remove]').addEventListener('click', function () {
+    send([{ op: 'DELETE_SUBSCRIPTION', target: sourceTarget(s) }]);
+  });
+  return ctl;
+}
+
 // -- load -------------------------------------------------------------------------------
 
 var timer = null;
 function refresh() {
   if (!root.isConnected && timer) { clearInterval(timer); return Promise.resolve(); }
+  var focus = document.activeElement;
+  if (focus && bodyEl.contains(focus) && /^(INPUT|SELECT)$/.test(focus.tagName)) { return Promise.resolve(); }
   refreshBtn.disabled = true;
   return loadDevice(state.device.id.id).then(render).catch(function (err) {
     ui.toast('Refresh failed: ' + (err && err.message ? err.message : err), 'error');
