@@ -76,7 +76,9 @@ root.TerrySenseTbIo = function (ctx) {
         var other = direction === 'FROM' ? r.to : r.from;
         if (other.entityType === 'ASSET') { ids[other.id] = true; }
       });
-      return Promise.all(Object.keys(ids).map(getAsset));
+      // A relation can outlive the asset it points to.
+      return Promise.all(Object.keys(ids).map(function (id) { return getAsset(id).catch(function () { return null; }); }))
+        .then(function (assets) { return assets.filter(Boolean); });
     });
   }
 
