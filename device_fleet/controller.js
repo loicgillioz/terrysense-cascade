@@ -9,7 +9,8 @@
  * device feeds. A LOGR3 or LOGR4 reports its versions (`deviceInfo.*`) and its
  * hardware state (`status.healthFaults`) and always takes a firmware update; any
  * other device shows the hand-kept `register.*`. A tenant admin also sees each device's customer,
- * none for a device the tenant owns. A column header sorts by that column; an empty
+ * none for a device the tenant owns. Each LOGR shows its sensor families as chips; picking
+ * families, in the tag bar or on a row, keeps the LOGRs that carry all of them. A column header sorts by that column; an empty
  * cell (a device never heard from, on no station) sorts last either way.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
@@ -31,6 +32,15 @@ var GROUPS = [
 var ATTRS = ['active', 'lastActivityTime', 'inactivityTimeout', 'deviceInfo.hwVersion', 'deviceInfo.fwVersion',
   'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu'];
 var FINE_STATUS = /^(all functional|ok|)$/i;
+var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
+var EMPTY_MARKER = '(empty)';
+// A LOGR2's sensors by the prefix of its device keys, as device_topology's LOGR2_SENSORS.
+var LOGR2_SENSORS = {
+  phpr: { code: 'PHPR', name: 'pH probe' }, cond: { code: 'COND', name: 'Conductivity probe' },
+  dryc: { code: 'DRYC', name: 'Dry contact interface' }, flow: { code: 'FLOW', name: 'Flow meter' },
+  clmt: { code: 'CLMT', name: 'Climate sensor' }, inclTilt: { code: 'INCL/TILT', name: 'Inclinometer or tiltmeter' },
+  usonRdar: { code: 'USON/RDAR', name: 'Ultrasonic or radar level sensor' }
+};
 var REFRESH_MS = 60000;
 var PAGE = 1000;
 
@@ -48,7 +58,7 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', sort: 'uplink', dir: -1, loadedAt: 0 };
+var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', tags: [], sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
@@ -91,8 +101,41 @@ function loadStations(devices) {
   }));
 }
 
-/** Devices and alarms first; the stations, one relation lookup per device,
- * fill in on a second render. */
+/** `[{ code, count, names }]`, by code: a LOGR3 or LOGR4's peripheral families
+ * from `topology.p<POS>.type` past position 0, a LOGR2's from its key prefixes. */
+function sensorsOf(d) {
+  var byCode = {};
+  function add(code, name) {
+    var s = byCode[code] = byCode[code] || { code: code, count: 0, names: [] };
+    s.count++;
+    if (s.names.indexOf(name) < 0) { s.names.push(name); }
+  }
+  if (d.type === 'logr2') {
+    return tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/keys/timeseries').then(function (keys) {
+      var seen = {};
+      (keys || []).forEach(function (k) { seen[k.slice(0, k.indexOf('.'))] = true; });
+      Object.keys(LOGR2_SENSORS).forEach(function (p) { if (seen[p]) { add(LOGR2_SENSORS[p].code, LOGR2_SENSORS[p].name); } });
+      return sorted(byCode);
+    });
+  }
+  return tb.attrsMap({ entityType: 'DEVICE', id: d.id }, 'CLIENT_SCOPE').then(function (attrs) {
+    Object.keys(attrs).forEach(function (k) {
+      var m = TOPOLOGY_TYPE_RE.exec(k), type = m && String(attrs[k] || '').trim();
+      if (m && m[1] !== '0' && type && type !== EMPTY_MARKER) { add(type.split('-')[0].toUpperCase(), type); }
+    });
+    return sorted(byCode);
+  });
+}
+function sorted(byCode) { return Object.keys(byCode).sort().map(function (c) { return byCode[c]; }); }
+
+function loadSensors(devices) {
+  return Promise.all(devices.filter(function (d) { return groupOf(d).id === 'logr'; }).map(function (d) {
+    return sensorsOf(d).then(function (s) { d.sensors = s; }).catch(function () { d.sensors = []; });
+  }));
+}
+
+/** Devices and alarms first; the stations and sensors, one lookup each per
+ * device, fill in on a second render. */
 function load() {
   return queryDevices().then(function (devices) {
     var byId = {};
@@ -101,6 +144,7 @@ function load() {
       devices.forEach(function (d) {
         var old = state.devices.filter(function (x) { return x.id === d.id; })[0];
         d.stations = old ? old.stations : null;
+        d.sensors = old ? old.sensors : null;
       });
       if (!state.loadedAt) {
         // A customer may own no LOGR: open on the first group that has a device.
@@ -110,7 +154,7 @@ function load() {
       state.devices = devices;
       state.loadedAt = Date.now();
       render();
-      return loadStations(devices);
+      return Promise.all([loadStations(devices), loadSensors(devices)]);
     });
   });
 }
@@ -152,13 +196,28 @@ var COLUMNS = {
   customer: { label: 'Customer', dir: 1, cell: 'ts-fleet-cust', width: 'minmax(110px, 1fr)', value: function (d) { return d.customer ? d.customer.toLowerCase() : null; } },
   uplink: { label: 'Last uplink', dir: -1, cell: 'ts-fleet-up', width: '110px', value: function (d) { return lastTs(d) || null; } },
   stations: { label: 'Stations', dir: 1, cell: 'ts-fleet-st', width: 'minmax(120px, 1.5fr)', value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
+  sensors: { label: 'Sensors', dir: 1, cell: 'ts-fleet-sens', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.sensors && d.sensors.length ? codes(d).join(' ') : null; } },
   versions: { label: 'Versions', dir: 1, cell: 'ts-fleet-ver', width: 'minmax(120px, 1fr)', value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
   hardware: { label: 'Hardware', dir: -1, cell: 'ts-fleet-hw', width: 'minmax(110px, 1fr)', value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
   type: { label: 'Type', dir: 1, cell: 'ts-fleet-type', width: '90px', value: function (d) { return d.type || null; } },
   alarms: { label: 'Alarms', dir: -1, cell: 'ts-fleet-al', width: '90px', value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
 };
 function columnsOf(logr) {
-  return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'stations'], logr ? ['versions', 'hardware'] : ['type'], ['alarms']);
+  return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'stations'], logr ? ['sensors', 'versions', 'hardware'] : ['type'], ['alarms']);
+}
+
+function codes(d) { return (d.sensors || []).map(function (s) { return s.code; }); }
+
+/** A device carries every sensor family picked in the tag bar. */
+function hasTags(d) {
+  var have = codes(d);
+  return state.tags.every(function (t) { return have.indexOf(t) >= 0; });
+}
+
+function toggleTag(code) {
+  var i = state.tags.indexOf(code);
+  if (i < 0) { state.tags.push(code); } else { state.tags.splice(i, 1); }
+  render();
 }
 
 function needsLook(d) {
@@ -170,8 +229,9 @@ function visible() {
   var list = state.devices.filter(function (d) {
     if (groupOf(d).id !== state.group) { return false; }
     if (state.filter === 'attention' && !needsLook(d)) { return false; }
+    if (state.group === 'logr' && !hasTags(d)) { return false; }
     if (!q) { return true; }
-    return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [])
+    return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [], codes(d))
       .some(function (x) { return x && String(x).toLowerCase().indexOf(q) >= 0; });
   });
   var value = COLUMNS[state.sort].value;
@@ -192,8 +252,9 @@ var cardEl = h(
   '  <div class="ts-fleet-bar">' +
   '    <div class="ts-seg" data-bar="group"></div>' +
   '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button></div>' +
-  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, station"></label>' +
+  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, station, sensor"></label>' +
   '  </div>' +
+  '  <div class="ts-fleet-tags" hidden><span class="ts-row-meta">Sensors</span><span class="ts-fleet-taglist"></span></div>' +
   '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-fleet-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div>' +
@@ -211,6 +272,34 @@ cardEl.querySelector('.ts-fleet-bar').addEventListener('click', function (e) {
   render();
 });
 cardEl.querySelector('.ts-fleet-search input').addEventListener('input', function (e) { state.search = e.target.value; render(); });
+var tagsEl = cardEl.querySelector('.ts-fleet-tags');
+tagsEl.addEventListener('click', function (e) {
+  var b = e.target.closest('[data-tag]');
+  if (b) { toggleTag(b.getAttribute('data-tag')); }
+});
+
+/** Every sensor family on the group's devices, and every picked one, so it can be unpicked. */
+function renderTags() {
+  var all = {};
+  state.devices.forEach(function (d) { if (groupOf(d).id === state.group) { codes(d).forEach(function (c) { all[c] = true; }); } });
+  state.tags.forEach(function (c) { all[c] = true; });
+  var list = Object.keys(all).sort();
+  tagsEl.hidden = state.group !== 'logr' || !list.length;
+  var holder = tagsEl.querySelector('.ts-fleet-taglist');
+  holder.innerHTML = '';
+  list.forEach(function (c) {
+    var b = holder.appendChild(h('<button type="button" class="ts-chip ts-fleet-tag"></button>'));
+    b.setAttribute('data-tag', c);
+    b.textContent = c;
+    if (state.tags.indexOf(c) >= 0) { b.classList.add('on'); }
+  });
+  if (state.tags.length) {
+    holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">Clear</button>')).addEventListener('click', function () {
+      state.tags = [];
+      render();
+    });
+  }
+}
 
 function fail(text) {
   bodyEl.innerHTML = '';
@@ -236,10 +325,11 @@ function render() {
     counts.inactive + ' inactive' + (counts.never ? ' · ' + counts.never + ' never heard from' : '') +
     (alarmed ? ' · ' + alarmed + ' with alarms' : '');
   cardEl.querySelector('.ts-fleet-updated').textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
+  renderTags();
 
   var list = visible();
   bodyEl.innerHTML = '';
-  if (!list.length) { fail(state.search || state.filter !== 'all' ? 'No device matches.' : 'No device here yet.'); return; }
+  if (!list.length) { fail(state.search || state.filter !== 'all' || state.tags.length ? 'No device matches.' : 'No device here yet.'); return; }
   var logr = state.group === 'logr';
   if (columnsOf(logr).indexOf(state.sort) < 0) { state.sort = 'uplink'; state.dir = -1; return render(); }
   var table = h('<div class="ts-fleet-list"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
@@ -272,6 +362,21 @@ function row(d, logr) {
   el.querySelector('small').textContent = d.label || '';
   var cust = el.querySelector('.ts-fleet-cust');
   if (cust) { cust.textContent = d.customer || 'none'; cust.classList.toggle('none', !d.customer); }
+  var sens = el.querySelector('.ts-fleet-sens');
+  if (sens && !d.sensors) {
+    sens.appendChild(h('<span class="ts-row-meta">…</span>'));
+  } else if (sens) {
+    d.sensors.forEach(function (s) {
+      // A chip filters the fleet by its family rather than opening the device.
+      var chip = sens.appendChild(h('<button type="button" class="ts-chip ts-fleet-tag"></button>'));
+      chip.setAttribute('data-tag', s.code);
+      chip.textContent = s.code + (s.count > 1 ? ' ×' + s.count : '');
+      chip.title = s.names.join(', ');
+      if (state.tags.indexOf(s.code) >= 0) { chip.classList.add('on'); }
+      chip.addEventListener('click', function (e) { e.stopPropagation(); toggleTag(s.code); });
+      chip.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    });
+  }
   var up = el.querySelector('.ts-fleet-up');
   up.textContent = ago(lastTs(d));
   up.title = fmtTime(lastTs(d)) + (Number(d.attrs.inactivityTimeout) > 0
