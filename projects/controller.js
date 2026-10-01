@@ -4,7 +4,8 @@
  * the centre of its stations. Projects close together at the current zoom merge
  * into one cluster. A pin or a cluster filters the list; a row opens the
  * project's Project view, and its own home dashboard when it has one. A user who
- * may create dashboards creates a missing home from the starter.
+ * may create dashboards creates a missing home from the starter; one who may
+ * create assets creates a project. Retired stations count for no state.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
@@ -71,7 +72,7 @@ function loadMapLibraries() {
 
 // -- data --------------------------------------------------------------------------------
 
-var state = { projects: [], owners: {}, loadedAt: 0, canCreateDashboards: false, filter: null, search: '' };
+var state = { projects: [], owners: {}, loadedAt: 0, canCreateDashboards: false, canCreateAssets: false, me: {}, filter: null, search: '' };
 
 function latLngOf(attrs) {
   var lat = Number(attrs.latitude), lng = Number(attrs.longitude);
@@ -89,7 +90,7 @@ function loadStation(station) {
     tb.attrsMap(station),
     tb.get('/api/alarm/ASSET/' + station.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
   ]).then(function (got) {
-    return { station: station, latLng: latLngOf(got[0]), alarms: (got[1] && got[1].data) || [] };
+    return { station: station, latLng: latLngOf(got[0]), alarms: (got[1] && got[1].data) || [], retired: tb.serviceOf(got[0]).retired };
   });
 }
 
@@ -130,11 +131,13 @@ function load() {
 
 // -- model -------------------------------------------------------------------------------
 
-/** A project's state: the worst active alarm of its stations, else OK. */
+function inService(entry) { return entry.stations.filter(function (s) { return !s.retired; }); }
+
+/** A project's state: the worst active alarm of its stations in service, else OK. */
 function statusOf(entry) {
-  if (!entry.stations.length) { return STATUS.none; }
+  if (!inService(entry).length) { return STATUS.none; }
   var worst = null;
-  entry.stations.forEach(function (s) {
+  inService(entry).forEach(function (s) {
     s.alarms.forEach(function (a) {
       var id = a.severity.toLowerCase();
       if (!worst || G.rank(id) > G.rank(worst)) { worst = id; }
@@ -148,7 +151,7 @@ function worstOf(entries) {
   return entries.reduce(function (w, p) { return !w || p.status.rank > w.rank ? p.status : w; }, null) || STATUS.none;
 }
 
-function inAlarm(entry) { return entry.stations.filter(function (s) { return s.alarms.length; }).length; }
+function inAlarm(entry) { return inService(entry).filter(function (s) { return s.alarms.length; }).length; }
 
 function chip(status) {
   var el = h('<span class="ts-chip ts-proj-sev"></span>');
@@ -171,7 +174,8 @@ var cardEl = h(
   '    <div class="ts-head-text"><div class="ts-title">Projects</div><div class="ts-subtitle"></div></div>' +
   '    <span class="ts-proj-worst"></span></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list">' +
-  '    <div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="Search projects"></div>' +
+  '    <div class="ts-projs-bar"><div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="Search projects"></div>' +
+  '      <button type="button" class="ts-btn" data-a="new-project" hidden>' + ICON.plus + ' New project</button></div>' +
   '    <div class="ts-projs-rows"><div class="ts-loading">Loading…</div></div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
@@ -181,6 +185,7 @@ var mapEl = cardEl.querySelector('.ts-proj-map');
 var listEl = cardEl.querySelector('.ts-projs-rows');
 var searchEl = cardEl.querySelector('.ts-projs-search input');
 var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
+var newBtn = cardEl.querySelector('[data-a=new-project]');
 
 new ResizeObserver(function () {
   cardEl.classList.toggle('narrow', cardEl.clientWidth < 720);
@@ -324,9 +329,10 @@ function renderList() {
 }
 
 function metaText(entry, withOwner) {
-  var n = entry.stations.length, alarmed = inAlarm(entry);
+  var n = inService(entry).length, gone = entry.stations.length - n, alarmed = inAlarm(entry);
   var parts = withOwner && entry.owner ? [entry.owner] : [];
   parts.push(n === 1 ? '1 station' : n + ' stations');
+  if (gone) { parts.push(gone + ' retired'); }
   if (alarmed) { parts.push(alarmed + ' in alarm'); }
   return parts.join(' · ');
 }
@@ -393,6 +399,49 @@ function createHome(entry) {
     }).catch(function (err) { ui.toast('Home dashboard not created: ' + errText(err), 'error'); });
 }
 
+// -- new project (CA-6) ------------------------------------------------------------------
+
+/** A name, and for the tenant the owner under *Tenant only*; then the project
+ * opens in its Project view with the map in edit mode. */
+function openNew() {
+  var tenant = state.me.authority === 'TENANT_ADMIN';
+  var dr = ui.openDrawer('New project', tenant ? '' : 'Owned by your organisation');
+  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label">Name</div><input class="ts-input wide" data-f="name"></div>'));
+  var input = dr.body.querySelector('[data-f=name]');
+  var owner = null;
+  if (tenant) {
+    owner = h('<select class="ts-select wide" data-f="owner"><option value="">in-terra</option></select>');
+    var field = h('<div class="ts-field"><div class="ts-field-label">Owner</div></div>');
+    field.appendChild(owner);
+    dr.body.appendChild(ui.tenantSection(field));
+    tb.getAll('/api/customers').then(function (list) {
+      list.filter(function (c) { return !(c.additionalInfo || {}).isPublic; })
+        .sort(function (a, b) { return a.title.localeCompare(b.title); }).forEach(function (c) {
+          var o = owner.appendChild(document.createElement('option'));
+          o.value = c.id.id;
+          o.textContent = c.title;
+        });
+    }).catch(function (err) { ui.toast('Customers not loaded: ' + errText(err), 'error'); });
+  }
+  var go = ui.drawerActions(dr, 'Create');
+  go.disabled = true;
+  input.addEventListener('input', function () { go.disabled = !input.value.trim(); });
+  go.addEventListener('click', function () {
+    var body = { name: input.value.trim(), type: 'Project' };
+    var customer = tenant ? owner.value : state.me.customerId.id;
+    if (customer) { body.customerId = { entityType: 'CUSTOMER', id: customer }; }
+    go.disabled = true;
+    tb.post('/api/asset', body).then(function (created) {
+      ui.closeDrawer();
+      tb.openDashboard(opts.projectDashboardId, 'project', tb.assetLevel(created), { editMap: true });
+    }).catch(function (err) {
+      go.disabled = false;
+      ui.toast('Project not created: ' + errText(err), 'error');
+    });
+  });
+  setTimeout(function () { input.focus(); }, 0);
+}
+
 // -- load --------------------------------------------------------------------------------
 
 var timer = null;
@@ -406,10 +455,15 @@ function refresh() {
 
 refreshBtn.addEventListener('click', refresh);
 searchEl.addEventListener('input', function () { state.search = searchEl.value; renderList(); });
+newBtn.addEventListener('click', openNew);
 
 tb.currentUser().then(function (me) {
   var perms = service('userPermissionsService');
-  state.canCreateDashboards = !(me || {}).isPublic && !tb.isPublicView() && !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
+  var signedIn = !(me || {}).isPublic && !tb.isPublicView() && !!perms;
+  state.me = me || {};
+  state.canCreateDashboards = signedIn && perms.hasGenericPermission('DASHBOARD', 'CREATE');
+  state.canCreateAssets = signedIn && perms.hasGenericPermission('ASSET', 'CREATE');
+  newBtn.hidden = !state.canCreateAssets;
   return Promise.all([
     loadMapLibraries().then(initMap).catch(function (err) {
       mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);

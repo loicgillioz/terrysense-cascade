@@ -1,0 +1,7 @@
+/* Settings widget: shared/theme.css, plus the rows that open nothing, the
+   address book's always-visible actions and the "set lower down" badge. */
+.ts-row.static { cursor: default; }
+.ts-row.static:hover { background: transparent; }
+.ts-book .ts-row-actions { opacity: 1; align-self: center; }
+.ts-book .ts-used { font-size: 12px; }
+.ts-chip.ts-lower { border-style: dashed; color: var(--ts-accent); margin-right: 6px; }

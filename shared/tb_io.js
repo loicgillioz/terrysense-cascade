@@ -82,7 +82,7 @@ root.TerrySenseTbIo = function (ctx) {
     });
   }
 
-  var defaultsPromise = null;
+  var defaultsPromise = null, tenantBookPromise = null;
 
   var io = {
     fetchAttrs: function (entity) { return attrsMap(entity); },
@@ -112,6 +112,18 @@ root.TerrySenseTbIo = function (ctx) {
         }).catch(function () { return null; });
       }
       return defaultsPromise;
+    },
+    // The tenant's address book, never shared: a customer user finds none. Not
+    // cached while absent, so the one the Settings widget creates is found next.
+    fetchTenantBook: function () {
+      if (!tenantBookPromise) {
+        tenantBookPromise = get('/api/user/assets', { type: resolver.CONTACT_BOOK_KIND, pageSize: '1', page: '0' }).then(function (page) {
+          var item = page && page.data && page.data[0];
+          if (!item) { tenantBookPromise = null; }
+          return item ? { entityType: 'ASSET', id: item.id.id, name: item.name, kind: resolver.CONTACT_BOOK_KIND } : null;
+        }).catch(function () { tenantBookPromise = null; return null; });
+      }
+      return tenantBookPromise;
     },
     // Ownership is orthogonal to `Contains` (ENTITY_MODEL.md §1): a customer's
     // stations are found by ownership, not by walking relations.
@@ -306,16 +318,240 @@ root.TerrySenseTbIo = function (ctx) {
   /** A dashboard opened through a public link: its route is /dashboard, not /dashboards. */
   function isPublicView() { return /^\/dashboard\//.test(window.location.pathname); }
 
+  function viewStates(stateId, entity, extra) {
+    return [{ id: 'default', params: {} },
+      { id: stateId, params: Object.assign({ entityId: { entityType: entity.entityType || 'ASSET', id: entity.id }, entityName: entity.name }, extra) }];
+  }
+
   /** Open view `stateId` of dashboard `dashboardId` on `entity`, above its
-   * landing view; with no `stateId`, its landing view. A public link stays
-   * public: its route is /dashboard, and it keeps publicId. */
-  function openDashboard(dashboardId, stateId, entity) {
+   * landing view; with no `stateId`, its landing view. `extra` joins the
+   * view's state params. A public link stays public: its route is
+   * /dashboard, and it keeps publicId. */
+  function openDashboard(dashboardId, stateId, entity, extra) {
     var isPublic = isPublicView();
-    var params = stateId ? { state: encodeState([{ id: 'default', params: {} },
-      { id: stateId, params: { entityId: { entityType: entity.entityType || 'ASSET', id: entity.id }, entityName: entity.name } }]) } : {};
+    var params = stateId ? { state: encodeState(viewStates(stateId, entity, extra)) } : {};
     var publicId = isPublic && new URLSearchParams(window.location.search).get('publicId');
     if (publicId) { params.publicId = publicId; }
     getService('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
+  }
+
+  /** The URL a public link opens: view `stateId` of `dashboardId` on `entity`,
+   * signed in as public customer `publicId`. */
+  function publicLink(dashboardId, publicId, stateId, entity) {
+    return window.location.origin + '/dashboard/' + dashboardId + '?publicId=' + publicId +
+      '&state=' + encodeURIComponent(encodeState(viewStates(stateId, entity)));
+  }
+
+  // -- lifecycle of a project, station or device (FRONTEND.md *Interface conventions*) --
+
+  var PUBLIC_GROUP = 'Public';
+  var GROUP_PATH = { ASSET: 'assets', DEVICE: 'devices' };
+
+  function entityPath(entity) { return entity.entityType === 'DEVICE' ? 'device' : 'asset'; }
+
+  /** `{entityType, id}` of the entity's immediate owner. */
+  function ownerOf(entity) {
+    return get('/api/' + entityPath(entity) + '/' + entity.id).then(function (e) { return e.ownerId; });
+  }
+
+  function renameEntity(entity, name) {
+    var path = '/api/' + entityPath(entity);
+    return get(path + '/' + entity.id).then(function (e) { return post(path, Object.assign(e, { name: name })); })
+      .then(function () { entity.name = name; });
+  }
+
+  /** The owner's groups of `type` (ASSET or DEVICE) made public, each with
+   * `members` ({id: true}), and `ids`, every entity in one of them. Never another owner's. */
+  function publicMembers(owner, type) {
+    type = type || 'ASSET';
+    return get('/api/entityGroups/' + owner.entityType + '/' + owner.id + '/' + type).then(function (all) {
+      var groups = (all || []).filter(function (g) { return (g.additionalInfo || {}).isPublic; });
+      return Promise.all(groups.map(function (g) {
+        return getAll('/api/entityGroup/' + g.id.id + '/' + GROUP_PATH[type]).then(function (list) {
+          g.members = {};
+          list.forEach(function (e) { g.members[e.id.id] = true; });
+          return g;
+        });
+      })).then(function () {
+        var ids = {};
+        groups.forEach(function (g) { Object.assign(ids, g.members); });
+        return { all: all || [], groups: groups, ids: ids };
+      });
+    });
+  }
+
+  /** The owner's public group, made public from its "Public" group or created when it has none. */
+  function ensurePublicGroup(owner, type, pub) {
+    if (pub.groups.length) { return Promise.resolve(pub.groups[0]); }
+    var named = pub.all.filter(function (g) { return g.name === PUBLIC_GROUP; })[0];
+    return (named ? Promise.resolve(named) : post('/api/entityGroup', { type: type, name: PUBLIC_GROUP, ownerId: owner }))
+      .then(function (g) { return post('/api/entityGroup/' + g.id.id + '/makePublic').then(function () { return g; }); });
+  }
+
+  /** Put `entity` in its owner's public group, or take it out of every one (FRONTEND.md *Public links*). */
+  function setPublic(entity, owner, on) {
+    var type = entity.entityType === 'DEVICE' ? 'DEVICE' : 'ASSET';
+    return publicMembers(owner, type).then(function (pub) {
+      if (!on) {
+        return Promise.all(pub.groups.filter(function (g) { return g.members[entity.id]; }).map(function (g) {
+          return post('/api/entityGroup/' + g.id.id + '/deleteEntities', [entity.id]);
+        }));
+      }
+      if (pub.ids[entity.id]) { return null; }
+      return ensurePublicGroup(owner, type, pub).then(function (g) { return post('/api/entityGroup/' + g.id.id + '/addEntities', [entity.id]); });
+    });
+  }
+
+  function relate(from, to) {
+    return post('/api/relation', { from: { id: from.id, entityType: from.entityType }, to: { id: to.id, entityType: to.entityType },
+      type: 'Contains', typeGroup: 'COMMON' });
+  }
+
+  function unrelate(from, to) {
+    return del('/api/relation', { fromId: from.id, fromType: from.entityType, toId: to.id, toType: to.entityType,
+      relationType: 'Contains', relationTypeGroup: 'COMMON' });
+  }
+
+  /** A new station owned by the project's owner, `Contains`-related from it,
+   * carrying `attrs`, public when the project is, and resolved. */
+  function createStation(name, project, attrs) {
+    return ownerOf(project).then(function (owner) {
+      var body = { name: name, type: 'Station' };
+      if (owner.entityType === 'CUSTOMER') { body.customerId = owner; }
+      return post('/api/asset', body).then(function (created) {
+        var station = assetLevel(created);
+        station.ownerId = owner.id;
+        return relate(project, station)
+          .then(function () { return saveAttrs(station, attrs); })
+          .then(function () { return publicMembers(owner); })
+          .then(function (pub) { return pub.ids[project.id] ? setPublic(station, owner, true) : null; })
+          .then(function () { return resolveStations([station]); })
+          .then(function () { return station; });
+      });
+    });
+  }
+
+  /** The owner's projects. */
+  function ownerProjects(owner) {
+    var list = owner.entityType === 'CUSTOMER'
+      ? getAll('/api/customer/' + owner.id + '/assets', { type: 'Project' })
+      : getAll('/api/tenant/assets', { type: 'Project' }).then(function (all) {
+        return all.filter(function (a) { return a.ownerId.entityType === 'TENANT'; });
+      });
+    return list.then(function (assets) { return assets.map(assetLevel); });
+  }
+
+  /** `[{key, from, to}]`: the `effective.*` values that change when `station` moves under `parent`. */
+  function settingChanges(station, parent) {
+    var moved = Object.assign({}, io, {
+      fetchParent: function (e) { return e.id === station.id ? Promise.resolve(parent) : io.fetchParent(e); }
+    });
+    return Promise.all([resolver.resolveStation(station, io), resolver.resolveStation(station, moved)]).then(function (r) {
+      var a = r[0].effective, b = r[1].effective, keys = {};
+      Object.keys(a).concat(Object.keys(b)).forEach(function (k) { keys[k] = true; });
+      return Object.keys(keys).sort().filter(function (k) { return JSON.stringify(a[k]) !== JSON.stringify(b[k]); })
+        .map(function (k) { return { key: k, from: a[k], to: b[k] }; });
+    });
+  }
+
+  /** Move the station's `Contains` from one project to another, then resolve it (CONFIG_RESOLVER.md §5). */
+  function moveStation(station, from, to) {
+    return relate(to, station).then(function () { return unrelate(from, station); })
+      .then(function () { return resolveStations([station]); });
+  }
+
+  /** Every timeseries key of the entity, deleted with all its data. */
+  function deleteHistory(entity) {
+    var base = '/api/plugins/telemetry/' + entity.entityType + '/' + entity.id;
+    return get(base + '/keys/timeseries').then(function (keys) {
+      if (!keys || !keys.length) { return null; }
+      return del(base + '/timeseries/delete', { keys: keys.join(','), deleteAllDataForKeys: 'true' });
+    });
+  }
+
+  /** ThingsBoard drops the entity's relations with it. */
+  function deleteEntity(entity) { return del('/api/' + entityPath(entity) + '/' + entity.id); }
+
+  /** `service.*` of an entity's attributes (ATTRIBUTES.md §4): a silence only while it runs. */
+  function serviceOf(attrs) {
+    var until = Number(attrs['service.silencedUntil']) || 0;
+    return { state: attrs['service.state'] || null, retired: attrs['service.state'] === 'retired',
+      silencedUntil: until > Date.now() ? until : null, silencedBy: attrs['service.silencedBy'] || '' };
+  }
+
+  /** `retired`, `repair`, `lost`, or null for in service. */
+  function setServiceState(entity, value) {
+    return value ? saveAttrs(entity, { 'service.state': value }) : deleteAttrs(entity, ['service.state']);
+  }
+
+  function userName(u) { return [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || ''; }
+
+  function silence(entity, until) {
+    return currentUser().then(function (me) {
+      return saveAttrs(entity, { 'service.silencedUntil': until, 'service.silencedBy': userName(me || {}) });
+    });
+  }
+
+  // Ending early writes now, never deletes: the silence summary keys on it.
+  function endSilence(entity) { return saveAttrs(entity, { 'service.silencedUntil': Date.now() }); }
+
+  // A timeseries point per notification withheld during a silence (ATTRIBUTES.md §4): never a reading.
+  var SILENCED_NOTICE = 'service.silencedNotice';
+
+  /** `keys` without the service bookkeeping, for any list of a device's or a station's keys. */
+  function readingKeys(keys) { return (keys || []).filter(function (k) { return k !== SILENCED_NOTICE; }); }
+
+  function setLabel(device, label) {
+    return get('/api/device/' + device.id).then(function (d) { return post('/api/device', Object.assign(d, { label: label })); });
+  }
+
+  /** The assets that `Contains` the device, `{entityType, id, name}`. */
+  function deviceParents(device) {
+    return get('/api/relations/info', { toId: device.id, toType: 'DEVICE' }).then(function (rels) {
+      return (rels || []).filter(function (r) { return r.type === 'Contains' && r.from.entityType === 'ASSET'; })
+        .map(function (r) { return { entityType: 'ASSET', id: r.from.id, name: r.fromName }; });
+    });
+  }
+
+  /** Give the device to `owner` (TA-6): its entries leave every station map and
+   * its `Contains` relations go, the stations resolve, and only then does the
+   * owner change, so it never feeds a station of its previous owner
+   * (device_ownership.py). Returns the stations whose map changed. */
+  function reassignDevice(device, owner, parents) {
+    var changed = [];
+    return Promise.all(parents.map(function (parent) {
+      return attrsMap(parent).then(function (attrs) {
+        var entries = resolver.mapEntries(attrs['config.channelMap']), kept = {};
+        Object.keys(entries).forEach(function (c) { if (entries[c].device !== device.id) { kept[c] = entries[c]; } });
+        if (Object.keys(kept).length === Object.keys(entries).length) { return null; }
+        changed.push(parent);
+        return saveAttrs(parent, { 'config.channelMap': resolver.buildMap(kept) });
+      }).then(function () { return unrelate(parent, device); });
+    })).then(function () { return resolveStations(changed); }).then(function () {
+      // PE's owner change takes an optional list of groups as its body: none is sent.
+      return toPromise(getService('http').post('/api/owner/' + owner.entityType + '/' + owner.id + '/DEVICE/' + device.id, null));
+    }).then(function () { return changed; });
+  }
+
+  function ackAlarm(alarm) { return post('/api/alarm/' + alarm.id.id + '/ack'); }
+  function clearAlarm(alarm) { return post('/api/alarm/' + alarm.id.id + '/clear'); }
+
+  /** The devices `entity` contains. */
+  function containedDevices(entity) {
+    return post('/api/relations', {
+      parameters: { rootId: entity.id, rootType: entity.entityType, direction: 'FROM', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
+      filters: [{ relationType: 'Contains', entityTypes: ['DEVICE'] }]
+    }).then(function (rels) { return (rels || []).map(function (r) { return { entityType: 'DEVICE', id: r.to.id }; }); });
+  }
+
+  /** The device's latest `p0.gnssFix`, `{lat, lon, sats, ts}`, or null. */
+  function latestFix(deviceId) {
+    return get('/api/plugins/telemetry/DEVICE/' + deviceId + '/values/timeseries', { keys: 'p0.gnssFix' }).then(function (r) {
+      var p = r && r['p0.gnssFix'] && r['p0.gnssFix'][0];
+      var fix = p && p.value && (typeof p.value === 'string' ? JSON.parse(p.value) : p.value);
+      return fix && isFinite(Number(fix.lat)) && isFinite(Number(fix.lon))
+        ? { lat: Number(fix.lat), lon: Number(fix.lon), sats: fix.sats, ts: Number(p.ts) } : null;
+    }).catch(function () { return null; });
   }
 
   return {
@@ -324,7 +560,14 @@ root.TerrySenseTbIo = function (ctx) {
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
     channelFreshness: channelFreshness,
     isComplexDevice: isComplexDevice,
-    ancestors: ancestors, openDashboard: openDashboard, readableDashboard: readableDashboard, isPublicView: isPublicView
+    ancestors: ancestors, openDashboard: openDashboard, readableDashboard: readableDashboard, isPublicView: isPublicView,
+    publicLink: publicLink, ownerOf: ownerOf, renameEntity: renameEntity, publicMembers: publicMembers, setPublic: setPublic,
+    relate: relate, unrelate: unrelate, createStation: createStation, ownerProjects: ownerProjects,
+    settingChanges: settingChanges, moveStation: moveStation, deleteHistory: deleteHistory, deleteEntity: deleteEntity,
+    serviceOf: serviceOf, setServiceState: setServiceState, silence: silence, endSilence: endSilence,
+    ackAlarm: ackAlarm, clearAlarm: clearAlarm, containedDevices: containedDevices, latestFix: latestFix, userName: userName,
+    SILENCED_NOTICE: SILENCED_NOTICE, readingKeys: readingKeys, setLabel: setLabel, deviceParents: deviceParents,
+    reassignDevice: reassignDevice
   };
 };
 

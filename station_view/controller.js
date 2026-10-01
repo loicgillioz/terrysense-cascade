@@ -2,7 +2,9 @@
  * Station — one station: which measurement feeds each of its channels, and
  * the latest value of each, with the channels gone stale (left); the devices
  * that measure them and the project the station stands in (right). Read-only
- * for everyone. Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
+ * but for a user who may write the station: the header's row menu
+ * (shared/lifecycle.js) and *Silence*, and *Acknowledge* and *Clear* on each
+ * active alarm. Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
  *
  * Channels are the keys of `config.channelMap`, each fed by a source key of
  * the device its entry names; labels and units are `effective.<channel>.*`. A
@@ -15,7 +17,7 @@
  * `opts`, set by build_project_dashboard.py: `devicesDashboardId` (the device
  * card), `projectDashboardId` (the project card).
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and lifecycle.js.
  */
 
 window.TerrySenseStationView = function (ctx, container, opts) {
@@ -26,6 +28,7 @@ var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
+var life = window.TerrySenseLifecycle(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
@@ -72,7 +75,8 @@ function worst(severities) {
 
 var state = {
   station: null, attrs: {}, names: {}, kinds: {}, peripherals: {},
-  channels: [], alarms: [], devices: [], chain: [], showDiagnostic: false, loadedAt: 0
+  channels: [], alarms: [], devices: [], chain: [], showDiagnostic: false, loadedAt: 0,
+  canWrite: false, owner: null, service: null, pub: null
 };
 
 function loadDefaults() {
@@ -95,7 +99,7 @@ function channelOf(name, entry, attrs, latest) {
     whenTrue: attrs['effective.' + name + '.textWhenTrue'],
     whenFalse: attrs['effective.' + name + '.textWhenFalse'],
     latest: raw && raw.value !== null && raw.value !== undefined ? { ts: Number(raw.ts), value: raw.value } : null,
-    alarm: null
+    alarm: null, alarms: []
   };
 }
 
@@ -126,11 +130,14 @@ function loadDevice(id) {
 
 function load() {
   var s = state.station, url = '/api/plugins/telemetry/ASSET/' + s.id + '/values/timeseries';
-  return Promise.all([tb.attrsMap(s), tb.ancestors(s)]).then(function (got) {
+  return Promise.all([tb.attrsMap(s), tb.ancestors(s),
+    state.canWrite ? tb.publicMembers(state.owner).catch(function () { return null; }) : null]).then(function (got) {
     var attrs = got[0], entries = resolver.mapEntries(attrs['config.channelMap']);
     var names = Object.keys(entries);
     state.attrs = attrs;
+    state.service = tb.serviceOf(attrs);
     state.chain = got[1];
+    state.pub = got[2];
     return Promise.all([
       names.length ? tb.get(url, { keys: names.join(',') }).catch(function () { return {}; }) : {},
       tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }),
@@ -143,14 +150,14 @@ function load() {
       state.alarms = [];
       ((r[1] && r[1].data) || []).forEach(function (a) {
         var m = CHANNEL_ALARM_RE.exec(a.type), c = m && byName[m[1]];
-        if (c) { c.alarm = worst([c.alarm, a.severity]); } else { state.alarms.push(a); }
+        if (c) { c.alarm = worst([c.alarm, a.severity]); c.alarms.push(a); } else { state.alarms.push(a); }
       });
       state.devices = r[2];
       state.loadedAt = Date.now();
       var latest = {};
       state.channels.forEach(function (c) { if (c.latest) { latest[c.name] = c.latest.ts; } });
       return tb.channelFreshness(attrs, latest, state.names).then(function (fresh) {
-        state.channels.forEach(function (c) { c.stale = (fresh.channels[c.name] || {}).stale; });
+        state.channels.forEach(function (c) { c.stale = !state.service.retired && (fresh.channels[c.name] || {}).stale; });
       });
     });
   });
@@ -187,6 +194,7 @@ function measurement(c) {
 }
 
 function stationStatus() {
+  if (state.service.retired) { return { id: 'retired', label: 'Retired', color: 'var(--ts-nodata)' }; }
   var sev = worst(state.channels.map(function (c) { return c.alarm; }).concat(state.alarms.map(function (a) { return a.severity; })));
   if (sev) { return { id: 'alarm', label: G.severity(sev.toLowerCase()).label, color: 'var(--sev-' + sev.toLowerCase() + ')' }; }
   var last = state.channels.reduce(function (m, c) { return Math.max(m, c.latest ? c.latest.ts : 0); }, 0);
@@ -210,7 +218,8 @@ var cardEl = h(
   '<div class="ts-card ts-stv">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div>' +
   '    <div class="ts-head-text"><div class="ts-title">Station</div><div class="ts-subtitle"></div></div>' +
-  '    <span class="ts-chip ts-stv-state" hidden></span></div>' +
+  '    <span class="ts-stv-chips"></span><span class="ts-chip ts-stv-state" hidden></span><span class="ts-stv-acts"></span></div>' +
+  '  <div class="ts-stv-banner" hidden></div>' +
   '  <div class="ts-stv-split"><div class="ts-stv-main"><div class="ts-loading">Loading…</div></div><div class="ts-stv-side"></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-stv-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div>' +
@@ -220,6 +229,9 @@ root.appendChild(cardEl);
 var mainEl = cardEl.querySelector('.ts-stv-main');
 var sideEl = cardEl.querySelector('.ts-stv-side');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
+var chipsEl = cardEl.querySelector('.ts-stv-chips');
+var actsEl = cardEl.querySelector('.ts-stv-acts');
+var bannerEl = cardEl.querySelector('.ts-stv-banner');
 
 new ResizeObserver(function () { cardEl.classList.toggle('narrow', cardEl.clientWidth < 640); }).observe(cardEl);
 
@@ -238,8 +250,68 @@ function render() {
   chipEl.style.setProperty('--c', st.color);
   chipEl.dataset.state = st.id;
   cardEl.querySelector('.ts-stv-updated').textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
+  renderService();
   renderChannels();
   renderSide();
+}
+
+function project() { return state.chain.filter(function (a) { return a.kind === 'Project'; })[0] || null; }
+
+/** The silence chip and banner for everyone; *Silence* and the row menu for a writer. */
+function renderService() {
+  var sv = state.service, until = !sv.retired && sv.silencedUntil;
+  chipsEl.innerHTML = '';
+  if (until) { chipsEl.appendChild(ui.stateChip('silenced', until)); }
+  bannerEl.hidden = !until;
+  bannerEl.innerHTML = '';
+  if (until) {
+    bannerEl.appendChild(h('<span class="ts-grow"></span>')).textContent = ui.silenceText(until) + (sv.silencedBy ? ' by ' + sv.silencedBy : '') +
+      ': alarms are raised and shown, nobody is notified.';
+    if (state.canWrite) {
+      bannerEl.appendChild(h('<button type="button" class="ts-btn" data-a="end-silence">End now</button>'))
+        .addEventListener('click', function () { life.endSilence(state.station, refresh); });
+    }
+  }
+  actsEl.innerHTML = '';
+  if (!state.canWrite) { return; }
+  if (!sv.retired) {
+    var silence = actsEl.appendChild(h('<button type="button" class="ts-btn" data-a="silence">' + ICON.mute + 'Silence</button>'));
+    silence.addEventListener('click', function () { life.silenceMenu(silence, state.station, refresh); });
+  }
+  actsEl.appendChild(ui.rowMenu(function () {
+    return life.stationItems({
+      station: state.station, attrs: state.attrs, project: project(), owner: state.owner,
+      isPublic: !!state.pub && !!state.pub.ids[state.station.id], nameEl: cardEl.querySelector('.ts-subtitle'),
+      changed: refresh, deleted: leave
+    });
+  }, { title: 'Station actions' }));
+}
+
+/** After a delete: the station's project, else the landing view. */
+function leave() {
+  var p = project();
+  tb.openDashboard(opts.projectDashboardId, p ? 'project' : null, p);
+}
+
+/** *Acknowledge* and *Clear* (CA-22) on an active alarm, for a writer. */
+function alarmActions(a) {
+  var el = h('<span class="ts-stv-alarm-acts"></span>');
+  el.setAttribute('data-alarm', a.type);
+  if (/_ACK$/.test(a.status)) {
+    el.appendChild(h('<span class="ts-row-meta">Acknowledged</span>'));
+  } else {
+    el.appendChild(h('<button type="button" class="ts-btn ghost" data-a="ack">Acknowledge</button>')).addEventListener('click', function () {
+      tb.ackAlarm(a).then(function () { ui.toast('Alarm acknowledged'); return refresh(); })
+        .catch(function (err) { ui.toast('Not acknowledged: ' + errText(err), 'error'); });
+    });
+  }
+  el.appendChild(h('<button type="button" class="ts-btn ghost" data-a="clear">Clear</button>')).addEventListener('click', function () {
+    ui.confirm('Clear this alarm? If the condition still holds, the next reading raises it again.', 'Clear').then(function (ok) {
+      if (!ok) { return null; }
+      return tb.clearAlarm(a).then(function () { ui.toast('Alarm cleared'); return refresh(); });
+    }).catch(function (err) { ui.toast('Not cleared: ' + errText(err), 'error'); });
+  });
+  return el;
 }
 
 function renderChannels() {
@@ -263,6 +335,7 @@ function renderChannels() {
       row.firstChild.style.setProperty('--c', 'var(--sev-' + a.severity.toLowerCase() + ')');
       row.firstChild.textContent = G.severity(a.severity.toLowerCase()).label;
       row.lastChild.textContent = otherAlarmText(a);
+      if (state.canWrite) { row.appendChild(alarmActions(a)); }
     });
   }
 }
@@ -291,6 +364,7 @@ function channelRow(c) {
     chipEl.style.setProperty('--c', 'var(--sev-' + c.alarm.toLowerCase() + ')');
     chipEl.textContent = G.severity(c.alarm.toLowerCase()).label;
     row.querySelector('.ts-stv-val').insertBefore(chipEl, row.querySelector('b'));
+    if (state.canWrite) { c.alarms.forEach(function (a) { row.querySelector('.ts-stv-val').appendChild(alarmActions(a)); }); }
   }
   return row;
 }
@@ -372,10 +446,14 @@ refreshBtn.addEventListener('click', refresh);
 
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('No station bound — bind a station in the widget\'s Data tab.'); return; }
-  return Promise.all([tb.loadEntity(ds), loadDefaults()]).then(function (got) {
-    if (got[0].kind !== 'Station') { fail('This widget shows a station; ' + got[0].name + ' is a ' + got[0].kind + '.'); return; }
+  return Promise.all([tb.loadEntity(ds), loadDefaults(), tb.getAsset(ds.entityId), tb.currentUser()]).then(function (got) {
+    if (got[0].kind !== 'Station') { fail('This widget shows a station; ' + got[0].name + ' is a ' + got[0].kind + '.'); return null; }
     state.station = got[0];
-    return load().then(function () {
+    state.owner = got[2].ownerId;
+    return tb.canWrite(state.station).then(function (w) {
+      state.canWrite = w && !(got[3] || {}).isPublic && !tb.isPublicView();
+      return load();
+    }).then(function () {
       render();
       timer = setInterval(refresh, REFRESH_MS);
     });

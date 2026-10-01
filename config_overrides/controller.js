@@ -5,6 +5,9 @@
  * notifications and retention, and edits it in side panels. A device has
  * alarm limits on its own source keys and retention only (CONFIG_CASCADE.md §1).
  * Every save re-resolves the stations or devices it reaches (CONFIG_RESOLVER.md §5).
+ * A customer, and the DEFAULTS asset for the tenant, also show the owner's
+ * address book (CA-20); a customer or project row a lower level replaces
+ * carries a badge (CA-21).
  *
  * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and calculations.js; styles are
  * shared/theme.css. Design: logr-product-docs/cloud/CASCADE_EDITOR.md.
@@ -40,12 +43,24 @@ var SCALARS = [
 ];
 var ALL_SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention']];
 var SECTIONS = ALL_SECTIONS;
+var LIST_KEYS = ['config.notify.contacts', 'config.notify.deviceContacts'];
+var BOOK = resolver.CONTACT_BOOK_KEY;
+var BOOK_NAME = 'terrySense contact book';
+// Assets that never hold a contact list (ATTRIBUTES.md §4, §7).
+var NOT_HOLDERS = ['Defaults', resolver.DEVICE_DEFAULTS_KIND, resolver.CONTACT_BOOK_KIND];
+var LEVEL_ORDER = ['project', 'location', 'station'];
 
 var state = {
   origin: null, own: {}, ancestors: [], names: {}, kinds: {}, channelKinds: {},
   stationCount: 0, readOnly: true, showInherited: false, customerId: null, users: null, defaultsShared: true,
-  deviceBranch: false, sourceKeys: [], calcMeta: { names: {}, attributes: {} }
+  deviceBranch: false, sourceKeys: [], calcMeta: { names: {}, attributes: {} },
+  // book: the owner's address book — `holder` the CUSTOMER or the tenant's
+  // ContactBook asset, `usage` {entryId: [{level, attrs, key}]} where a section shows it.
+  // below: the levels under a customer or project with their attributes, for CA-21.
+  book: { holder: null, entries: {}, usage: null, section: false }, below: null
 };
+// Entries created by *New contact* in the open notifications panel, written with it.
+var pendingBook = {};
 
 // -- values and lookups ------------------------------------------------------
 
@@ -200,11 +215,65 @@ function load() {
         state.names = parseVal((defaults || { attrs: {} }).attrs['config.channelNames']) || {};
         state.kinds = parseVal((defaults || { attrs: {} }).attrs['config.kinds']) || {};
         state.calcMeta = { names: state.names, attributes: parseVal((defaults || { attrs: {} }).attrs['config.calcAttributes']) || {} };
+        return loadBook().then(loadBelow);
+      }).then(function () {
         renderHead();
         render();
       });
     });
   }).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });
+}
+
+/** The address book this level's lists name: its customer's, else the tenant's. */
+function loadBook() {
+  var o = state.origin;
+  state.book = { holder: null, entries: {}, usage: null, section: false };
+  if (state.deviceBranch) { return Promise.resolve(); }
+  var customer = o.entityType === 'CUSTOMER' ? { level: o, attrs: state.own }
+    : state.ancestors.filter(function (a) { return a.level.role === 'customer'; })[0];
+  var holder = customer ? Promise.resolve(customer) : Promise.resolve(io.fetchTenantBook()).then(function (b) {
+    return b ? io.fetchAttrs(b).then(function (attrs) { return { level: b, attrs: attrs || {} }; }) : null;
+  });
+  return holder.then(function (hd) {
+    state.book.holder = hd ? hd.level : null;
+    state.book.entries = parseVal((hd ? hd.attrs : {})[BOOK]) || {};
+    state.book.section = o.entityType === 'CUSTOMER' || (o.kind === 'Defaults' && !state.readOnly);
+  });
+}
+
+/** The assets the owner of this level owns: a customer's, or the tenant's own on the Tenant view. */
+function ownedLevels() {
+  var o = state.origin;
+  var list = o.entityType === 'CUSTOMER' ? tb.getAll('/api/customer/' + o.id + '/assets', {})
+    : tb.getAll('/api/tenant/assets', {}).then(function (l) { return l.filter(function (a) { return a.ownerId && a.ownerId.entityType === 'TENANT'; }); });
+  return list.then(function (assets) {
+    return assets.filter(function (a) { return NOT_HOLDERS.indexOf(a.type) < 0; }).map(tb.assetLevel);
+  });
+}
+
+/** The levels below a customer or project (CA-21), and where each book entry is used (CA-20). */
+function loadBelow() {
+  var o = state.origin, badges = o.entityType === 'CUSTOMER' || o.kind === 'Project';
+  state.below = null;
+  if (!badges && !state.book.section) { return Promise.resolve(); }
+  return (o.kind === 'Project' ? resolver.descendantAssets(o, io) : ownedLevels()).then(function (levels) {
+    return Promise.all(levels.map(function (l) { return io.fetchAttrs(l).then(function (a) { return { level: l, attrs: a || {} }; }); }));
+  }).then(function (below) {
+    if (badges) { state.below = below; }
+    if (state.book.section) { state.book.usage = bookUsage((o.entityType === 'CUSTOMER' ? [{ level: o, attrs: state.own }] : []).concat(below)); }
+  });
+}
+
+function bookUsage(holders) {
+  var usage = {};
+  holders.forEach(function (hd) {
+    LIST_KEYS.forEach(function (key) {
+      (parseVal(hd.attrs[key]) || []).forEach(function (c) {
+        if (c && c.type === 'book') { (usage[c.entryId] = usage[c.entryId] || []).push({ level: hd.level, attrs: hd.attrs, key: key }); }
+      });
+    });
+  });
+  return usage;
 }
 
 function renderHead() {
@@ -230,7 +299,7 @@ function renderHead() {
 /** The source keys a device reports — for a DeviceDefaults asset, those of a
  * few devices of its profile. Provenance and fault keys carry no limit. */
 function sourceKeysOf(origin) {
-  var skip = /^(uplinkCause|uplinkLatest|rssi|snr)$|\.status$/;
+  var skip = /^(uplinkCause|uplinkLatest|rssi|snr|service\.silencedNotice)$|\.status$/;
   var devices = origin.entityType === 'DEVICE' ? Promise.resolve([origin])
     : (io.fetchProfileDevices ? io.fetchProfileDevices(origin.name) : Promise.resolve([])).then(function (l) { return l.slice(0, 8); });
   return devices.then(function (list) {
@@ -298,6 +367,8 @@ function render() {
       (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" title="Edit">' + ICON.edit + '</button></div>') + '</div>');
     row.querySelector('.ts-row-label').textContent = chLabel(ch);
     row.querySelector('.ts-row-meta').textContent = kindLabel(ch);
+    var keys = Object.keys(state.own).filter(function (k) { return k.indexOf(CH + ch + '.') === 0; });
+    lowerBadge(row, chLabel(ch), keys);
     if (!state.readOnly) { row.addEventListener('click', function () { openChannel(ch, false); }); }
     sec.appendChild(row);
   });
@@ -344,6 +415,7 @@ function render() {
       row.querySelector('.ts-row-label').textContent = d.label;
       row.querySelector('.ts-row-meta').textContent = meta;
       if (!meta) { row.querySelector('.ts-row-meta').remove(); }
+      if (mine) { lowerBadge(row, d.label, [d.key]); }
       if (!state.readOnly) {
         row.addEventListener('click', function (e) {
           if (e.target.closest('[data-act=reset]')) { e.stopPropagation(); resetScalar(d); return; }
@@ -355,6 +427,271 @@ function render() {
     if (!el.querySelector('.ts-row')) { el.appendChild(emptyLine(s[0])); }
     bodyEl.appendChild(el);
   });
+  if (state.book.section) { renderBook(); }
+}
+
+// -- set lower down (CA-21) ---------------------------------------------------------------
+
+// A station key replaces a key of the same field for its channel name, or for
+// one instance of it (`channel.tiltX-3.…` under `channel.tiltX.…`).
+var CH_KEY_RE = /^channel\.([^.]+)\.(.+)$/;
+function replaces(lowerKey, ownKey) {
+  if (lowerKey === ownKey) { return true; }
+  var a = CH_KEY_RE.exec(ownKey), b = CH_KEY_RE.exec(lowerKey);
+  return !!a && !!b && a[2] === b[2] && !resolver.splitChannelKey(a[1]).instance && resolver.splitChannelKey(b[1]).name === a[1];
+}
+
+function lowerFor(keys) {
+  var out = [];
+  (state.below || []).forEach(function (b) {
+    var hit = Object.keys(b.attrs).filter(function (k) {
+      return b.attrs[k] !== null && keys.some(function (own) { return replaces(k, own); });
+    });
+    if (hit.length) { out.push({ level: b.level, keys: hit }); }
+  });
+  return out;
+}
+
+function lowerText(list) {
+  var counts = {};
+  list.forEach(function (l) { var k = String(l.level.kind || 'level').toLowerCase(); counts[k] = (counts[k] || 0) + 1; });
+  return 'replaced on ' + Object.keys(counts).sort(function (a, b) { return LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b); })
+    .map(function (k) { return counts[k] + ' ' + k + (counts[k] > 1 ? 's' : ''); }).join(', ');
+}
+
+function lowerBadge(row, label, keys) {
+  var list = lowerFor(keys);
+  if (!list.length) { return; }
+  var badge = h('<button type="button" class="ts-chip ts-lower" data-a="lower"></button>');
+  badge.textContent = lowerText(list);
+  row.querySelector('.ts-row-value').insertBefore(badge, row.querySelector('.ts-row-value').firstChild);
+  badge.addEventListener('click', function (e) { e.stopPropagation(); openLower(badge, label, list); });
+}
+
+function openLower(anchor, label, list) {
+  var box = h('<div><div class="ts-subhead">Set lower down</div></div>');
+  list.forEach(function (l) {
+    var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div></div>');
+    o.setAttribute('data-level', l.level.name);
+    o.querySelector('.ts-opt-label').textContent = l.level.name;
+    o.querySelector('.ts-opt-desc').textContent = l.level.kind + ' · opens its settings';
+    o.addEventListener('click', function () {
+      ctx.stateController.updateState('settings', { entityId: { entityType: l.level.entityType, id: l.level.id }, entityName: l.level.name });
+    });
+    box.appendChild(o);
+  });
+  var pop;
+  if (!state.readOnly) {
+    var reset = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="reset-lower">' + ICON.reset + 'Reset to inherit</button></div>');
+    reset.querySelector('button').addEventListener('click', function () {
+      pop.close();
+      ui.confirm('Delete the value of <b>' + esc(label) + '</b> set on ' + esc(lowerText(list).replace(/^replaced on /, '')) +
+        '? They then inherit it from ' + esc(state.origin.name) + '.', 'Reset to inherit').then(function (ok) { if (ok) { resetLower(list); } });
+    });
+    box.appendChild(reset);
+  }
+  pop = ui.popover(anchor, box);
+}
+
+function uniqueStations(levels) {
+  return Promise.all(levels.map(function (l) { return resolver.affectedStations(l, io); })).then(function (lists) {
+    var seen = {}, out = [];
+    lists.forEach(function (l) { l.forEach(function (s) { if (!seen[s.id]) { seen[s.id] = true; out.push(s); } }); });
+    return out;
+  });
+}
+
+function failed(err) { ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error'); }
+
+function resetLower(list) {
+  return Promise.all(list.map(function (l) { return tb.deleteAttrs(l.level, l.keys); }))
+    .then(function () { return uniqueStations(list.map(function (l) { return l.level; })); })
+    .then(function (stations) { return tb.resolveStations(stations); })
+    .then(function () { ui.toast('Reset to inherit'); return load(); })
+    .catch(failed);
+}
+
+// -- address book (CA-20) ---------------------------------------------------------------------
+
+function entryName(e) { return (e && (e.name || e.sms || e.email)) || 'Unknown entry'; }
+function useText(u) { return u.level.name + ' (' + (u.key === LIST_KEYS[0] ? 'measurement alarms' : 'device alarms') + ')'; }
+
+function renderBook() {
+  var b = state.book;
+  var sec = h('<div class="ts-section ts-book"><div class="ts-section-head">Address book ' + info('addressBook') + '</div></div>');
+  var ids = Object.keys(b.entries).sort(function (x, y) { return entryName(b.entries[x]).localeCompare(entryName(b.entries[y])); });
+  ids.forEach(function (id) {
+    var e = b.entries[id], uses = (b.usage || {})[id] || [];
+    var row = h('<div class="ts-row static"><div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div>' +
+      '<div class="ts-row-meta ts-used"></div></div>' + (state.readOnly ? '' : '<div class="ts-row-actions">' +
+      '<button type="button" class="ts-icon-btn" data-a="edit" title="Edit">' + ICON.edit + '</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="replace">Replace with…</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="remove">Remove everywhere</button></div>') + '</div>');
+    row.setAttribute('data-entry', id);
+    row.querySelector('.ts-row-label').textContent = entryName(e);
+    row.querySelector('.ts-row-meta').textContent = [e.sms, e.email].filter(Boolean).join(' · ') +
+      (e.sms && !E164.test(e.sms) ? ' — number not in international format, SMS will fail' : '');
+    row.querySelector('.ts-used').textContent = uses.length ? 'Used in ' + uses.map(useText).join(', ') : 'Not in any list';
+    if (!state.readOnly) {
+      row.querySelector('[data-a=edit]').addEventListener('click', function () { openEntry(id); });
+      row.querySelector('[data-a=replace]').addEventListener('click', function () { openReplace(id); });
+      row.querySelector('[data-a=remove]').addEventListener('click', function () { removeEntry(id); });
+    }
+    sec.appendChild(row);
+  });
+  if (!ids.length) { sec.appendChild(h('<div class="ts-empty">No entry yet. <i>New contact</i> in a contact list adds one.</div>')); }
+  bodyEl.appendChild(sec);
+}
+
+/** Name, SMS and e-mail inputs bound to `entry`, numbers checked as E.164. */
+function entryFields(entry, onChange) {
+  var el = h('<div><div class="ts-contact-grid"><input class="ts-input" data-f="name" placeholder="Name or role">' +
+    '<input class="ts-input" data-f="sms" placeholder="SMS: +41 79 123 45 67"><input class="ts-input" data-f="email" placeholder="E-mail: name@example.ch"></div>' +
+    '<div class="ts-field-error"></div></div>');
+  var err = el.querySelector('.ts-field-error');
+  function check() {
+    err.textContent = entry.sms && !E164.test(entry.sms) ? 'SMS number must be international: + country code, no spaces (e.g. +41791234567).'
+      : entry.email && !EMAIL.test(entry.email) ? 'Not a valid e-mail address.' : '';
+  }
+  el.querySelectorAll('[data-f]').forEach(function (inp) {
+    var fld = inp.getAttribute('data-f');
+    inp.value = entry[fld] || '';
+    inp.addEventListener('input', function () {
+      entry[fld] = fld === 'sms' ? inp.value.replace(/\s+/g, '') : inp.value.trim();
+      check(); onChange();
+    });
+  });
+  check();
+  return el;
+}
+function entryValid(e) { return !(e.sms && !E164.test(e.sms)) && !(e.email && !EMAIL.test(e.email)) && !!(e.name || e.sms || e.email); }
+
+/** Write the book (when `entries`) and the rewritten lists, then resolve every
+ * station the entry's lists reach; asks first when `always` or more than one. */
+function bookCommit(what, entries, rewrites, uses, button, always) {
+  if (button) { button.disabled = true; }
+  return uniqueStations(uses.map(function (u) { return u.level; })).then(function (stations) {
+    var n = stations.length;
+    var ask = always || n > 1
+      ? ui.confirm(what + (n ? ' This updates <b>' + n + ' station' + (n > 1 ? 's' : '') + '</b>.' : ''), n > 1 ? 'Apply to ' + n + ' stations' : 'Apply')
+      : Promise.resolve(true);
+    return ask.then(function (ok) {
+      if (!ok) { if (button) { button.disabled = false; } return; }
+      return saveBook(entries)
+        .then(function () { return Promise.all(rewrites.map(function (r) { return tb.saveAttrs(r.level, r.write); })); })
+        .then(function () { return tb.resolveStations(stations); })
+        .then(function () {
+          ui.closeDrawer();
+          ui.toast(n === 0 ? 'Saved' : n === 1 ? '1 station updated' : n + ' stations updated');
+          return load();
+        });
+    });
+  }).catch(function (err) { if (button) { button.disabled = false; } failed(err); });
+}
+
+/** The tenant's book is created on its first entry. */
+function saveBook(entries) {
+  if (!entries) { return Promise.resolve(); }
+  var made = state.book.holder ? Promise.resolve(state.book.holder)
+    : tb.post('/api/asset', { name: BOOK_NAME, type: resolver.CONTACT_BOOK_KIND }).then(tb.assetLevel);
+  return made.then(function (level) {
+    state.book.holder = level;
+    var w = {};
+    w[BOOK] = entries;
+    return tb.saveAttrs(level, w);
+  });
+}
+
+function bookCopy() { return JSON.parse(JSON.stringify(state.book.entries)); }
+
+/** `fn(list)` applied to every list that names the entry, grouped per level. */
+function rewritesFor(uses, fn) {
+  var byLevel = {};
+  uses.forEach(function (u) {
+    var r = byLevel[u.level.id] = byLevel[u.level.id] || { level: u.level, write: {} };
+    r.write[u.key] = fn(JSON.parse(JSON.stringify(parseVal(u.attrs[u.key]))));
+  });
+  return Object.keys(byLevel).map(function (k) { return byLevel[k]; });
+}
+
+function openEntry(id) {
+  var entry = Object.assign({ name: '', sms: '', email: '' }, state.book.entries[id]);
+  var dr = ui.openDrawer('Edit contact', esc(entryName(entry)));
+  var save = ui.drawerActions(dr);
+  dr.body.appendChild(entryFields(entry, function () { save.disabled = !entryValid(entry); }));
+  dr.body.appendChild(h('<div class="ts-field-hint">Changes this contact in every list that names it.</div>'));
+  save.addEventListener('click', function () {
+    var entries = bookCopy();
+    entries[id] = { name: entry.name, sms: entry.sms, email: entry.email };
+    bookCommit('Change <b>' + esc(entryName(entry)) + '</b> in every list that names it?', entries, [], (state.book.usage || {})[id] || [], save);
+  });
+}
+
+function contactKey(c) { return c.type === 'user' ? 'u:' + c.userId : c.type === 'book' ? 'b:' + c.entryId : null; }
+
+/** `list` with entry `id` swapped for `make(contact)`; a contact already listed takes its severities. */
+function replaceIn(list, id, make) {
+  var out = [];
+  list.forEach(function (c) {
+    var n = c && c.type === 'book' && c.entryId === id ? make(c) : c;
+    var twin = contactKey(n) && out.filter(function (x) { return contactKey(x) === contactKey(n); })[0];
+    if (!twin) { out.push(n); return; }
+    (n.severities || []).forEach(function (s) { if (twin.severities.indexOf(s) < 0) { twin.severities.push(s); } });
+    twin.viaSms = twin.viaSms || n.viaSms;
+    twin.viaEmail = twin.viaEmail || n.viaEmail;
+  });
+  return out;
+}
+
+/** The contact naming `target` that keeps what `c` asked for, where `target` has the address. */
+function swapped(c, target, hasSms, hasEmail) {
+  var viaSms = !!c.viaSms && hasSms, viaEmail = !!c.viaEmail && hasEmail;
+  if (!viaSms && !viaEmail) { viaSms = hasSms; viaEmail = hasEmail; }
+  return Object.assign(target, { viaSms: viaSms, viaEmail: viaEmail, severities: (c.severities || []).slice() });
+}
+
+function openReplace(id) {
+  var ready = state.users === null ? tb.listUsers(state.customerId).then(function (u) { state.users = u; }).catch(function () { state.users = []; }) : Promise.resolve();
+  ready.then(function () {
+    var dr = ui.openDrawer('Replace with…', esc(entryName(state.book.entries[id])));
+    var uses = (state.book.usage || {})[id] || [];
+    function pick(label, make) {
+      bookCommit('Replace <b>' + esc(entryName(state.book.entries[id])) + '</b> with <b>' + esc(label) + '</b> in every list that names it?',
+        null, rewritesFor(uses, function (list) { return replaceIn(list, id, make); }), uses, null, true);
+    }
+    function option(label, desc, attr, value, onPick) {
+      var o = h('<div class="ts-opt" tabindex="0"><span class="ts-avatar"></span><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div></div>');
+      o.setAttribute(attr, value);
+      o.querySelector('.ts-avatar').textContent = initials(label);
+      o.querySelector('.ts-opt-label').textContent = label;
+      o.querySelector('.ts-opt-desc').textContent = desc;
+      o.addEventListener('click', onPick);
+      dr.body.appendChild(o);
+    }
+    var others = Object.keys(state.book.entries).filter(function (k) { return k !== id; });
+    if (others.length) { dr.body.appendChild(h('<div class="ts-subhead">Address book</div>')); }
+    others.forEach(function (k) {
+      var e = state.book.entries[k];
+      option(entryName(e), [e.sms, e.email].filter(Boolean).join(' · '), 'data-entry', k, function () {
+        pick(entryName(e), function (c) { return swapped(c, { type: 'book', entryId: k }, !!e.sms, !!e.email); });
+      });
+    });
+    if ((state.users || []).length) { dr.body.appendChild(h('<div class="ts-subhead">Platform users</div>')); }
+    (state.users || []).forEach(function (u) {
+      option(userName(u), u.email + (u.phone ? ' · ' + u.phone : ' · no phone'), 'data-user', u.id.id, function () {
+        pick(userName(u), function (c) { return swapped(c, { type: 'user', userId: u.id.id }, !!u.phone, !!u.email); });
+      });
+    });
+    if (!dr.body.children.length) { dr.body.appendChild(h('<div class="ts-empty">No other entry and no platform user to replace it with.</div>')); }
+  });
+}
+
+function removeEntry(id) {
+  var entries = bookCopy(), uses = (state.book.usage || {})[id] || [];
+  var name = entryName(entries[id]);
+  delete entries[id];
+  bookCommit('Remove <b>' + esc(name) + '</b> from the address book and from every list that names it?', entries,
+    rewritesFor(uses, function (list) { return list.filter(function (c) { return !(c && c.type === 'book' && c.entryId === id); }); }), uses, null, true);
 }
 
 // -- calculated measurements (measurement/vocabulary.md §4) ---------------------------
@@ -443,8 +780,9 @@ function openCalculation(p, plan) {
 // -- saving ------------------------------------------------------------------------
 
 /** Write `write`, delete `remove` on the bound entity, re-resolve every station
- * below; asks first when more than one station is affected. */
-function commit(write, remove, what, button) {
+ * below; asks first when more than one station is affected. `before`, when
+ * given, runs once confirmed and before the write. */
+function commit(write, remove, what, button, before) {
   if (button) { button.disabled = true; }
   var noun = state.deviceBranch ? 'device' : 'station';
   return resolver.affectedStations(state.origin, io).then(function (stations) {
@@ -454,7 +792,8 @@ function commit(write, remove, what, button) {
       : Promise.resolve(true);
     return ask.then(function (ok) {
       if (!ok) { if (button) { button.disabled = false; } return; }
-      return tb.saveAttrs(state.origin, write)
+      return (before ? before() : Promise.resolve())
+        .then(function () { return tb.saveAttrs(state.origin, write); })
         .then(function () { return tb.deleteAttrs(state.origin, remove.filter(isOwn)); })
         .then(function () { return tb.resolveStations(stations); })
         .then(function () {
@@ -876,6 +1215,7 @@ function openScalar(section, fromAdd) {
     var dr = ui.openDrawer(title, esc(state.origin.kind + ' · ' + state.origin.name));
     if (fromAdd) { dr.onBack(openAdd); }
     var draft = {};
+    pendingBook = {};
     var defs = SCALARS.filter(function (d) { return d.section === section; });
     defs.forEach(function (d) { if (isOwn(d.key)) { draft[d.key] = JSON.parse(JSON.stringify(ownVal(d.key))); } });
     if (section === 'notifications' && state.ancestors.length) {
@@ -892,9 +1232,22 @@ function openScalar(section, fromAdd) {
     save.addEventListener('click', function () {
       var write = {}, remove = [];
       defs.forEach(function (d) { if (d.key in draft) { write[d.key] = draft[d.key]; } else { remove.push(d.key); } });
-      commit(write, remove, title.toLowerCase(), save);
+      commit(write, remove, title.toLowerCase(), save, newEntries(write));
     });
   });
+}
+
+/** The book write for the entries *New contact* added to `write`'s lists: in
+ * `write` itself on a customer, else a step before it. */
+function newEntries(write) {
+  var used = {};
+  LIST_KEYS.forEach(function (k) {
+    (write[k] || []).forEach(function (c) { if (c.type === 'book' && pendingBook[c.entryId]) { used[c.entryId] = pendingBook[c.entryId]; } });
+  });
+  if (!Object.keys(used).length) { return null; }
+  var entries = Object.assign(bookCopy(), used);
+  if (state.book.holder && state.book.holder.id === state.origin.id) { write[BOOK] = entries; return null; }
+  return function () { return saveBook(entries); };
 }
 
 function tokenChips(ta, onChange) {
@@ -1015,16 +1368,18 @@ function initials(n) { return String(n || '?').split(/[\s@.]+/).map(function (w)
 function contactsEditor(initial, set, setValid) {
   var people = JSON.parse(JSON.stringify(initial));
   var box = h('<div></div>');
-  var picking = false;
+  var picking = null;
   function allSev() { return G.SEVERITIES.map(function (s) { return s.id; }); }
+  // A legacy external contact, or an entry New contact is adding: still edited in place.
+  function inline(c) { return c.type === 'book' ? pendingBook[c.entryId] : c.type === 'user' ? null : c; }
   function problems() {
     return people.some(function (c) {
-      if (c.type === 'user') { return false; }
-      return (c.sms && !E164.test(c.sms)) || (c.email && !EMAIL.test(c.email));
+      var e = inline(c);
+      return !!e && ((e.sms && !E164.test(e.sms)) || (e.email && !EMAIL.test(e.email)));
     });
   }
   function commitPeople() {
-    set(people.filter(function (c) { return c.type === 'user' || c.name || c.sms || c.email; }));
+    set(people.filter(function (c) { var e = inline(c); return !e || e.name || e.sms || e.email; }));
     setValid(!problems());
   }
 
@@ -1044,54 +1399,54 @@ function contactsEditor(initial, set, setValid) {
     return sevs;
   }
 
+  /** A platform user or a book entry: name and addresses from their source, the channels to use. */
+  function personCard(c, person, kind, missing) {
+    var el = h('<div class="ts-contact"><div class="ts-contact-user"><span class="ts-avatar"></span><div class="ts-grow"><div class="ts-row-label"></div>' +
+      '<div class="ts-row-meta"></div></div><span class="ts-chip"></span></div><div class="ts-contact-via"></div></div>');
+    el.querySelector('.ts-chip').textContent = kind;
+    if (!person) {
+      el.querySelector('.ts-avatar').textContent = '?';
+      el.querySelector('.ts-row-label').textContent = missing;
+      el.querySelector('.ts-row-meta').textContent = 'No longer exists, or not visible to you; no message reaches it.';
+      return el;
+    }
+    el.querySelector('.ts-avatar').textContent = initials(person.name);
+    el.querySelector('.ts-row-label').textContent = person.name;
+    el.querySelector('.ts-row-meta').textContent = [person.email, person.phone].filter(Boolean).join(' · ') +
+      (person.phone && !E164.test(person.phone) ? ' — phone not in international format, SMS will fail' : '');
+    var via = el.querySelector('.ts-contact-via');
+    [['viaSms', 'SMS', !!person.phone], ['viaEmail', 'E-mail', !!person.email]].forEach(function (x) {
+      var tip = !x[2] && x[0] === 'viaSms' && c.type === 'user' ? ' data-tip="noPhone"' : '';
+      var lab = h('<label class="ts-switch' + (x[2] ? '' : ' off') + '"' + tip + '><input type="checkbox"> ' + x[1] + '</label>');
+      var cb = lab.querySelector('input');
+      cb.disabled = !x[2];
+      cb.checked = !!c[x[0]] && x[2];
+      cb.addEventListener('change', function () { c[x[0]] = cb.checked; commitPeople(); });
+      via.appendChild(lab);
+    });
+    return el;
+  }
+
   function render() {
     box.innerHTML = '';
     people.forEach(function (c, i) {
       c.severities = c.severities || allSev();
       var head = h('<div class="ts-contact-head"><span class="ts-summary">Receives</span> ' + info('severity') +
         '<span class="ts-spacer"></span><button type="button" class="ts-icon-btn" title="Remove contact">' + ICON.close + '</button></div>');
-      var el;
+      var el, e = inline(c);
       if (c.type === 'user') {
         var u = userById(c.userId);
-        el = h('<div class="ts-contact"><div class="ts-contact-user"><span class="ts-avatar"></span><div class="ts-grow"><div class="ts-row-label"></div>' +
-          '<div class="ts-row-meta"></div></div><span class="ts-chip">Platform user</span></div><div class="ts-contact-via"></div></div>');
-        if (!u) {
-          el.querySelector('.ts-avatar').textContent = '?';
-          el.querySelector('.ts-row-label').textContent = 'Unknown user';
-          el.querySelector('.ts-row-meta').textContent = 'No longer exists, or not visible to you; no message reaches it.';
-        } else {
-          el.querySelector('.ts-avatar').textContent = initials(userName(u));
-          el.querySelector('.ts-row-label').textContent = userName(u);
-          el.querySelector('.ts-row-meta').textContent = [u.email, u.phone].filter(Boolean).join(' · ') +
-            (u.phone && !E164.test(u.phone) ? ' — phone not in international format, SMS will fail' : '');
-          var via = el.querySelector('.ts-contact-via');
-          [['viaSms', 'SMS', !!u.phone], ['viaEmail', 'E-mail', !!u.email]].forEach(function (x) {
-            var lab = h('<label class="ts-switch' + (x[2] ? '' : ' off') + '"' + (x[2] || x[0] !== 'viaSms' ? '' : ' data-tip="noPhone"') + '><input type="checkbox"> ' + x[1] + '</label>');
-            var cb = lab.querySelector('input');
-            cb.disabled = !x[2];
-            cb.checked = !!c[x[0]] && x[2];
-            cb.addEventListener('change', function () { c[x[0]] = cb.checked; commitPeople(); });
-            via.appendChild(lab);
-          });
-        }
+        el = personCard(c, u && { name: userName(u), email: u.email, phone: u.phone }, 'Platform user', 'Unknown user');
+      } else if (!e) {
+        var b = state.book.entries[c.entryId];
+        el = personCard(c, b && { name: entryName(b), email: b.email, phone: b.sms }, 'Address book', 'Unknown entry');
       } else {
-        el = h('<div class="ts-contact"><div class="ts-contact-grid"><input class="ts-input" data-f="name" placeholder="Name or role">' +
-          '<input class="ts-input" data-f="sms" placeholder="SMS: +41 79 123 45 67"><input class="ts-input" data-f="email" placeholder="E-mail: name@example.ch"></div>' +
-          '<div class="ts-field-error"></div></div>');
-        var err = el.querySelector('.ts-field-error');
-        var check = function () {
-          err.textContent = c.sms && !E164.test(c.sms) ? 'SMS number must be international: + country code, no spaces (e.g. +41791234567).'
-            : c.email && !EMAIL.test(c.email) ? 'Not a valid e-mail address.' : '';
-        };
-        el.querySelectorAll('[data-f]').forEach(function (inp) {
-          var fld = inp.getAttribute('data-f');
-          inp.value = c[fld] || '';
-          inp.addEventListener('input', function () {
-            c[fld] = fld === 'sms' ? inp.value.replace(/\s+/g, '') : inp.value.trim();
-            check(); commitPeople();
-          });
-        });
-        check();
+        el = h('<div class="ts-contact"></div>');
+        el.appendChild(entryFields(e, function () {
+          if (c.type === 'book') { c.viaSms = !!e.sms; c.viaEmail = !!e.email; }
+          commitPeople();
+        }));
+        if (c.type === 'book') { el.appendChild(h('<div class="ts-field-hint">New in the address book</div>')); }
       }
       el.appendChild(head);
       el.appendChild(sevToggles(c));
@@ -1100,25 +1455,37 @@ function contactsEditor(initial, set, setValid) {
     });
 
     if (picking) {
-      var taken = people.filter(function (c) { return c.type === 'user'; }).map(function (c) { return c.userId; });
-      var pick = h('<div class="ts-user-pick"><div class="ts-search">' + ICON.search + '<input class="ts-input" placeholder="Search users"></div><div></div></div>');
+      var taken = people.map(contactKey);
+      var pick = h('<div class="ts-user-pick"><div class="ts-search">' + ICON.search + '<input class="ts-input"></div><div></div></div>');
       var q = pick.querySelector('input'), ul = pick.lastChild;
+      q.placeholder = picking === 'user' ? 'Search users' : 'Search the address book';
+      var candidates = picking === 'user'
+        ? (state.users || []).map(function (u) {
+          return { key: 'u:' + u.id.id, name: userName(u), desc: u.email + (u.phone ? ' · ' + u.phone : ' · no phone'),
+                   contact: { type: 'user', userId: u.id.id, viaSms: !!u.phone, viaEmail: true } };
+        })
+        : Object.keys(state.book.entries).map(function (id) {
+          var b = state.book.entries[id];
+          return { key: 'b:' + id, name: entryName(b), desc: [b.sms, b.email].filter(Boolean).join(' · '),
+                   contact: { type: 'book', entryId: id, viaSms: !!b.sms, viaEmail: !!b.email } };
+        });
       var fill = function () {
         ul.innerHTML = '';
-        (state.users || []).filter(function (u) {
-          return taken.indexOf(u.id.id) < 0 && (userName(u) + ' ' + u.email).toLowerCase().indexOf(q.value.toLowerCase()) >= 0;
-        }).forEach(function (u) {
+        candidates.filter(function (x) {
+          return taken.indexOf(x.key) < 0 && (x.name + ' ' + x.desc).toLowerCase().indexOf(q.value.toLowerCase()) >= 0;
+        }).forEach(function (x) {
           var o = h('<div class="ts-opt" tabindex="0"><span class="ts-avatar"></span><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div></div>');
-          o.querySelector('.ts-avatar').textContent = initials(userName(u));
-          o.querySelector('.ts-opt-label').textContent = userName(u);
-          o.querySelector('.ts-opt-desc').textContent = u.email + (u.phone ? ' · ' + u.phone : ' · no phone');
+          o.setAttribute('data-pick', x.key);
+          o.querySelector('.ts-avatar').textContent = initials(x.name);
+          o.querySelector('.ts-opt-label').textContent = x.name;
+          o.querySelector('.ts-opt-desc').textContent = x.desc;
           o.addEventListener('click', function () {
-            people.push({ type: 'user', userId: u.id.id, viaSms: !!u.phone, viaEmail: true, severities: allSev() });
-            picking = false; commitPeople(); render();
+            people.push(Object.assign({ severities: allSev() }, x.contact));
+            picking = null; commitPeople(); render();
           });
           ul.appendChild(o);
         });
-        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">No other user.</div>')); }
+        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">' + (picking === 'user' ? 'No other user.' : 'No other entry.') + '</div>')); }
       };
       q.addEventListener('input', fill);
       fill();
@@ -1127,11 +1494,17 @@ function contactsEditor(initial, set, setValid) {
     }
 
     var add = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="user">' + ICON.plus + 'Platform user</button>' +
-      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + 'External contact</button></div>');
-    add.querySelector('[data-a=user]').addEventListener('click', function () { picking = !picking; render(); });
+      (Object.keys(state.book.entries).length ? '<button type="button" class="ts-btn ghost" data-a="book">' + ICON.plus + 'From the address book</button>' : '') +
+      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + 'New contact</button></div>');
+    add.querySelector('[data-a=user]').addEventListener('click', function () { picking = picking === 'user' ? null : 'user'; render(); });
+    if (add.querySelector('[data-a=book]')) {
+      add.querySelector('[data-a=book]').addEventListener('click', function () { picking = picking === 'book' ? null : 'book'; render(); });
+    }
     add.querySelector('[data-a=ext]').addEventListener('click', function () {
-      picking = false;
-      people.push({ type: 'external', name: '', sms: '', email: '', severities: allSev() });
+      picking = null;
+      var id = 'b' + Math.random().toString(36).slice(2, 10);
+      pendingBook[id] = { name: '', sms: '', email: '' };
+      people.push({ type: 'book', entryId: id, viaSms: false, viaEmail: false, severities: allSev() });
       render();
       var ins = box.querySelectorAll('.ts-contact [data-f=name]');
       ins[ins.length - 1].focus();

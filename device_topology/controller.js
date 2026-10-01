@@ -5,6 +5,10 @@
  * channels (CA-1), and on a LOGR3 or LOGR4 the commands that reconfigure it
  * (CA-4, TC-8/9). Read-only for anyone else.
  *
+ * In its header, for the same user, *Silence* (CA-19) and the device's row
+ * menu: *Replace device…* (CA-13), *Out of service…* or *Back in service*
+ * (CA-23). After a replacement, a follow-up card lists what is still to do.
+ *
  * Laid out as the product image and the device's status beside its topology:
  * the peripherals, one foldable card per position; below both, the stations it
  * feeds and their channels. The layout depends on the family:
@@ -33,7 +37,7 @@
  * view a station opens, and `devicesDashboardId`, whose dry contact interface
  * view the DRYC card opens.
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js, calculations.js and lifecycle.js.
  */
 
 window.TerrySenseDeviceTopology = function (ctx, container, opts) {
@@ -45,6 +49,8 @@ var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
+var life = window.TerrySenseLifecycle(ui, tb);
+var calc = window.TerrySenseCalculations(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info, metric = ui.metric;
 var camel = resolver.camelKind;
 
@@ -62,6 +68,8 @@ var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
+// A source is silent past this many of its intervals (HEALTH.md §2).
+var SILENT_INTERVALS = 3;
 // Device bookkeeping, not readings: radio, uplink markers, the dry contact interface's own counters.
 var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRuleCount', 'dryc.drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
@@ -140,11 +148,12 @@ function errText(err) { return (err && (err.message || (err.error && err.error.m
 var state = {
   device: null, client: {}, server: {}, latest: {}, faults: {}, peripherals: {}, kinds: {}, names: {},
   open: {}, loadedAt: 0, writable: false, me: null,
-  bindings: [], wiring: {}
+  bindings: [], wiring: {}, calcAttributes: {}, followUp: null
 };
 
 function deviceEntity() {
-  return { entityType: 'DEVICE', id: state.device.id.id, ownerId: state.device.ownerId && state.device.ownerId.id };
+  return { entityType: 'DEVICE', id: state.device.id.id, name: state.device.name, label: state.device.label,
+           ownerId: state.device.ownerId && state.device.ownerId.id };
 }
 
 /** bus | logr2 | other: how the device is laid out and what it lets change. */
@@ -158,6 +167,7 @@ function loadDefaults() {
     state.peripherals = parseJson(a['config.peripherals']) || {};
     state.kinds = parseJson(a['config.kinds']) || {};
     state.names = parseJson(a['config.channelNames']) || {};
+    state.calcAttributes = parseJson(a['config.calcAttributes']) || {};
   });
 }
 
@@ -178,7 +188,7 @@ function loadDevice(id) {
       if (a.type.indexOf(FAULT_PREFIX) === 0) { state.faults[a.type.slice(FAULT_PREFIX.length)] = a; }
     });
     var bus = family() === 'bus';
-    var keys = (got[3] || []).filter(function (k) {
+    var keys = tb.readingKeys(got[3]).filter(function (k) {
       return bus ? parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0 : !/\.status$/.test(k);
     });
     if (!keys.length) { return {}; }
@@ -311,8 +321,21 @@ function logr2Parts(keys) {
   return parts;
 }
 
+function retiredName(n) { return !!(state.names[n] || {}).retired; }
+
+/** The names this device's channels carry on its stations. */
+function mappedNames() {
+  var out = {};
+  state.bindings.forEach(function (b) {
+    Object.keys(mineOf(b.entries)).forEach(function (c) { out[resolver.splitChannelKey(c).name] = true; });
+  });
+  return out;
+}
+
+/** The names a source of `kind` can be stored under: a retired name only where a channel of this device already carries it. */
 function namesForKind(kind) {
-  return Object.keys(state.names).filter(function (n) { return camel(state.names[n].kind) === kind; })
+  var mapped = mappedNames();
+  return Object.keys(state.names).filter(function (n) { return camel(state.names[n].kind) === kind && (!retiredName(n) || mapped[n]); })
     .sort(function (a, b) {
       return !!state.names[a].diagnostic - !!state.names[b].diagnostic || (state.names[a].label || a).localeCompare(state.names[b].label || b);
     });
@@ -336,7 +359,8 @@ function mappable() {
   return sources().sort(function (a, b) { return a.position - b.position || a.sourceKey.localeCompare(b.sourceKey); }).map(function (s) {
     var node = nodes[s.position], p = node && state.peripherals[node.type];
     var m = measureOf(s, node);
-    var name = m && state.names[m.defaultName] ? m.defaultName : namesForKind(s.kind)[0] || null;
+    var name = m && state.names[m.defaultName] && !retiredName(m.defaultName) ? m.defaultName
+      : namesForKind(s.kind).filter(function (n) { return !retiredName(n); })[0] || null;
     return {
       key: s.sourceKey, label: sourceLabel(s, node), group: 'p' + s.position,
       groupLabel: s.position === 0 ? 'LOGR itself' : s.position + ' · ' + (p ? p.displayName : node ? node.type : 'Unknown peripheral'),
@@ -543,17 +567,6 @@ function stationDevices(stationId) {
     filters: [{ relationType: 'Contains', entityTypes: ['DEVICE'] }]
   };
   return tb.post('/api/relations', query).then(function (rels) { return (rels || []).map(function (r) { return r.to.id; }); });
-}
-
-/** A new station, owned by the device's owner, `Contains`-related from its parent. */
-function createStation(name, parent) {
-  var owner = ownerOf();
-  var body = { name: name, type: 'Station' };
-  if (owner.entityType === 'CUSTOMER') { body.customerId = { id: owner.id, entityType: 'CUSTOMER' }; }
-  return tb.post('/api/asset', body).then(function (created) {
-    var station = { entityType: 'ASSET', id: created.id.id, name: created.name, kind: 'Station' };
-    return relate(parent.id, station.id, 'ASSET').then(function () { return station; });
-  });
 }
 
 /** Pick a station, a new one included, or the channels of one already fed. */
@@ -786,10 +799,9 @@ function save(station, entries, chosen, create) {
       ? ' These channels move from another device to this one, their history kept: <b>' + takenOver.map(esc).join(', ') + '</b>.' : '');
   ui.confirm(text, 'Save').then(function (ok) {
     if (!ok) { return; }
-    return (create ? createStation(create.name, create.parent) : Promise.resolve(station)).then(function (s) {
+    var map = { 'config.channelMap': resolver.buildMap(next) };
+    return (create ? tb.createStation(create.name, create.parent, map) : tb.saveAttrs(station, map).then(function () { return station; })).then(function (s) {
       station = s;
-      return tb.saveAttrs(station, { 'config.channelMap': resolver.buildMap(next) });
-    }).then(function () {
       return relateToMap(station.id, next);
     }).then(function () {
       return tb.resolveStations([station]);
@@ -861,49 +873,121 @@ function deleteSensorData(part) {
   });
 }
 
-// -- replace device (DEVICE_VIEW.md §2) -------------------------------------------------------
+// -- replace device (DEVICE_VIEW.md §2, CA-13) -------------------------------------------------
 
 var PROVENANCE_KEY = /^(uplinkCause|uplinkLatest|rssi|snr)$|\.status$/;
+var DRYC_KEY = /^(dryc|drycRule)\./;
 
-/** Replace this device by another of the same owner on every station it feeds:
- * each of its channels moves to a source key of the replacement — the same key
- * when it reports one, else one of the same kind — and a channel left unmatched
- * leaves the station, which keeps its history. This device keeps its own. */
+/** The stations whose channels this device feeds and the user may write. */
+function replaceable() {
+  return state.bindings.filter(function (b) { return b.writable && Object.keys(mineOf(b.entries)).length; });
+}
+
+/** Every key this device reports or feeds a station with. */
+function ownKeys() {
+  var keys = {};
+  Object.keys(state.latest).forEach(function (k) { keys[k] = true; });
+  state.bindings.forEach(function (b) {
+    var mine = mineOf(b.entries);
+    Object.keys(mine).forEach(function (c) { keys[mine[c]] = true; });
+  });
+  return Object.keys(keys);
+}
+
+/** What can go over to the replacement, each `{id, text, keys}`: its label, its
+ * register, its own limits and retention. The inactivity timeout follows the
+ * register's interval, as the register's own save writes it. */
+function carryRows() {
+  var s = state.server, rows = [];
+  if (state.device.label) { rows.push({ id: 'label', text: 'Label: ' + state.device.label, keys: [] }); }
+  var reg = Object.keys(s).filter(function (k) { return /^register\./.test(k); }).sort();
+  if (reg.length) {
+    rows.push({ id: 'register', text: 'Register: ' + reg.map(function (k) { return k.slice('register.'.length); }).join(', '),
+                keys: reg.concat(s['register.intervalSeconds'] !== undefined && s.inactivityTimeout !== undefined ? ['inactivityTimeout'] : []) });
+  }
+  var limits = Object.keys(s).filter(function (k) { return /^channel\./.test(k) || k === 'config.ttlDays'; }).sort();
+  if (limits.length) {
+    rows.push({ id: 'limits', text: 'Own limits and retention: ' + limits.length + (limits.length === 1 ? ' setting' : ' settings'), keys: limits });
+  }
+  return rows;
+}
+
+/** Replace this device by another of the same owner, in one save: each channel
+ * it feeds moves to a source key of the replacement — the same key when it has
+ * it, else one of the same kind — and a channel left unmatched leaves its
+ * station, which keeps its history. This device keeps its own. */
 function replaceDrawer() {
-  var me = state.device.id.id, owner = ownerOf();
+  var me = state.device.id.id, owner = ownerOf(), bound = replaceable(), candidates = {};
   var dr = ui.openDrawer('Replace device', esc(state.device.label || state.device.name));
   dr.el.classList.add('wide');
   var field = dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Replacement</span></div>' +
     '<div class="ts-ctl"><select class="ts-select wide" data-f="device"><option value="">Pick a device</option></select></div>' +
     '<div class="ts-field-hint">Every channel this device feeds moves to the replacement; each station keeps its history, this device keeps its own.</div></div>'));
   var sel = field.querySelector('select');
-  var table = dr.body.appendChild(h('<div class="ts-binds"></div>'));
+  var table = dr.body.appendChild(h('<div class="ts-binds" data-f="match"></div>'));
+  var unmatched = dr.body.appendChild(h('<div class="ts-field-hint" data-f="unmatched"></div>'));
+  var rows = carryRows();
+  if (rows.length) {
+    var carry = dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Carry over</span></div><div class="ts-carry"></div></div>'));
+    rows.forEach(function (r) {
+      var row = carry.querySelector('.ts-carry').appendChild(h('<label class="ts-switch"><input type="checkbox" checked> <span></span></label>'));
+      row.querySelector('input').setAttribute('data-carry', r.id);
+      row.querySelector('span').textContent = r.text;
+    });
+  }
+
+  // The owner's devices, the free ones first, then each under the stations it feeds.
   var url = owner.entityType === 'CUSTOMER' ? '/api/customer/' + owner.id + '/devices' : '/api/tenant/devices';
   tb.getAll(url, {}).then(function (list) {
-    list.filter(function (d) { return d.id.id !== me; }).sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (d) {
-      var o = document.createElement('option');
-      o.value = d.id.id;
-      o.textContent = d.name + (d.label ? ' · ' + d.label : '') + ' (' + d.type + ')';
-      sel.appendChild(o);
+    return Promise.all(list.filter(function (d) { return d.id.id !== me && d.ownerId.id === owner.id; }).map(function (d) {
+      return tb.deviceParents({ id: d.id.id }).then(function (parents) {
+        d.feeds = parents.map(function (p) { return p.name; }).sort().join(', ');
+        return d;
+      });
+    }));
+  }).then(function (list) {
+    var groups = {};
+    list.sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (d) {
+      candidates[d.id.id] = d;
+      (groups[d.feeds] = groups[d.feeds] || []).push(d);
+    });
+    Object.keys(groups).sort(function (a, b) { return !!a - !!b || a.localeCompare(b); }).forEach(function (feeds) {
+      var group = sel.appendChild(document.createElement('optgroup'));
+      group.label = feeds ? 'Feeding ' + feeds : 'Free';
+      groups[feeds].forEach(function (d) {
+        var o = group.appendChild(document.createElement('option'));
+        o.value = d.id.id;
+        o.textContent = d.name + (d.label ? ' · ' + d.label : '') + ' (' + d.type + ')';
+      });
     });
   });
-  var bound = state.bindings.filter(function (b) { return b.writable && Object.keys(mineOf(b.entries)).length; });
+
+  function showUnmatched() {
+    var left = Array.prototype.filter.call(table.querySelectorAll('select[data-station]'), function (p) { return !p.value; });
+    unmatched.textContent = left.length ? 'Unmatched, leaving their station: ' + left.map(function (p) { return p.dataset.channel; }).join(', ') : '';
+  }
+  table.addEventListener('change', showUnmatched);
+
   sel.addEventListener('change', function () {
     table.innerHTML = '';
-    if (!sel.value) { return; }
-    // What the replacement reports, and — for a LOGR3 or LOGR4 not yet heard
-    // from — what it subscribes to.
+    unmatched.textContent = '';
+    var d = candidates[sel.value];
+    if (!d) { return; }
     Promise.all([
-      tb.get('/api/plugins/telemetry/DEVICE/' + sel.value + '/keys/timeseries').catch(function () { return []; }),
-      tb.attrsMap({ entityType: 'DEVICE', id: sel.value }, 'CLIENT_SCOPE')
+      tb.get('/api/plugins/telemetry/DEVICE/' + d.id.id + '/keys/timeseries').catch(function () { return []; }),
+      tb.attrsMap({ entityType: 'DEVICE', id: d.id.id }, 'CLIENT_SCOPE')
     ]).then(function (got) {
-      var seen = {};
-      (got[0] || []).forEach(function (k) { seen[k] = true; });
+      var how = {}, reported = tb.readingKeys(got[0]);
+      reported.forEach(function (k) { how[k] = 'reports'; });
       Object.keys(got[1] || {}).forEach(function (a) {
         var m = /^subscriptions\.(.+)\.(?:enabled|interval)$/.exec(a);
-        if (m) { seen[m[1]] = true; }
+        if (m && !how[m[1]]) { how[m[1]] = 'subscribes'; }
       });
-      var offered = Object.keys(seen).filter(function (k) { return !PROVENANCE_KEY.test(k); }).sort();
+      // A replacement of the same family not heard from yet will report what this one reports.
+      if (d.type === state.device.type && !reported.length) {
+        ownKeys().forEach(function (k) { if (!how[k]) { how[k] = 'expected'; } });
+      }
+      var offered = Object.keys(how).filter(function (k) { return !PROVENANCE_KEY.test(k) && NOT_READINGS.indexOf(k) < 0; }).sort();
       bound.forEach(function (b) {
         var mine = mineOf(b.entries);
         var grp = table.appendChild(h('<div class="ts-bind-group" open><div class="ts-section-head"></div></div>'));
@@ -921,39 +1005,195 @@ function replaceDrawer() {
           pick.dataset.channel = c;
           pick.appendChild(h('<option value="">leaves the station</option>'));
           (same.length ? same : offered).forEach(function (k) {
-            var o = document.createElement('option'); o.value = k; o.textContent = k; pick.appendChild(o);
+            var o = pick.appendChild(document.createElement('option'));
+            o.value = k;
+            o.textContent = k + (how[k] === 'expected' ? ' (expected)' : '');
           });
           pick.value = guess;
         });
       });
+      showUnmatched();
     }).catch(function (err) { ui.toast('Could not read the replacement: ' + errText(err), 'error'); });
   });
+
   ui.drawerActions(dr, 'Replace').addEventListener('click', function () {
-    var target = sel.value;
-    if (!target) { ui.toast('Pick the replacement', 'error'); return; }
+    var d = candidates[sel.value];
+    if (!d) { ui.toast('Pick the replacement', 'error'); return; }
+    var target = { entityType: 'DEVICE', id: d.id.id, name: d.name, label: d.label, kind: d.type };
     var picks = Array.prototype.slice.call(table.querySelectorAll('select[data-station]'));
     var dropped = picks.filter(function (p) { return !p.value; }).map(function (p) { return p.dataset.channel; });
-    ui.confirm('Move ' + (picks.length - dropped.length) + ' channel(s) to <b>' + esc(sel.selectedOptions[0].textContent) + '</b>?' +
-      (dropped.length ? ' These leave their station, which keeps their history: <b>' + dropped.map(esc).join(', ') + '</b>.' : ''), 'Replace')
+    var carried = rows.filter(function (r) { return dr.body.querySelector('[data-carry=' + r.id + ']').checked; });
+    ui.confirm('Move ' + (picks.length - dropped.length) + ' channel(s) to <b>' + esc(d.name) + '</b>?' +
+      (dropped.length ? ' These leave their station, which keeps their history: <b>' + dropped.map(esc).join(', ') + '</b>.' : '') +
+      (carried.length ? ' It takes over: ' + carried.map(function (r) { return esc(r.text); }).join('; ') + '.' : ''), 'Replace')
       .then(function (ok) {
         if (!ok) { return; }
+        var moved = [];
         return Promise.all(bound.map(function (b) {
-          var next = {};
+          var next = {}, keys = [];
           Object.keys(b.entries).forEach(function (c) {
             if (b.entries[c].device !== me) { next[c] = b.entries[c]; return; }
             var p = picks.filter(function (x) { return x.dataset.station === b.station.id && x.dataset.channel === c; })[0];
-            if (p && p.value) { next[c] = { device: target, key: p.value }; }
+            if (p && p.value) { next[c] = { device: target.id, key: p.value }; keys.push(b.entries[c].key); }
           });
+          moved.push({ station: b.station, attrs: b.attrs, channels: Object.keys(next).filter(function (c) { return next[c].device === target.id; }), keys: keys });
           return tb.saveAttrs(b.station, { 'config.channelMap': resolver.buildMap(next) }).then(function () {
             return relateToMap(b.station.id, next);
-          }).then(function () { return tb.resolveStations([b.station]); });
+          });
         })).then(function () {
+          var write = {};
+          carried.forEach(function (r) { r.keys.forEach(function (k) { write[k] = state.server[k]; }); });
+          return tb.saveAttrs(target, write).then(function () {
+            return carried.some(function (r) { return r.id === 'label'; }) ? tb.setLabel(target, state.device.label) : null;
+          });
+        }).then(function () {
+          return tb.resolveStations(bound.map(function (b) { return b.station; }).concat([target]));
+        }).then(function () {
+          state.followUp = { target: target, steps: followUpSteps(target, moved) };
           ui.toast('Device replaced');
           ui.closeDrawer();
           return refresh();
         });
       }).catch(function (err) { ui.toast('Not replaced: ' + errText(err), 'error'); });
   });
+}
+
+/** The `calc.*` zero references of a station's calculated channels that read a channel now fed by the replacement. */
+function zeroReferences(m) {
+  var fed = m.channels.map(function (c) { return resolver.splitChannelKey(c).name; }), out = [];
+  resolver.calculationPlan(m.attrs, state.names).filter(function (p) { return p.on; }).forEach(function (p) {
+    p.reads.forEach(function (a) {
+      var spec = state.calcAttributes[a];
+      if (spec && spec.reading && fed.indexOf(spec.reading) >= 0 && out.indexOf(a) < 0) { out.push(a); }
+    });
+  });
+  return out;
+}
+
+/** What a replacement leaves to do, each step applying only where it has something to do. */
+function followUpSteps(target, moved) {
+  var steps = [];
+  var dryc = moved.some(function (m) {
+    var rules = parseJson(m.attrs['dryc.rules']);
+    return rules && (rules.rules || []).length && m.keys.some(function (k) { return DRYC_KEY.test(k); });
+  });
+  if (dryc && opts.devicesDashboardId) {
+    var send = { a: 'dryc', label: 'Send the DRYC rules to ' + target.name, action: 'Send…' };
+    send.run = function () {
+      send.done = true;
+      tb.openDashboard(opts.devicesDashboardId, 'relays', target);
+    };
+    steps.push(send);
+  }
+  moved.forEach(function (m) {
+    var refs = zeroReferences(m);
+    if (!refs.length) { return; }
+    var step = { a: 'zero', label: 'Set the zero reference on ' + m.station.name, action: 'Set…' };
+    step.run = function () { zeroDrawer(step, m.station, refs); };
+    steps.push(step);
+  });
+  steps.push({ a: 'out-of-service', label: 'Mark ' + (state.device.label || state.device.name) + ' out of service', action: 'Out of service…',
+    run: function () { life.outOfService(deviceEntity(), refresh); } });
+  return steps;
+}
+
+/** The station's zero references, taken again from the replacement's readings. */
+function zeroDrawer(step, station, refs) {
+  var dr = ui.openDrawer('Set the zero reference', esc(station.name));
+  dr.body.appendChild(h('<div class="ts-field-hint">The replacement reads its own zero: take its reading as the reference, or keep the value.</div>'));
+  tb.attrsMap(station).then(function (attrs) {
+    var form = calc.form(station, attrs, refs, { names: state.names, attributes: state.calcAttributes });
+    dr.body.appendChild(form.el);
+    ui.drawerActions(dr, 'Save').addEventListener('click', function () {
+      var write = form.values();
+      if (!write) { ui.toast('Enter a number for each reference', 'error'); return; }
+      calc.save(station, write).then(function () {
+        step.done = true;
+        ui.closeDrawer();
+        ui.toast('Zero reference saved');
+        render();
+      }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+    });
+  });
+}
+
+/** The follow-up card of the last replacement, until every step is done or it is dismissed. */
+function followUpCard() {
+  var f = state.followUp;
+  if (!f) { return null; }
+  f.steps.forEach(function (s) { if (s.a === 'out-of-service') { s.done = !!tb.serviceOf(state.server).state; } });
+  if (f.steps.every(function (s) { return s.done; })) { state.followUp = null; return null; }
+  var card = ui.followUp('Replaced by ' + f.target.name + ': next steps', f.steps, function () { state.followUp = null; });
+  card.setAttribute('data-followup', f.target.name);
+  return card;
+}
+
+// -- bus moves (CA-14) --------------------------------------------------------------------------
+
+/** Positions whose wired sources went silent while another position, feeding
+ * no station, reports the same peripheral type — by its topology type when
+ * both are listed, else by the kinds it measures: `[{from, to, since}]`. */
+function busMoves(nodes, srcs) {
+  var base = Number(state.client['status.baseIntervalSeconds']) || 0, byPos = {}, moves = [];
+  srcs.forEach(function (s) { if (s.position) { (byPos[s.position] = byPos[s.position] || []).push(s); } });
+  function ts(s) { return (state.latest[s.sourceKey] || {}).ts || 0; }
+  function newest(list) { return Math.max.apply(null, list.map(ts)); }
+  function silent(s) { var iv = Number(s.interval) || base; return !!iv && Date.now() - ts(s) > SILENT_INTERVALS * iv * 1000; }
+  Object.keys(byPos).forEach(function (p) {
+    var wired = byPos[p].filter(function (s) { return state.wiring[s.sourceKey]; });
+    if (!wired.length || !newest(wired) || !wired.every(silent)) { return; }
+    var kinds = wired.map(function (s) { return s.kind; });
+    var to = Object.keys(byPos).filter(function (q) {
+      var own = byPos[q];
+      if (q === p || own.some(function (s) { return state.wiring[s.sourceKey]; }) || newest(own) <= newest(wired) || own.every(silent)) { return false; }
+      return nodes[p] && nodes[q] ? nodes[p].type === nodes[q].type
+        : kinds.every(function (k) { return own.some(function (s) { return s.kind === k; }); });
+    })[0];
+    if (to) { moves.push({ from: Number(p), to: Number(to), since: newest(wired) }); }
+  });
+  return moves;
+}
+
+function moveBanner(move) {
+  var el = h('<div class="ts-banner warn" data-banner="move">' + ICON.info + '<span class="ts-grow"></span></div>');
+  el.querySelector('span').textContent = 'Position ' + move.from + ' silent since ' + ui.when(move.since) + ', position ' + move.to + ' reports the same type';
+  if (state.writable) {
+    el.appendChild(h('<button type="button" class="ts-btn" data-a="move-channels">Move channels</button>'))
+      .addEventListener('click', function () { moveChannels(move); });
+  }
+  return el;
+}
+
+/** Rewrite this device's map entries from one position to the other; each channel keeps its history. */
+function moveChannels(move) {
+  var me = state.device.id.id, from = new RegExp('^p' + move.from + '\\.'), to = 'p' + move.to + '.';
+  function moving(e) { return e.device === me && from.test(e.key); }
+  var touched = state.bindings.filter(function (b) {
+    return b.writable && Object.keys(b.entries).some(function (c) { return moving(b.entries[c]); });
+  });
+  var items = [];
+  touched.forEach(function (b) {
+    Object.keys(b.entries).filter(function (c) { return moving(b.entries[c]); }).forEach(function (c) {
+      items.push('<li>' + esc(b.station.name) + ' · ' + esc(c) + ': ' + esc(b.entries[c].key) + ' → ' + esc(b.entries[c].key.replace(from, to)) + '</li>');
+    });
+  });
+  ui.confirm('Move these channels from position ' + move.from + ' to position ' + move.to + '? Each keeps its history.<ul>' + items.join('') + '</ul>', 'Move')
+    .then(function (ok) {
+      if (!ok) { return; }
+      return Promise.all(touched.map(function (b) {
+        var next = {};
+        Object.keys(b.entries).forEach(function (c) {
+          var e = b.entries[c];
+          next[c] = moving(e) ? { device: e.device, key: e.key.replace(from, to) } : e;
+        });
+        return tb.saveAttrs(b.station, { 'config.channelMap': resolver.buildMap(next) });
+      })).then(function () {
+        return tb.resolveStations(touched.map(function (b) { return b.station; }));
+      }).then(function () {
+        ui.toast('Channels moved to position ' + move.to);
+        return refresh();
+      });
+    }).catch(function (err) { ui.toast('Not moved: ' + errText(err), 'error'); });
 }
 
 // -- register -------------------------------------------------------------------------------
@@ -1049,13 +1289,16 @@ function registerDrawer() {
 
 root.innerHTML = '';
 var cardEl = h('<div class="ts-card ts-readonly ts-dev"><div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div><div class="ts-head-text">' +
-  '<div class="ts-title"><span>Device</span></div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
+  '<div class="ts-title"><span>Device</span></div><div class="ts-subtitle"></div></div><span class="ts-dev-chips"></span>' +
+  '<span class="ts-chip level" hidden></span><div class="ts-dev-acts"></div></div>' +
   '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '<div class="ts-foot"><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div></div>');
 root.appendChild(cardEl);
 var bodyEl = cardEl.querySelector('.ts-body');
 var summaryEl = cardEl.querySelector('.ts-summary');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
+var chipsEl = cardEl.querySelector('.ts-dev-chips');
+var actsEl = cardEl.querySelector('.ts-dev-acts');
 
 new ResizeObserver(function () { cardEl.classList.toggle('narrow', cardEl.clientWidth < 720); }).observe(cardEl);
 
@@ -1074,6 +1317,9 @@ function render() {
   chip.textContent = d.type || '';
 
   bodyEl.innerHTML = '';
+  renderService();
+  var follow = followUpCard();
+  if (follow) { bodyEl.appendChild(follow); }
   var top = bodyEl.appendChild(h('<div class="ts-dev-top"><div class="ts-dev-status"></div><div class="ts-dev-topo"></div></div>'));
   renderStatus(top.firstChild);
   top.lastChild.appendChild(topologySection());
@@ -1084,11 +1330,35 @@ function render() {
   summaryEl.textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
 }
 
-function firmwareOf() {
-  if (state.client['deviceInfo.fwVersion']) { return state.client['deviceInfo.fwVersion']; }
-  var parts = ['logr.firmwareMajor', 'logr.firmwareMinor', 'logr.firmwarePatch'].map(function (k) { return state.latest[k] && state.latest[k].value; });
-  return parts[0] !== undefined ? parts.map(function (p) { return p === undefined ? '?' : p; }).join('.') : null;
+/** The service chips and the silence banner for everyone; *Silence* and the row menu for a writer. */
+function renderService() {
+  var sv = tb.serviceOf(state.server), until = !sv.state && sv.silencedUntil;
+  chipsEl.innerHTML = '';
+  life.deviceChips(state.server).forEach(function (c) { chipsEl.appendChild(c); });
+  if (until) {
+    var banner = bodyEl.appendChild(h('<div class="ts-banner ts-dev-silence">' + ICON.mute + '<span class="ts-grow"></span></div>'));
+    banner.querySelector('span').textContent = ui.silenceText(until) + (sv.silencedBy ? ' by ' + sv.silencedBy : '') +
+      ': device alarms are raised and shown, nobody is notified.';
+    if (state.writable) {
+      banner.appendChild(h('<button type="button" class="ts-btn" data-a="end-silence">End now</button>'))
+        .addEventListener('click', function () { life.endSilence(deviceEntity(), refresh); });
+    }
+  }
+  actsEl.innerHTML = '';
+  if (!state.writable) { return; }
+  if (!sv.state) {
+    var silence = actsEl.appendChild(h('<button type="button" class="ts-btn" data-a="silence">' + ICON.mute + 'Silence</button>'));
+    silence.addEventListener('click', function () { life.silenceMenu(silence, deviceEntity(), refresh); });
+  }
+  actsEl.appendChild(ui.rowMenu(function () {
+    return [
+      replaceable().length && { a: 'replace', label: 'Replace device…', run: replaceDrawer },
+      life.serviceItem(deviceEntity(), state.server, refresh)
+    ];
+  }, { title: 'Device actions' }));
 }
+
+function firmwareOf() { return state.client['deviceInfo.fwVersion'] || null; }
 
 /** Left pane: the product image beside its verdict (TC-3), uplink, versions and
  * operational status; for a device that cannot report them, the register below. */
@@ -1152,11 +1422,6 @@ function renderStations(pane) {
     var add = h('<button type="button" class="ts-btn ts-reg-edit" data-a="connect">' + ICON.plus + 'Connect or create a station</button>');
     add.addEventListener('click', function () { bindDrawer(null); });
     sec.firstChild.appendChild(add);
-    if (state.bindings.some(function (b) { return b.writable && Object.keys(mineOf(b.entries)).length; })) {
-      var swap = h('<button type="button" class="ts-btn ts-reg-edit" data-a="replace">' + ICON.reset + 'Replace device</button>');
-      swap.addEventListener('click', replaceDrawer);
-      sec.firstChild.appendChild(swap);
-    }
   }
   if (!state.bindings.length) {
     sec.appendChild(h('<div class="ts-empty"><span class="ts-chip warn">on no station</span> Its readings are stored on the device only.</div>'));
@@ -1175,6 +1440,10 @@ function renderStations(pane) {
     card.dataset.station = b.station.name;
     card.querySelector('.ts-dev-station-name').textContent = b.station.name;
     card.querySelector('.ts-count').textContent = names.length ? names.length + (names.length === 1 ? ' channel' : ' channels') : 'no channel from this device';
+    var sv = tb.serviceOf(b.attrs);
+    if (sv.retired || sv.silencedUntil) {
+      card.querySelector('.ts-count').before(sv.retired ? ui.stateChip('retired') : ui.stateChip('silenced', sv.silencedUntil));
+    }
     var map = card.querySelector('.ts-dev-map');
     names.forEach(function (c) {
       var row = map.appendChild(h('<div class="ts-dev-maprow"><div class="ts-dev-from"><span></span><span class="ts-mono"></span></div>' +
@@ -1244,6 +1513,7 @@ function topologySection() {
     Object.keys(nodes).forEach(function (p) { positions[p] = true; });
     srcs.forEach(function (s) { positions[s.position] = true; });
     delete positions[0];
+    busMoves(nodes, srcs).forEach(function (m) { bus.appendChild(moveBanner(m)); });
     Object.keys(positions).map(Number).sort(function (a, b) { return a - b; }).forEach(function (pos) { bus.appendChild(positionCard(pos, nodes[pos], srcs)); });
   } else {
     var keys = readings();

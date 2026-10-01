@@ -1,7 +1,10 @@
 /*
  * Fleet — every device at a glance: is it live, where does it feed, what is
  * it, what is wrong with it (TC-3, TC-12). The Devices dashboard's landing view
- * and the tenant's home page. Read-only; a row opens the device view.
+ * and the tenant's home page. A row opens a pane summing the device up; its row
+ * menu, for a user who may write the device, puts it out of service (CA-23),
+ * and under *Tenant only* reassigns it to another owner (TA-6). A device out of
+ * service leaves *Needs a look* for its own *Out of service* filter.
  *
  * One entity query brings every device of the configured profiles with its
  * activity, versions and register (ATTRIBUTES.md §3); one alarm query counts
@@ -18,7 +21,7 @@
  * and Project views those buttons open.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and lifecycle.js.
  */
 
 window.TerrySenseDeviceFleet = function (ctx, container, opts) {
@@ -29,6 +32,7 @@ var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
+var life = window.TerrySenseLifecycle(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var GROUPS = [
@@ -36,7 +40,8 @@ var GROUPS = [
   { id: 'other', label: 'Other devices', profiles: ['gsaa', 'gsaa2', 'whtr', 'zc-tilt', 'default'] }
 ];
 var ATTRS = ['active', 'lastActivityTime', 'inactivityTimeout', 'deviceInfo.hwVersion', 'deviceInfo.fwVersion',
-  'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu'];
+  'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu',
+  'service.state', 'service.silencedUntil'];
 var FINE_STATUS = /^(all functional|ok|)$/i;
 var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
 var EMPTY_MARKER = '(empty)';
@@ -64,7 +69,7 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', tags: { sensor: {}, project: {} }, sort: 'uplink', dir: -1, loadedAt: 0 };
+var state = { devices: [], tenant: false, writable: false, group: 'logr', filter: 'all', search: '', tags: { sensor: {}, project: {} }, sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
@@ -136,7 +141,7 @@ function sensorsOf(d) {
   if (d.type === 'logr2') {
     return tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/keys/timeseries').then(function (keys) {
       var seen = {};
-      (keys || []).forEach(function (k) { seen[k.slice(0, k.indexOf('.'))] = true; });
+      tb.readingKeys(keys).forEach(function (k) { seen[k.slice(0, k.indexOf('.'))] = true; });
       Object.keys(LOGR2_SENSORS).forEach(function (p) { if (seen[p]) { add(LOGR2_SENSORS[p].code, LOGR2_SENSORS[p].name); } });
       return sorted(byCode);
     });
@@ -272,8 +277,10 @@ function tagChip(kind, opt, text, title) {
   return b;
 }
 
+function outOfService(d) { return !!tb.serviceOf(d.attrs).state; }
+
 function needsLook(d) {
-  return liveness(d) !== 'live' || d.alarms.length > 0 || hwStatusBad(d);
+  return !outOfService(d) && (liveness(d) !== 'live' || d.alarms.length > 0 || hwStatusBad(d));
 }
 
 function visible() {
@@ -281,6 +288,7 @@ function visible() {
   var list = state.devices.filter(function (d) {
     if (groupOf(d).id !== state.group) { return false; }
     if (state.filter === 'attention' && !needsLook(d)) { return false; }
+    if (state.filter === 'outofservice' && !outOfService(d)) { return false; }
     if (!hasTags(d)) { return false; }
     if (!q) { return true; }
     return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [], codes(d), (d.projects || []).map(function (p) { return p.name; }))
@@ -303,7 +311,8 @@ var cardEl = h(
   '    <div class="ts-head-text"><div class="ts-title">Fleet</div><div class="ts-subtitle"></div></div></div>' +
   '  <div class="ts-fleet-bar">' +
   '    <div class="ts-seg" data-bar="group"></div>' +
-  '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button></div>' +
+  '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button>' +
+  '      <button type="button" data-v="outofservice">Out of service</button></div>' +
   '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, project, station, sensor"></label>' +
   '  </div>' +
   '  <div class="ts-fleet-tags" data-kind="project" hidden><span class="ts-row-meta">Projects</span><span class="ts-fleet-taglist"></span></div>' +
@@ -410,6 +419,10 @@ function row(d, logr) {
   el.querySelector('.ts-dot').style.background = live === 'live' ? 'var(--ts-ok)' : live === 'inactive' ? 'var(--ts-danger)' : 'var(--ts-text-3)';
   el.querySelector('b').textContent = d.name;
   el.querySelector('small').textContent = d.label || '';
+  var dev = el.querySelector('.ts-fleet-dev');
+  life.deviceChips(d.attrs).forEach(function (c) { dev.appendChild(c); });
+  if (outOfService(d)) { el.setAttribute('data-service', tb.serviceOf(d.attrs).state); }
+  if (state.writable) { dev.appendChild(ui.rowMenu(function () { return menuItems(d); }, { tenant: state.tenant, title: 'Device actions' })); }
   var cust = el.querySelector('.ts-fleet-cust');
   if (cust) { cust.textContent = d.customer || 'none'; cust.classList.toggle('none', !d.customer); }
   var sens = el.querySelector('.ts-fleet-sens');
@@ -463,6 +476,16 @@ function row(d, logr) {
   el.addEventListener('click', function () { openPane(d); });
   el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { openPane(d); } });
   return el;
+}
+
+function deviceRef(d) { return { entityType: 'DEVICE', id: d.id, name: d.name, label: d.label }; }
+
+/** The row menu: the device's service state, then *Reassign…* for the tenant. */
+function menuItems(d) {
+  return [
+    life.serviceItem(deviceRef(d), d.attrs, refresh),
+    { a: 'reassign', label: 'Reassign…', tenantOnly: true, run: function () { life.reassign(deviceRef(d), refresh); } }
+  ];
 }
 
 // -- pane -------------------------------------------------------------------------------
@@ -590,6 +613,7 @@ function openPane(d) {
   state0.lastChild.textContent = LIVENESS[live] + (lastTs(d) ? ', last uplink ' + ago(lastTs(d)) : '');
   state0.title = fmtTime(lastTs(d));
   kv(facts, 'State', state0);
+  life.deviceChips(d.attrs).forEach(function (c) { state0.appendChild(c); });
   if (state.tenant) { kv(facts, 'Customer', d.customer || 'none, the tenant owns it'); }
   if (groupOf(d).id === 'logr') {
     var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
@@ -662,7 +686,11 @@ function refresh() {
 }
 refreshBtn.addEventListener('click', refresh);
 
-tb.currentUser().then(function (me) { state.tenant = me.authority === 'TENANT_ADMIN'; }).catch(function () {}).then(load).then(function () {
+// A customer user sees only their customer's devices: one permission check covers every row.
+tb.currentUser().then(function (me) {
+  state.tenant = me.authority === 'TENANT_ADMIN';
+  return tb.canWrite({ entityType: 'DEVICE', ownerId: me.customerId && me.customerId.id });
+}).then(function (writable) { state.writable = writable; }).catch(function () {}).then(load).then(function () {
   render();
   timer = setInterval(refresh, REFRESH_MS);
 }).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });

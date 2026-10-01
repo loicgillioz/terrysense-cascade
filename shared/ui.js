@@ -35,8 +35,25 @@ var ICON = {
   gauge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l4-5"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
-  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/></svg>'
+  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+  mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V11a6 6 0 0 1 9.5-4.9M18 11v5l2 2H8"/><path d="M10 20a2 2 0 0 0 4 0M3 3l18 18"/></svg>'
 };
+
+// The state chips of FRONTEND.md *Interface conventions*; `silenced` reads its time.
+var CHIP_TEXT = { retired: 'Retired', outofservice: 'Out of service', 'private': 'Private', nodevice: 'No device yet' };
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function clock(ts) {
+  var d = new Date(ts);
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+
+/** "15:00" today, "3 Oct 15:00" another day. */
+function when(ts) {
+  var d = new Date(ts);
+  return d.toDateString() === new Date().toDateString() ? clock(ts) : d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + clock(ts);
+}
 
 function esc(s) {
   return String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -282,7 +299,145 @@ root.TerrySenseUi = function (rootEl) {
     return el;
   }
 
+  /**
+   * The ⋯ button of a row or a view header (FRONTEND.md *Interface conventions*).
+   * `items`, or a function returning them when the menu opens: `{a, label,
+   * run(), danger?, tenantOnly?}`, falsy ones skipped. Tenant-only items follow
+   * under a *Tenant only* heading when `opts.tenant`, and are absent otherwise.
+   */
+  function rowMenu(items, opts) {
+    opts = opts || {};
+    var btn = h('<button type="button" class="ts-icon-btn ts-menu-btn" data-a="menu">' + ICON.more + '</button>');
+    btn.title = opts.title || 'Actions';
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var list = (typeof items === 'function' ? items() : items).filter(Boolean);
+      var box = h('<div class="ts-menu" role="menu"></div>');
+      var pop;
+      function add(i) {
+        var b = box.appendChild(h('<button type="button" class="ts-menu-item" role="menuitem"></button>'));
+        b.setAttribute('data-a', i.a);
+        b.textContent = i.label;
+        if (i.danger) { b.classList.add('danger'); }
+        b.addEventListener('click', function () { pop.close(); i.run(); });
+      }
+      list.filter(function (i) { return !i.tenantOnly; }).forEach(add);
+      var tenant = opts.tenant ? list.filter(function (i) { return i.tenantOnly; }) : [];
+      if (tenant.length) {
+        box.appendChild(h('<div class="ts-menu-head">Tenant only</div>'));
+        tenant.forEach(add);
+      }
+      pop = popover(btn, box);
+      pop.el.classList.add('ts-menu-pop');
+    });
+    return btn;
+  }
+
+  /** A *Tenant only* block for a form or panel, holding `node`: add it only for the tenant. */
+  function tenantSection(node) {
+    var el = h('<div class="ts-tenant-only"><div class="ts-section-head">Tenant only</div></div>');
+    el.appendChild(node);
+    return el;
+  }
+
+  /** "Silenced until 15:00", or "Silenced until 3 Oct 15:00" another day. */
+  function silenceText(until) { return 'Silenced until ' + when(until); }
+
+  /** A state chip: `retired`, `outofservice`, `private`, `nodevice`, or `silenced` with its end. */
+  function stateChip(kind, until) {
+    var el = h('<span class="ts-chip ts-state-chip"></span>');
+    el.setAttribute('data-chip', kind);
+    el.textContent = kind === 'silenced' ? silenceText(until) : CHIP_TEXT[kind];
+    if (kind === 'silenced') { el.insertAdjacentHTML('afterbegin', ICON.mute); }
+    return el;
+  }
+
+  /**
+   * The follow-up card after a structural action: one row per step, each
+   * `{a, label, done, action, run()}`, a done one ticked. `onDismiss` hides it.
+   */
+  function followUp(title, steps, onDismiss) {
+    var el = h('<div class="ts-followup"><div class="ts-followup-head"><b></b><span class="ts-spacer"></span>' +
+      '<button type="button" class="ts-icon-btn" data-a="dismiss" title="Dismiss">' + ICON.close + '</button></div></div>');
+    el.querySelector('b').textContent = title;
+    el.querySelector('[data-a=dismiss]').addEventListener('click', function () { el.remove(); onDismiss(); });
+    steps.forEach(function (s) {
+      var row = el.appendChild(h('<div class="ts-followup-step"><span class="ts-followup-mark"></span><span class="ts-grow"></span></div>'));
+      row.setAttribute('data-step', s.a);
+      row.querySelector('.ts-grow').textContent = s.label;
+      if (s.done) {
+        row.classList.add('done');
+        row.firstChild.innerHTML = ICON.check;
+        return;
+      }
+      var b = row.appendChild(h('<button type="button" class="ts-btn ghost"></button>'));
+      b.textContent = s.action;
+      b.addEventListener('click', s.run);
+    });
+    return el;
+  }
+
+  /**
+   * A confirmation gated by typing `name`, with an optional checkbox off by
+   * default. Resolves null on cancel, else `{checked}`.
+   */
+  function confirmTyped(html, name, okLabel, checkLabel) {
+    return new Promise(function (resolve) {
+      var el = h('<div class="ts-confirm"><div class="ts-confirm-box"><p></p>' +
+        (checkLabel ? '<label class="ts-switch ts-confirm-check"><input type="checkbox" data-f="check"> <span></span></label>' : '') +
+        '<div class="ts-field"><div class="ts-field-hint ts-confirm-type"></div><input class="ts-input wide" data-f="typed"></div>' +
+        '<div class="ts-confirm-actions"><button type="button" class="ts-btn" data-a="no">Cancel</button>' +
+        '<button type="button" class="ts-btn primary danger" data-a="yes" disabled></button></div></div></div>');
+      el.querySelector('p').innerHTML = html;
+      if (checkLabel) { el.querySelector('.ts-confirm-check span').textContent = checkLabel; }
+      el.querySelector('.ts-confirm-type').textContent = 'Type ' + name + ' to confirm.';
+      var yes = el.querySelector('[data-a=yes]'), typed = el.querySelector('[data-f=typed]');
+      yes.textContent = okLabel;
+      typed.addEventListener('input', function () { yes.disabled = typed.value.trim() !== name; });
+      el.addEventListener('click', function (e) {
+        var a = e.target.getAttribute('data-a');
+        if (!a) { return; }
+        el.remove();
+        resolve(a === 'yes' ? { checked: checkLabel ? el.querySelector('[data-f=check]').checked : false } : null);
+      });
+      card().appendChild(el);
+      setTimeout(function () { typed.focus(); }, 0);
+    });
+  }
+
+  /** Edit `target`'s text in place: Enter or leaving the field saves through
+   * `save(value)` (a Promise), Escape cancels. */
+  function inlineEdit(target, value, save) {
+    var input = h('<input class="ts-input ts-inline-edit">');
+    input.value = value;
+    target.textContent = '';
+    target.appendChild(input);
+    var done = false;
+    function finish(keep) {
+      if (done) { return; }
+      done = true;
+      var v = input.value.trim();
+      if (!keep || !v || v === value) { target.textContent = value; return; }
+      target.textContent = v;
+      save(v).catch(function (err) {
+        target.textContent = value;
+        toast('Not renamed: ' + ((err && err.message) || err), 'error');
+      });
+    }
+    input.addEventListener('click', function (e) { e.stopPropagation(); });
+    input.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Enter') { finish(true); }
+      if (e.key === 'Escape') { finish(false); }
+    });
+    input.addEventListener('blur', function () { finish(true); });
+    setTimeout(function () { input.focus(); input.select(); }, 0);
+    return input;
+  }
+
   return {
+    rowMenu: rowMenu, tenantSection: tenantSection, stateChip: stateChip, silenceText: silenceText, when: when,
+    followUp: followUp, confirmTyped: confirmTyped, inlineEdit: inlineEdit,
     productImage: productImage, radioLevel: radioLevel, metric: metric,
     ICON: ICON, esc: esc, h: h, info: info, sevDot: sevDot, glossary: glossary,
     toast: toast, confirm: confirm, openDrawer: openDrawer, closeDrawer: closeDrawer,

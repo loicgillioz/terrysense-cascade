@@ -26,7 +26,8 @@ var TERMS = {
   boolText: 'How the two values read in dashboards and alarm messages, e.g. “open” and “closed”.',
   alarmText: 'The wording of the SMS, also used for the e-mail unless a longer e-mail text is set. Insert fields such as the measured value; they are filled in when the message is sent.',
   smsLength: 'One SMS holds 160 characters, or 70 when the text contains a character outside the SMS alphabet (e.g. ê, ç, emoji). Longer texts are split and billed per part. Fields count at a typical length, the dashboard link at 30.',
-  contacts: 'People who receive the measurement alarms of a station — a pH too high, a level too low: platform users, whose e-mail and phone come from their profile, or external contacts. Each contact receives only the severities ticked for them.',
+  contacts: 'People who receive the measurement alarms of a station — a pH too high, a level too low: platform users, whose e-mail and phone come from their profile, or entries of the address book. Each contact receives only the severities ticked for them.',
+  addressBook: 'People without a platform account who receive alarms. A contact list names an entry, so a number or address changed here changes in every list at once.',
   deviceContacts: 'People who receive the device alarms of the station’s loggers — a low battery, a self-diagnostic fault, a unit moved. Usually the technicians, set once for the customer. A station that names its own measurement contacts keeps these.',
   channels: 'Master switches. When off, or never set, no message of that type leaves this level or any level below, whatever the contacts say.',
   noPhone: 'No phone number in this user’s profile. Add one in the user settings to send SMS.',
@@ -89,6 +90,9 @@ var TOKENS = [
   { token: '${ssUrl}', label: 'Dashboard link', len: 30 }
 ];
 
+// A device out of service (ATTRIBUTES.md §4 *Service state*), in the order offered.
+var SERVICE_STATES = { repair: 'In repair', lost: 'Lost or stolen', retired: 'Retired' };
+
 var LANGUAGES = { en: 'English', de: 'Deutsch', fr: 'Français', it: 'Italiano' };
 
 // GSM 03.38 basic alphabet; anything else makes the SMS UCS-2 (70 per part).
@@ -106,8 +110,32 @@ function smsInfo(text) {
   return { len: len, gsm: gsm, single: single, parts: len <= single ? 1 : Math.ceil(len / part), maxParts: SMS_MAX_PARTS };
 }
 
+// The Settings widget's names of the resolved scalars.
+var SETTING_LABELS = {
+  ttlDays: 'Keep data for', language: 'Message language', url: 'Dashboard link', 'sms.enabled': 'SMS', 'email.enabled': 'E-mail',
+  'notify.contacts': 'Measurement alarm contacts', 'notify.deviceContacts': 'Device alarm contacts',
+  'alarmText.created': 'Message when an alarm starts', 'alarmText.cleared': 'Message when an alarm ends',
+  'emailText.created': 'E-mail when an alarm starts', 'emailText.cleared': 'E-mail when an alarm ends'
+};
+var BAND_WORDS = { thresholdMax: 'above', thresholdMin: 'below', state: 'when', debounce: 'debounce' };
+var FIELD_WORDS = { label: 'name', unit: 'unit', hysteresis: 'hysteresis', textWhenTrue: 'text when on', textWhenFalse: 'text when off' };
+
+function severityLabel(id) { return (SEVERITIES.filter(function (s) { return s.id === id; })[0] || { label: id }).label; }
+
+/** An `effective.*` key in words, e.g. "pH · Critical above"; `channelLabel(channel)` names a channel. */
+function settingLabel(key, channelLabel) {
+  var k = key.replace(/^effective\./, '');
+  if (SETTING_LABELS[k]) { return SETTING_LABELS[k]; }
+  var band = /^(.+)\.alarm\.([a-z]+)\.([A-Za-z]+)$/.exec(k);
+  if (band) { return channelLabel(band[1]) + ' · ' + severityLabel(band[2]) + ' ' + (BAND_WORDS[band[3]] || band[3]); }
+  var field = /^(.+)\.([A-Za-z]+)$/.exec(k);
+  return field ? channelLabel(field[1]) + ' · ' + (FIELD_WORDS[field[2]] || field[2]) : k;
+}
+
 root.TerrySenseGlossary = {
+  settingLabel: settingLabel,
   TERMS: TERMS, STATUS_CODES: STATUS_CODES, COMMAND_STATUS: COMMAND_STATUS, SEVERITIES: SEVERITIES, TOKENS: TOKENS, LANGUAGES: LANGUAGES,
+  SERVICE_STATES: SERVICE_STATES,
   SMS_MAX_PARTS: SMS_MAX_PARTS, smsInfo: smsInfo,
   severity: function (id) { return SEVERITIES.filter(function (s) { return s.id === id; })[0] || { id: id, label: id, desc: '' }; },
   rank: function (id) { for (var i = 0; i < SEVERITIES.length; i++) { if (SEVERITIES[i].id === id) { return i; } } return -1; }

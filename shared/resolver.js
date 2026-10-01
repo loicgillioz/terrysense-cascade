@@ -32,6 +32,10 @@
  *   fetchAllStations()              -> [station]      every station, for DEFAULTS
  *   fetchAllDevices()               -> [device]       every device, for DEFAULTS
  *
+ * For the address book of a tenant-owned station:
+ *
+ *   fetchTenantBook()               -> {entityType:'ASSET', id, name} | null  the tenant's ContactBook asset
+ *
  * For the device branch:
  *
  *   fetchDeviceDefaults(profile)    -> {entityType:'ASSET', id, name} | null
@@ -77,6 +81,11 @@ var CONTACTS_KEY = 'notify.contacts';
 // a station replacing one list keeps the other (ALARMING.md §1.2).
 var DEVICE_CONTACTS_KEY = 'notify.deviceContacts';
 var DEVICE_DEFAULTS_KIND = 'DeviceDefaults';
+// The owner's address book, `{entryId: {name, sms, email}}`: on the CUSTOMER,
+// or for a tenant-owned station on the tenant's `ContactBook` asset
+// (ATTRIBUTES.md §7). A `{type: 'book'}` contact names an entry by id.
+var CONTACT_BOOK_KEY = CONFIG_PREFIX + 'contactBook';
+var CONTACT_BOOK_KIND = 'ContactBook';
 // The DEFAULTS asset's alarm texts per language: {lang: {'alarmText.created': …}}
 // (ALARMING.md §4). A text set below DEFAULTS wins over it.
 var TEXT_CATALOGUE_KEY = 'alarmTextByLanguage';
@@ -307,9 +316,10 @@ function resolveField(chain, channel, kind, field, io, cache) {
  * `expand_contacts()` in config_resolver.py. A platform user becomes their
  * current profile name, e-mail and phone, each kept only where the contact
  * opted in and the user's own switch (`u.switches`) is not off;
- * `io.fetchUser(id)` resolves the user, and a missing one is dropped like a
- * contact with no address or no severity. */
-function expandContacts(raw, io) {
+ * `io.fetchUser(id)` resolves the user. An address-book entry becomes what
+ * `book` holds for it, each address kept where the contact opted in. A missing
+ * user or entry is dropped like a contact with no address or no severity. */
+function expandContacts(raw, io, book) {
   function off(u, key) { return String((u.switches || {})[CONFIG_PREFIX + key]).toLowerCase() === 'false'; }
   var list = parseJson(raw);
   if (!Array.isArray(list)) { return Promise.resolve([]); }
@@ -326,6 +336,12 @@ function expandContacts(raw, io) {
         name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
         sms = c.viaSms && !off(u, 'sms.enabled') ? u.phone : null;
         email = c.viaEmail && !off(u, 'email.enabled') ? u.email : null;
+      } else if (c.type === 'book') {
+        var entry = (book || {})[String(c.entryId || '')];
+        if (!entry || typeof entry !== 'object') { return null; }
+        name = entry.name;
+        sms = c.viaSms ? entry.sms : null;
+        email = c.viaEmail ? entry.email : null;
       } else {
         name = c.name; sms = c.sms; email = c.email;
       }
@@ -335,6 +351,18 @@ function expandContacts(raw, io) {
       return { name: String(name || ''), sms: sms, email: email, severities: severities };
     });
   })).then(function (out) { return out.filter(Boolean); });
+}
+
+/** The address book of the owner of `chain`: its CUSTOMER's, else the tenant's
+ * ContactBook asset — mirrors `_contact_book()` in config_resolver.py. */
+function contactBook(chain, io, cache) {
+  var customer = chain.filter(function (l) { return l.role === 'customer'; })[0];
+  var holder = customer ? Promise.resolve(customer)
+    : io.fetchTenantBook ? Promise.resolve(io.fetchTenantBook()) : Promise.resolve(null);
+  return holder.then(function (level) {
+    if (!level) { return {}; }
+    return attrsOf(level, io, cache).then(function (attrs) { return parseJson(attrs && attrs[CONTACT_BOOK_KEY]) || {}; });
+  });
 }
 
 function resolveScalars(chain, io, cache) {
@@ -353,7 +381,7 @@ function resolveScalars(chain, io, cache) {
     var key = CONFIG_PREFIX + name;
     work = work.then(function () { return firstSet(chain, key, io, cache); }).then(function (hit) {
       if (!hit) { return; }
-      return expandContacts(hit.value, io).then(function (contacts) {
+      return contactBook(chain, io, cache).then(function (book) { return expandContacts(hit.value, io, book); }).then(function (contacts) {
         entries.push({
           effectiveKey: EFFECTIVE_PREFIX + name, overrideKey: key,
           value: contacts, source: levelDisplay(hit.level), level: hit.level
@@ -720,12 +748,13 @@ return {
   CONFIG_PREFIX: CONFIG_PREFIX, CHANNEL_PREFIX: CHANNEL_PREFIX,
   EFFECTIVE_PREFIX: EFFECTIVE_PREFIX,
   SEVERITIES: SEVERITIES, SCALAR_KEYS: SCALAR_KEYS, CONTACTS_KEY: CONTACTS_KEY, DEVICE_CONTACTS_KEY: DEVICE_CONTACTS_KEY,
-  DEVICE_DEFAULTS_KIND: DEVICE_DEFAULTS_KIND, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
+  DEVICE_DEFAULTS_KIND: DEVICE_DEFAULTS_KIND, CONTACT_BOOK_KEY: CONTACT_BOOK_KEY, CONTACT_BOOK_KIND: CONTACT_BOOK_KIND, ALARM_FIELDS: ALARM_FIELDS, PER_KEY_FIELDS: PER_KEY_FIELDS,
   ALARM_TEXT_EVENTS: ALARM_TEXT_EVENTS, TEXT_CATALOGUE_KEY: TEXT_CATALOGUE_KEY, DEFAULT_LANGUAGE: DEFAULT_LANGUAGE,
 
   camelKind: camelKind,
   splitChannelKey: splitChannelKey,
   expandContacts: expandContacts,
+  contactBook: contactBook,
   kindSpec: kindSpec,
   unitFactor: unitFactor,
   toDisplay: toDisplay,
@@ -739,6 +768,7 @@ return {
   resolveStation: resolveStation,
   effectiveDiff: effectiveDiff,
   affectedStations: affectedStations,
+  descendantAssets: descendantAssets,
   discoverChannels: discoverChannels,
   channelsFromAttrs: channelsFromAttrs,
   calculatedChannels: calculatedChannels,
