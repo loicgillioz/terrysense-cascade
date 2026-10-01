@@ -1,7 +1,7 @@
 /*
  * Firmware — the firmware releases a technician downloads for the LOGR
  * companion app, read from the ThingsBoard OTA packages.
- * Contract: logr-product-docs/FIRMWARE_DELIVERY.md §3 (index fields), §5 (LOGR2).
+ * Contract: logr-product-docs/FIRMWARE_DELIVERY.md §3 (index fields), §6 (LOGR2).
  *
  * One card per bundle family: a LOGR3/LOGR4 board revision, or a LOGR2 sensor
  * firmware with one download per board revision. The highest version is the
