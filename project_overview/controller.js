@@ -773,21 +773,6 @@ function refreshPublic() {
 
 // -- templates ---------------------------------------------------------------------------
 
-/** The channels a template's widgets bind on the station its state carries. */
-function requiredChannels(dashboard) {
-  var conf = dashboard.configuration || {};
-  var aliases = conf.entityAliases || {};
-  var stateAliases = Object.keys(aliases).filter(function (k) { return (aliases[k].filter || {}).type === 'stateEntity'; });
-  var keys = {};
-  Object.keys(conf.widgets || {}).forEach(function (wid) {
-    ((conf.widgets[wid].config || {}).datasources || []).forEach(function (ds) {
-      if (stateAliases.indexOf(ds.entityAliasId) < 0) { return; }
-      (ds.dataKeys || []).forEach(function (k) { if (k.type === 'timeseries') { keys[k.name] = true; } });
-    });
-  });
-  return Object.keys(keys);
-}
-
 /** Every template the user can read: the tenant's and the user's own. */
 function loadTemplates() {
   if (state.templates) { return Promise.resolve(state.templates); }
@@ -797,7 +782,7 @@ function loadTemplates() {
       return tb.get('/api/entityGroup/' + g.id.id + '/dashboards', { pageSize: '200', page: '0' }).then(function (page) {
         return Promise.all(((page && page.data) || []).map(function (d) {
           return tb.get('/api/dashboard/' + d.id.id).then(function (full) {
-            return { id: d.id.id, title: d.title, tenant: g.ownerId.entityType === 'TENANT', channels: requiredChannels(full) };
+            return { id: d.id.id, title: d.title, tenant: g.ownerId.entityType === 'TENANT', channels: resolver.dashboardChannels(full) };
           });
         }));
       });

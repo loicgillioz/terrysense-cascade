@@ -518,7 +518,7 @@ function useText(u) { return u.level.name + ' (' + (u.key === LIST_KEYS[0] ? 'me
 
 function renderBook() {
   var b = state.book;
-  var sec = h('<div class="ts-section ts-book"><div class="ts-section-head">Address book ' + info('addressBook') + '</div></div>');
+  var sec = h('<div class="ts-section ts-book"><div class="ts-section-head">External contacts ' + info('addressBook') + '</div></div>');
   var ids = Object.keys(b.entries).sort(function (x, y) { return entryName(b.entries[x]).localeCompare(entryName(b.entries[y])); });
   ids.forEach(function (id) {
     var e = b.entries[id], uses = (b.usage || {})[id] || [];
@@ -539,7 +539,7 @@ function renderBook() {
     }
     sec.appendChild(row);
   });
-  if (!ids.length) { sec.appendChild(h('<div class="ts-empty">No entry yet. <i>New contact</i> in a contact list adds one.</div>')); }
+  if (!ids.length) { sec.appendChild(h('<div class="ts-empty">No external contact yet. <i>New external contact</i> in a contact list adds one.</div>')); }
   bodyEl.appendChild(sec);
 }
 
@@ -669,7 +669,7 @@ function openReplace(id) {
       dr.body.appendChild(o);
     }
     var others = Object.keys(state.book.entries).filter(function (k) { return k !== id; });
-    if (others.length) { dr.body.appendChild(h('<div class="ts-subhead">Address book</div>')); }
+    if (others.length) { dr.body.appendChild(h('<div class="ts-subhead">External contacts</div>')); }
     others.forEach(function (k) {
       var e = state.book.entries[k];
       option(entryName(e), [e.sms, e.email].filter(Boolean).join(' · '), 'data-entry', k, function () {
@@ -690,7 +690,7 @@ function removeEntry(id) {
   var entries = bookCopy(), uses = (state.book.usage || {})[id] || [];
   var name = entryName(entries[id]);
   delete entries[id];
-  bookCommit('Remove <b>' + esc(name) + '</b> from the address book and from every list that names it?', entries,
+  bookCommit('Remove <b>' + esc(name) + '</b> from the external contacts and from every list that names it?', entries,
     rewritesFor(uses, function (list) { return list.filter(function (c) { return !(c && c.type === 'book' && c.entryId === id); }); }), uses, null, true);
 }
 
@@ -1439,14 +1439,14 @@ function contactsEditor(initial, set, setValid) {
         el = personCard(c, u && { name: userName(u), email: u.email, phone: u.phone }, 'Platform user', 'Unknown user');
       } else if (!e) {
         var b = state.book.entries[c.entryId];
-        el = personCard(c, b && { name: entryName(b), email: b.email, phone: b.sms }, 'Address book', 'Unknown entry');
+        el = personCard(c, b && { name: entryName(b), email: b.email, phone: b.sms }, 'External contact', 'Unknown entry');
       } else {
         el = h('<div class="ts-contact"></div>');
         el.appendChild(entryFields(e, function () {
           if (c.type === 'book') { c.viaSms = !!e.sms; c.viaEmail = !!e.email; }
           commitPeople();
         }));
-        if (c.type === 'book') { el.appendChild(h('<div class="ts-field-hint">New in the address book</div>')); }
+        if (c.type === 'book') { el.appendChild(h('<div class="ts-field-hint">New external contact</div>')); }
       }
       el.appendChild(head);
       el.appendChild(sevToggles(c));
@@ -1458,7 +1458,7 @@ function contactsEditor(initial, set, setValid) {
       var taken = people.map(contactKey);
       var pick = h('<div class="ts-user-pick"><div class="ts-search">' + ICON.search + '<input class="ts-input"></div><div></div></div>');
       var q = pick.querySelector('input'), ul = pick.lastChild;
-      q.placeholder = picking === 'user' ? 'Search users' : 'Search the address book';
+      q.placeholder = picking === 'user' ? 'Search users' : 'Search external contacts';
       var candidates = picking === 'user'
         ? (state.users || []).map(function (u) {
           return { key: 'u:' + u.id.id, name: userName(u), desc: u.email + (u.phone ? ' · ' + u.phone : ' · no phone'),
@@ -1485,7 +1485,8 @@ function contactsEditor(initial, set, setValid) {
           });
           ul.appendChild(o);
         });
-        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">' + (picking === 'user' ? 'No other user.' : 'No other entry.') + '</div>')); }
+        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">' + (picking === 'user' ? 'No other user.' : Object.keys(state.book.entries).length
+          ? 'No other external contact.' : 'No external contact yet: <i>New external contact</i> adds one.') + '</div>')); }
       };
       q.addEventListener('input', fill);
       fill();
@@ -1494,12 +1495,10 @@ function contactsEditor(initial, set, setValid) {
     }
 
     var add = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="user">' + ICON.plus + 'Platform user</button>' +
-      (Object.keys(state.book.entries).length ? '<button type="button" class="ts-btn ghost" data-a="book">' + ICON.plus + 'From the address book</button>' : '') +
-      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + 'New contact</button></div>');
+      '<button type="button" class="ts-btn ghost" data-a="book">' + ICON.plus + 'Add from known external contacts</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + 'New external contact</button></div>');
     add.querySelector('[data-a=user]').addEventListener('click', function () { picking = picking === 'user' ? null : 'user'; render(); });
-    if (add.querySelector('[data-a=book]')) {
-      add.querySelector('[data-a=book]').addEventListener('click', function () { picking = picking === 'book' ? null : 'book'; render(); });
-    }
+    add.querySelector('[data-a=book]').addEventListener('click', function () { picking = picking === 'book' ? null : 'book'; render(); });
     add.querySelector('[data-a=ext]').addEventListener('click', function () {
       picking = null;
       var id = 'b' + Math.random().toString(36).slice(2, 10);

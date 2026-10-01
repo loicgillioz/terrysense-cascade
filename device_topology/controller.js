@@ -341,16 +341,23 @@ function namesForKind(kind) {
     });
 }
 
+/** The names a reading can be stored under: its own name first, then the other
+ * vocabulary names of its kind. */
+function namesForReading(key) {
+  var own = nameOf(key), e = entryOf(key);
+  return [own].concat(e ? namesForKind(camel(e.kind)).filter(function (n) { return n !== own; }) : []);
+}
+
 /** What a station can take from this device: one row per measurement, with the
- * channel name it gets by default. A LOGR3 or LOGR4 source is renamed to a
- * vocabulary name of its kind; any other reading keeps its own name, a LOGR2's
- * without its peripheral prefix. */
+ * channel name it gets by default and the names it may take instead. A LOGR3 or
+ * LOGR4 source defaults to a vocabulary name of its kind; any other reading to
+ * its own name, a LOGR2's without its peripheral prefix. */
 function mappable() {
   if (family() !== 'bus') {
     var parts = family() === 'logr2' ? logr2Parts(readings()) : [{ id: 'device', label: state.device.type || 'Device', keys: readings() }];
     return [].concat.apply([], parts.map(function (part) {
       return part.keys.map(function (key) {
-        return { key: key, label: labelOf(key), group: part.id, groupLabel: part.label || 'LOGR itself', names: null, name: nameOf(key),
+        return { key: key, label: labelOf(key), group: part.id, groupLabel: part.label || 'LOGR itself', names: namesForReading(key), name: nameOf(key),
                  diagnostic: part.id === 'logr' || !!(entryOf(key) || {}).diagnostic };
       });
     }));
@@ -569,8 +576,9 @@ function stationDevices(stationId) {
   return tb.post('/api/relations', query).then(function (rels) { return (rels || []).map(function (r) { return r.to.id; }); });
 }
 
-/** Pick a station, a new one included, or the channels of one already fed. */
-function bindDrawer(binding) {
+/** Pick a station, a new one included, or the channels of one already fed;
+ * `preset` `{id, name}` picks a station on opening. */
+function bindDrawer(binding, preset) {
   var dr = ui.openDrawer(binding ? 'Channels of ' + esc(binding.station.name) : 'Connect to a station', 'from ' + esc(state.device.label || state.device.name));
   dr.el.classList.add('wide');
   var picked = binding ? binding.station : null;
@@ -597,6 +605,10 @@ function bindDrawer(binding) {
       list.filter(function (s) { return !bound[s.id]; }).sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (s) {
         var o = document.createElement('option'); o.value = s.id; o.textContent = s.name; o.dataset.name = s.name; sel.appendChild(o);
       });
+      if (!preset) { return; }
+      if (!sel.querySelector('option[value="' + preset.id + '"]')) { ui.toast(preset.name + ' cannot take this device', 'error'); return; }
+      sel.value = preset.id;
+      sel.dispatchEvent(new Event('change'));
     });
     parentsToPick().then(function (list) {
       parents = list;
@@ -629,9 +641,7 @@ function bindDrawer(binding) {
 
   var list = h('<div class="ts-field"><div class="ts-field-label"><span>Measurements to store ' + info('channelName') + '</span>' +
     '<span class="ts-spacer"></span><span class="ts-bind-count"></span></div><div class="ts-field-hint"></div><div class="ts-binds"></div></div>');
-  list.querySelector('.ts-field-hint').textContent = family() === 'bus'
-    ? 'Tick what the station stores. On the right, the channel each measurement is stored under.'
-    : 'Tick what the station stores. Each reading keeps its own name on the station.';
+  list.querySelector('.ts-field-hint').textContent = 'Tick what the station stores. On the right, the channel each measurement is stored under.';
   var boxes = list.querySelector('.ts-binds');
   var countEl = list.querySelector('.ts-bind-count');
   var groups = [], byGroup = {};
@@ -663,16 +673,7 @@ function bindDrawer(binding) {
       var unit = family() === 'bus' ? unitOf(parseSource(r.key)) : readingUnit(r.key);
       row.querySelector('.ts-bind-val').textContent = v ? fmtValue(v.value) + (unit ? ' ' + unit : '') : '';
       var dst = row.querySelector('.ts-bind-dst');
-      if (r.names) {
-        var names = dst.appendChild(h('<select class="ts-select"></select>'));
-        names.dataset.nameFor = r.key;
-        r.names.forEach(function (n) {
-          var o = document.createElement('option'); o.value = n; o.textContent = state.names[n].label || n; names.appendChild(o);
-        });
-        names.value = r.name;
-      } else {
-        dst.appendChild(h('<span class="ts-bind-fixed"></span>')).textContent = labelOf(r.key);
-      }
+      dst.appendChild(h('<select class="ts-select"></select>')).dataset.nameFor = r.key;
       dst.appendChild(h('<span class="ts-bind-key"></span>'));
     });
   });
@@ -682,8 +683,7 @@ function bindDrawer(binding) {
 
   function chosenRows() {
     return rows.filter(function (r) { return boxes.querySelector('input[data-key="' + r.key + '"]').checked; }).map(function (r) {
-      var names = boxes.querySelector('[data-name-for="' + r.key + '"]');
-      return { key: r.key, name: names ? names.value : r.name, fixed: !names };
+      return { key: r.key, name: boxes.querySelector('[data-name-for="' + r.key + '"]').value };
     });
   }
 
@@ -721,8 +721,7 @@ function bindDrawer(binding) {
       var channel = Object.keys(mine).filter(function (c) { return mine[c] === r.key; })[0];
       box.checked = mapped ? !!channel : !r.diagnostic && (!used[r.name] || !!(state.names[r.name] || {}).repeatable);
       if (box.checked) { used[r.name] = true; }
-      var names = boxes.querySelector('[data-name-for="' + r.key + '"]');
-      if (names) { names.value = channel && r.names.indexOf(resolver.splitChannelKey(channel).name) >= 0 ? resolver.splitChannelKey(channel).name : r.name; }
+      fillNames(boxes.querySelector('[data-name-for="' + r.key + '"]'), r, entries, channel);
     });
     groups.forEach(function (g) {
       boxes.querySelector('.ts-bind-group[data-group="' + g.id + '"]').open =
@@ -747,6 +746,40 @@ function bindDrawer(binding) {
   });
 }
 
+function channelLabel(key) {
+  var k = resolver.splitChannelKey(key);
+  return ((state.names[k.name] || {}).label || k.name) + (k.instance ? ' ' + k.instance : '');
+}
+
+/** The next free instance of `name` among the station's channels, `name-2` on. */
+function nextInstance(name, entries) {
+  var used = {};
+  Object.keys(entries || {}).forEach(function (c) {
+    var k = resolver.splitChannelKey(c);
+    if (k.name === name) { used[k.instance || 1] = true; }
+  });
+  var n = 2;
+  while (used[n]) { n++; }
+  return name + '-' + n;
+}
+
+/** A row's name choices on the picked station: its names, the channel it already
+ * feeds, and for a repeatable name another device feeds there, its next instance,
+ * picked by default so a second sensor of a kind never takes over the first. */
+function fillNames(select, r, entries, channel) {
+  var others = othersOf(entries).map(function (c) { return resolver.splitChannelKey(c).name; });
+  var options = r.names.slice();
+  if (channel && options.indexOf(channel) < 0) { options.unshift(channel); }
+  r.names.forEach(function (n) {
+    if ((state.names[n] || {}).repeatable && others.indexOf(n) >= 0) { options.splice(options.indexOf(n) + 1, 0, nextInstance(n, entries)); }
+  });
+  select.innerHTML = '';
+  options.forEach(function (n) {
+    var o = document.createElement('option'); o.value = n; o.textContent = channelLabel(n); select.appendChild(o);
+  });
+  select.value = channel || (others.indexOf(r.name) >= 0 && (state.names[r.name] || {}).repeatable ? nextInstance(r.name, entries) : r.name);
+}
+
 /** Channel keys for the chosen measurements: a name picked once is its own key;
  * a repeatable name picked several times becomes numbered instances, in bus
  * order. A channel the station already has for a measurement keeps its key, so
@@ -759,10 +792,12 @@ function channelsFor(old, chosen) {
   chosen.forEach(function (c) { (byName[c.name] = byName[c.name] || []).push(c); });
   Object.keys(byName).forEach(function (name) {
     var group = byName[name];
-    if (group.length > 1 && !(state.names[name] || {}).repeatable) { throw new Error((state.names[name] || {}).label + ' (' + name + ') is picked twice and does not repeat'); }
+    if (group.length > 1 && (resolver.splitChannelKey(name).instance || !(state.names[name] || {}).repeatable)) {
+      throw new Error(channelLabel(name) + ' (' + name + ') is picked twice and does not repeat');
+    }
     var taken = {};
     var rest = group.filter(function (c) {
-      var kept = Object.keys(old).filter(function (k) { return old[k] === c.key && (c.fixed || resolver.splitChannelKey(k).name === name); })[0];
+      var kept = Object.keys(old).filter(function (k) { return old[k] === c.key && resolver.splitChannelKey(k).name === name; })[0];
       if (!kept || (group.length > 1 && !resolver.splitChannelKey(kept).instance)) { return true; }
       channels[kept] = c.key;
       taken[resolver.splitChannelKey(kept).instance || 1] = true;
@@ -922,7 +957,10 @@ function replaceDrawer() {
   dr.el.classList.add('wide');
   var field = dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Replacement</span></div>' +
     '<div class="ts-ctl"><select class="ts-select wide" data-f="device"><option value="">Pick a device</option></select></div>' +
-    '<div class="ts-field-hint">Every channel this device feeds moves to the replacement; each station keeps its history, this device keeps its own.</div></div>'));
+    '<div class="ts-field-hint"></div></div>'));
+  field.querySelector('.ts-field-hint').textContent = bound.length
+    ? 'Every channel this device feeds moves to the replacement; each station keeps its history, this device keeps its own.'
+    : 'This device feeds no station: the replacement takes over what is ticked below.';
   var sel = field.querySelector('select');
   var table = dr.body.appendChild(h('<div class="ts-binds" data-f="match"></div>'));
   var unmatched = dr.body.appendChild(h('<div class="ts-field-hint" data-f="unmatched"></div>'));
@@ -1023,7 +1061,8 @@ function replaceDrawer() {
     var picks = Array.prototype.slice.call(table.querySelectorAll('select[data-station]'));
     var dropped = picks.filter(function (p) { return !p.value; }).map(function (p) { return p.dataset.channel; });
     var carried = rows.filter(function (r) { return dr.body.querySelector('[data-carry=' + r.id + ']').checked; });
-    ui.confirm('Move ' + (picks.length - dropped.length) + ' channel(s) to <b>' + esc(d.name) + '</b>?' +
+    ui.confirm((bound.length ? 'Move ' + (picks.length - dropped.length) + ' channel(s) to <b>' + esc(d.name) + '</b>?'
+      : 'Replace by <b>' + esc(d.name) + '</b>?') +
       (dropped.length ? ' These leave their station, which keeps their history: <b>' + dropped.map(esc).join(', ') + '</b>.' : '') +
       (carried.length ? ' It takes over: ' + carried.map(function (r) { return esc(r.text); }).join('; ') + '.' : ''), 'Replace')
       .then(function (ok) {
@@ -1352,7 +1391,7 @@ function renderService() {
   }
   actsEl.appendChild(ui.rowMenu(function () {
     return [
-      replaceable().length && { a: 'replace', label: 'Replace device…', run: replaceDrawer },
+      { a: 'replace', label: 'Replace device…', run: replaceDrawer },
       life.serviceItem(deviceEntity(), state.server, refresh)
     ];
   }, { title: 'Device actions' }));
@@ -1841,6 +1880,9 @@ tb.boundDatasource().then(function (ds) {
     state.writable = writable;
     render();
     timer = setInterval(refresh, REFRESH_MS);
+    // Opened from a station's *Connect a device*: the connect panel, that station picked.
+    var connectTo = (ctx.stateController.getStateParams() || {}).connectTo;
+    if (connectTo && writable) { bindDrawer(null, connectTo); }
   });
 }).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });
 

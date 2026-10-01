@@ -398,7 +398,12 @@ function line(el, text, cls) {
 function renderSide() {
   sideEl.innerHTML = '';
   if (!state.devices.length) {
-    line(sideCard('Device', ICON.gauge, 'No device'), 'No device feeds this station.');
+    var none = sideCard('Device', ICON.gauge, 'No device');
+    line(none, 'No device feeds this station.');
+    if (state.canWrite && opts.devicesDashboardId) {
+      none.querySelector('.ts-stv-card-body').appendChild(h('<button type="button" class="ts-btn" data-a="connect-device">' + ICON.plus +
+        'Connect a device</button>')).addEventListener('click', connectDrawer);
+    }
   }
   state.devices.forEach(function (d) {
     if (d.hidden) { line(sideCard('Device', ICON.gauge, 'Device'), 'Not visible to you.'); return; }
@@ -431,6 +436,66 @@ function renderSide() {
     linkCard(pr, function () { tb.openDashboard(opts.projectDashboardId, 'project', project); });
     pr.querySelector('.ts-stv-card-head .ts-spacer').insertAdjacentHTML('afterend', '<span class="ts-stv-go">Open project</span>');
   }
+}
+
+// -- connect a device (CA-8) ------------------------------------------------------------
+
+function kindLabel(kind) { return (resolver.kindSpec(kind, state.kinds) || {}).label || kind; }
+
+/** The owner's devices, those that measure what the station's dashboard shows
+ * first. Picking one opens its device view on the connect panel, this station picked. */
+function connectDrawer() {
+  var dr = ui.openDrawer('Connect a device', esc(state.station.name));
+  var hint = dr.body.appendChild(h('<div class="ts-field-hint"></div>'));
+  var only = dr.body.appendChild(h('<label class="ts-switch" hidden><input type="checkbox" data-f="fits" checked> <span>Only devices that fit its dashboard</span></label>'));
+  var list = dr.body.appendChild(h('<div data-f="devices"><div class="ts-loading">Loading…</div></div>'));
+  var owner = state.owner, dashId = state.attrs['config.stationDashboard'];
+  var url = owner.entityType === 'CUSTOMER' ? '/api/customer/' + owner.id + '/devices' : '/api/tenant/devices';
+  Promise.all([tb.getAll(url, {}), dashId ? tb.get('/api/dashboard/' + dashId).catch(function () { return null; }) : null]).then(function (got) {
+    var kinds = got[1] ? resolver.channelKinds(resolver.dashboardChannels(got[1]), state.names) : [];
+    var devices = got[0].filter(function (d) { return d.ownerId.id === owner.id; });
+    return Promise.all(devices.map(function (d) {
+      return Promise.all([tb.get('/api/plugins/telemetry/DEVICE/' + d.id.id + '/keys/timeseries').catch(function () { return []; }),
+        tb.deviceParents({ id: d.id.id })]).then(function (r) {
+        return { device: d, fit: resolver.deviceFit(tb.readingKeys(r[0]), kinds, state.names), feeds: r[1].map(function (p) { return p.name; }).sort() };
+      });
+    })).then(function (rows) { return { rows: rows, kinds: kinds, dashboard: got[1] }; });
+  }).then(function (r) {
+    hint.textContent = r.kinds.length
+      ? 'Its dashboard ' + r.dashboard.title + ' shows ' + r.kinds.map(kindLabel).join(', ') + '. The device view then opens to choose what the station stores.'
+      : 'The device view opens to choose what the station stores.';
+    var fitting = r.rows.filter(function (x) { return x.fit.fits; });
+    only.hidden = !fitting.length;
+    r.rows.sort(function (a, b) {
+      return b.fit.fits - a.fit.fits || !!a.feeds.length - !!b.feeds.length || a.device.name.localeCompare(b.device.name);
+    });
+    function fill() {
+      list.innerHTML = '';
+      var shown = r.rows.filter(function (x) { return only.hidden || !only.querySelector('input').checked || x.fit.fits; });
+      shown.forEach(function (x) {
+        var d = x.device;
+        var o = list.appendChild(h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
+          '<div class="ts-opt-side"></div></div>'));
+        o.setAttribute('data-device', d.name);
+        o.querySelector('.ts-opt-label').textContent = (d.label || d.name) + ' (' + d.type + ')';
+        o.querySelector('.ts-opt-desc').textContent = (d.label ? d.name + ' · ' : '') + (x.feeds.length ? 'Feeding ' + x.feeds.join(', ') : 'Free');
+        if (r.kinds.length) {
+          o.querySelector('.ts-opt-side').appendChild(h('<span class="ts-chip' + (x.fit.fits ? ' accent' : '') + '"></span>')).textContent =
+            x.fit.fits ? 'Fits the dashboard' : 'Measures ' + x.fit.have.length + ' of ' + r.kinds.length;
+        }
+        var go = function () {
+          ui.closeDrawer();
+          tb.openDashboard(opts.devicesDashboardId, 'device', { entityType: 'DEVICE', id: d.id.id, name: d.name },
+            { connectTo: { id: state.station.id, name: state.station.name } });
+        };
+        o.addEventListener('click', go);
+        o.addEventListener('keydown', function (e) { if (e.key === 'Enter') { go(); } });
+      });
+      if (!shown.length) { list.appendChild(h('<div class="ts-empty">No device of this owner.</div>')); }
+    }
+    only.querySelector('input').addEventListener('change', fill);
+    fill();
+  }).catch(function (err) { list.innerHTML = ''; list.appendChild(h('<div class="ts-empty"></div>')).textContent = 'Could not list the devices: ' + errText(err); });
 }
 
 // -- load -------------------------------------------------------------------------------

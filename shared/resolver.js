@@ -566,6 +566,42 @@ function templateFit(channels, attrs, names) {
   return { missing: missing, needs: needs, fits: channels.length > 0 && !missing.length && !needs.length };
 }
 
+/** The channels a station dashboard's widgets bind on the station its state carries. */
+function dashboardChannels(dashboard) {
+  var conf = (dashboard && dashboard.configuration) || {};
+  var aliases = conf.entityAliases || {};
+  var stateAliases = Object.keys(aliases).filter(function (k) { return (aliases[k].filter || {}).type === 'stateEntity'; });
+  var keys = {};
+  Object.keys(conf.widgets || {}).forEach(function (wid) {
+    ((conf.widgets[wid].config || {}).datasources || []).forEach(function (ds) {
+      if (stateAliases.indexOf(ds.entityAliasId) < 0) { return; }
+      (ds.dataKeys || []).forEach(function (k) { if (k.type === 'timeseries') { keys[k.name] = true; } });
+    });
+  });
+  return Object.keys(keys);
+}
+
+/** The measured kinds `channels` need, a calculated name through the channels it reads. */
+function channelKinds(channels, names) {
+  var out = {};
+  (function walk(list, depth) {
+    list.forEach(function (c) {
+      var n = names[splitChannelKey(c).name] || {};
+      if (n.calculated && depth < 8) { walk(n.calculated.channels || [], depth + 1); } else if (n.kind) { out[camelKind(n.kind)] = true; }
+    });
+  })(channels, 0);
+  return Object.keys(out);
+}
+
+/** How a device's stored keys meet `kinds`: `have` the kinds it measures among
+ * them, `fits` when it measures every one. */
+function deviceFit(keys, kinds, names) {
+  var measured = {};
+  keys.forEach(function (k) { var kind = deviceKeyKind(k, names); if (kind) { measured[camelKind(kind)] = true; } });
+  var have = kinds.filter(function (k) { return measured[k]; });
+  return { have: have, fits: kinds.length > 0 && have.length === kinds.length };
+}
+
 function channelMapOf(entity, names, io) {
   return io.fetchAttrs(entity).then(function (attrs) { return channelsFromAttrs(attrs, names); });
 }
@@ -774,6 +810,9 @@ return {
   calculatedChannels: calculatedChannels,
   calculationPlan: calculationPlan,
   templateFit: templateFit,
+  dashboardChannels: dashboardChannels,
+  channelKinds: channelKinds,
+  deviceFit: deviceFit,
   CALC_PREFIX: CALC_PREFIX,
   mapEntries: mapEntries,
   buildMap: buildMap,
