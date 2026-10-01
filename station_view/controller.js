@@ -12,7 +12,10 @@
  * §2). A name
  * the vocabulary marks diagnostic is folded away unless it is in alarm. A
  * channel with an active `<channel>.max|min|state` alarm carries its severity;
- * the station's other alarms are listed under the channels.
+ * the station's other alarms are listed under the channels. A name the
+ * vocabulary marks `rule` is no measurement: those channels are listed as the
+ * station's dry contact interface rules, which open its Dry contact interface
+ * view.
  *
  * `opts`, set by build_project_dashboard.py: `devicesDashboardId` (the device
  * card), `projectDashboardId` (the project card).
@@ -95,6 +98,7 @@ function channelOf(name, entry, attrs, latest) {
     label: attrs['effective.' + name + '.label'] || base.label || name,
     unit: attrs['effective.' + name + '.unit'] || '',
     diagnostic: !!base.diagnostic,
+    rule: !!base.rule,
     states: base.states || null,
     whenTrue: attrs['effective.' + name + '.textWhenTrue'],
     whenFalse: attrs['effective.' + name + '.textWhenFalse'],
@@ -121,9 +125,11 @@ function loadDevice(id) {
   return tb.get('/api/device/' + id).then(function (d) {
     return Promise.all([
       tb.attrsMap(dev, 'SERVER_SCOPE'), tb.attrsMap(dev, 'CLIENT_SCOPE'),
-      tb.get('/api/alarm/DEVICE/' + id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
+      tb.get('/api/alarm/DEVICE/' + id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }),
+      d.type === 'logr2' ? tb.get('/api/plugins/telemetry/DEVICE/' + id + '/keys/timeseries').catch(function () { return []; }) : []
     ]).then(function (got) {
-      return { id: id, device: d, server: got[0], client: got[1], alarms: (got[2] && got[2].data) || [] };
+      return { id: id, device: d, server: got[0], client: got[1], alarms: (got[2] && got[2].data) || [],
+               dryc: (got[3] || []).some(function (k) { return k.indexOf('dryc.') === 0; }) };
     });
   }).catch(function () { return { id: id, hidden: true }; });
 }
@@ -226,6 +232,7 @@ var cardEl = h(
   '</div>');
 root.innerHTML = '';
 root.appendChild(cardEl);
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var mainEl = cardEl.querySelector('.ts-stv-main');
 var sideEl = cardEl.querySelector('.ts-stv-side');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
@@ -318,17 +325,19 @@ function alarmActions(a) {
 function renderChannels() {
   mainEl.innerHTML = '';
   var sec = mainEl.appendChild(h('<div class="ts-section"><div class="ts-section-head">Channels</div></div>'));
-  if (!state.channels.length) {
+  var measured = state.channels.filter(function (c) { return !c.rule; });
+  if (!measured.length) {
     sec.appendChild(h('<div class="ts-empty">No channel mapped yet: no measurement reaches this station.</div>'));
   }
-  var shown = state.channels.filter(function (c) { return state.showDiagnostic || !c.diagnostic || c.alarm; });
+  var shown = measured.filter(function (c) { return state.showDiagnostic || !c.diagnostic || c.alarm; });
   shown.forEach(function (c) { sec.appendChild(channelRow(c)); });
-  var hidden = state.channels.length - shown.length;
-  if (hidden || state.showDiagnostic && state.channels.some(function (c) { return c.diagnostic; })) {
+  var hidden = measured.length - shown.length;
+  if (hidden || state.showDiagnostic && measured.some(function (c) { return c.diagnostic; })) {
     var more = sec.appendChild(h('<button type="button" class="ts-more"></button>'));
     more.textContent = state.showDiagnostic ? 'Hide diagnostic channels' : 'Show ' + hidden + ' diagnostic channel' + (hidden === 1 ? '' : 's');
     more.addEventListener('click', function () { state.showDiagnostic = !state.showDiagnostic; renderChannels(); });
   }
+  renderRules();
   if (state.alarms.length) {
     var al = mainEl.appendChild(h('<div class="ts-section"><div class="ts-section-head">Other alarms</div></div>'));
     state.alarms.forEach(function (a) {
@@ -339,6 +348,49 @@ function renderChannels() {
       if (state.canWrite) { row.appendChild(alarmActions(a)); }
     });
   }
+}
+
+/** Whether the station has a dry contact interface to set up: rules kept here,
+ * a rule channel, a DRYC reading mapped, or a LOGR2 that reports one. */
+function hasDryc() {
+  return !!parseJson(state.attrs['dryc.rules']) || state.channels.some(function (c) { return c.rule || /^dryc\./.test(c.sourceKey || ''); }) ||
+    state.devices.some(function (d) { return d.dryc; });
+}
+
+/** The dry contact interface's notifying rules (DRYC.md §3): each with whether
+ * it matches and its alarm, and the way to the Dry contact interface view. */
+function renderRules() {
+  if (!hasDryc()) { return; }
+  var sec = mainEl.appendChild(h('<div class="ts-section ts-stv-rules"><div class="ts-section-head">Dry contact interface rules<span class="ts-spacer"></span></div></div>'));
+  if (opts.projectDashboardId) {
+    sec.firstChild.appendChild(h('<button type="button" class="ts-btn" data-a="dryc">' + ICON.settings +
+      (state.canWrite ? 'Set up inputs and rules' : 'Inputs and rules') + '</button>')).addEventListener('click', function () {
+      tb.openDashboard(opts.projectDashboardId, 'dryc', state.station);
+    });
+  }
+  var rules = state.channels.filter(function (c) { return c.rule; });
+  if (!rules.length) {
+    sec.appendChild(h('<div class="ts-empty">No rule raises an alarm on this station yet.</div>'));
+    return;
+  }
+  rules.forEach(function (c) {
+    var on = c.latest ? flag(c.latest.value) || Number(c.latest.value) === 1 : null;
+    var row = sec.appendChild(h('<div class="ts-stv-ch ts-stv-rule"><div class="ts-stv-ch-main"><div class="ts-row-label"></div>' +
+      '<div class="ts-row-meta"></div></div><div class="ts-stv-val"><b></b></div></div>'));
+    row.dataset.rule = c.name;
+    row.querySelector('.ts-row-label').textContent = c.label;
+    row.querySelector('.ts-row-meta').textContent = c.latest ? 'Checked ' + ago(c.latest.ts) : 'Not checked yet';
+    row.querySelector('b').textContent = on === null ? '—' : on ? 'Matching' : 'Not matching';
+    if (c.alarm) {
+      row.classList.add('alarm');
+      row.style.setProperty('--c', 'var(--sev-' + c.alarm.toLowerCase() + ')');
+      var chipEl = h('<span class="ts-chip ts-stv-sev"></span>');
+      chipEl.style.setProperty('--c', 'var(--sev-' + c.alarm.toLowerCase() + ')');
+      chipEl.textContent = G.severity(c.alarm.toLowerCase()).label;
+      row.querySelector('.ts-stv-val').insertBefore(chipEl, row.querySelector('b'));
+      if (state.canWrite) { c.alarms.forEach(function (a) { row.querySelector('.ts-stv-val').appendChild(alarmActions(a)); }); }
+    }
+  });
 }
 
 function channelRow(c) {

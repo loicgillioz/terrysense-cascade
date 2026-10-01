@@ -30,12 +30,12 @@
  * Connecting writes the STATION -> DEVICE `Contains` relation, the station's
  * `config.channelMap`, then a resolve. A station keeps one source device (CHANNEL_MAP.md §3), so connecting to a
  * station fed by another device replaces it and keeps the channels this one
- * reports. The dry contact interface's `drycRule.*` channels belong to the DRYC
- * widget and are kept. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
+ * reports. The dry contact interface's channels belong to the station's DRYC
+ * view and are kept. Widget: logr-product-docs/cloud/DEVICE_VIEW.md.
  *
  * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose Station
- * view a station opens, and `devicesDashboardId`, whose dry contact interface
- * view the DRYC card opens.
+ * view a station opens and whose Dry contact interface view the DRYC card opens,
+ * and `devicesDashboardId`.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js, calculations.js and lifecycle.js.
  */
@@ -335,7 +335,10 @@ function mappedNames() {
 /** The names a source of `kind` can be stored under: a retired name only where a channel of this device already carries it. */
 function namesForKind(kind) {
   var mapped = mappedNames();
-  return Object.keys(state.names).filter(function (n) { return camel(state.names[n].kind) === kind && (!retiredName(n) || mapped[n]); })
+  return Object.keys(state.names).filter(function (n) {
+    var e = state.names[n];
+    return camel(e.kind) === kind && !e.fixed && !e.rule && (!retiredName(n) || mapped[n]);
+  })
     .sort(function (a, b) {
       return !!state.names[a].diagnostic - !!state.names[b].diagnostic || (state.names[a].label || a).localeCompare(state.names[b].label || b);
     });
@@ -345,6 +348,7 @@ function namesForKind(kind) {
  * vocabulary names of its kind. */
 function namesForReading(key) {
   var own = nameOf(key), e = entryOf(key);
+  if (e && e.fixed) { return [own]; }
   return [own].concat(e ? namesForKind(camel(e.kind)).filter(function (n) { return n !== own; }) : []);
 }
 
@@ -354,7 +358,8 @@ function namesForReading(key) {
  * its own name, a LOGR2's without its peripheral prefix. */
 function mappable() {
   if (family() !== 'bus') {
-    var parts = family() === 'logr2' ? logr2Parts(readings()) : [{ id: 'device', label: state.device.type || 'Device', keys: readings() }];
+    var parts = family() === 'logr2' ? logr2Parts(readings()).filter(function (p) { return p.id !== 'dryc'; })
+      : [{ id: 'device', label: state.device.type || 'Device', keys: readings() }];
     return [].concat.apply([], parts.map(function (part) {
       return part.keys.map(function (key) {
         return { key: key, label: labelOf(key), group: part.id, groupLabel: part.label || 'LOGR itself', names: namesForReading(key), name: nameOf(key),
@@ -786,8 +791,8 @@ function fillNames(select, r, entries, channel) {
  * its history keeps it too. */
 function channelsFor(old, chosen) {
   var channels = {};
-  // The dry contact interface's rule channels stay with this device.
-  Object.keys(old).forEach(function (c) { if (RULE_SOURCE.test(old[c])) { channels[c] = old[c]; } });
+  // The dry contact interface's channels are its DRYC view's and stay with this device.
+  Object.keys(old).forEach(function (c) { if (DRYC_KEY.test(old[c])) { channels[c] = old[c]; } });
   var byName = {};
   chosen.forEach(function (c) { (byName[c.name] = byName[c.name] || []).push(c); });
   Object.keys(byName).forEach(function (name) {
@@ -1116,11 +1121,12 @@ function followUpSteps(target, moved) {
     var rules = parseJson(m.attrs['dryc.rules']);
     return rules && (rules.rules || []).length && m.keys.some(function (k) { return DRYC_KEY.test(k); });
   });
-  if (dryc && opts.devicesDashboardId) {
-    var send = { a: 'dryc', label: 'Send the DRYC rules to ' + target.name, action: 'Send…' };
+  var drycStation = moved.filter(function (m) { return parseJson(m.attrs['dryc.rules']); })[0];
+  if (dryc && drycStation && opts.projectDashboardId) {
+    var send = { a: 'dryc', label: 'Send the DRYC rules of ' + drycStation.station.name + ' to ' + target.name, action: 'Send…' };
     send.run = function () {
       send.done = true;
-      tb.openDashboard(opts.devicesDashboardId, 'relays', target);
+      tb.openDashboard(opts.projectDashboardId, 'dryc', drycStation.station);
     };
     steps.push(send);
   }
@@ -1333,6 +1339,7 @@ var cardEl = h('<div class="ts-card ts-readonly ts-dev"><div class="ts-head"><di
   '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '<div class="ts-foot"><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div></div>');
 root.appendChild(cardEl);
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
 var summaryEl = cardEl.querySelector('.ts-summary');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
@@ -1531,6 +1538,23 @@ function foldable(id, open) {
 function countText(n) { return n + (n === 1 ? ' reading' : ' readings'); }
 
 /** A button in a card's summary acts without folding the card. */
+/** The DRYC is set up on a station (DRYC.md §1): the card names it and opens
+ * its Dry contact interface view, the station holding rules first. */
+function drycNote(box) {
+  var stations = state.bindings.slice().sort(function (a, b) {
+    return !!parseJson(b.attrs['dryc.rules']) - !!parseJson(a.attrs['dryc.rules']);
+  });
+  var st = stations[0];
+  if (!st) {
+    box.appendChild(h('<div class="ts-field-hint ts-dryc-note">Inputs, relays and rules are set up on a station: connect this device to one first.</div>'));
+    return;
+  }
+  if (!opts.projectDashboardId) { return; }
+  headButton(box, '<button type="button" class="ts-btn" data-a="relays"></button>', function () {
+    tb.openDashboard(opts.projectDashboardId, 'dryc', st.station);
+  }).textContent = 'Set up on ' + st.station.name;
+}
+
 function headButton(box, html, onClick) {
   var b = box.querySelector('.ts-pos-head').appendChild(h(html));
   b.addEventListener('click', function (e) { e.preventDefault(); onClick(); });
@@ -1585,11 +1609,7 @@ function partCard(part, pos) {
   box.querySelector('.ts-pos-name').textContent = part.label || 'LOGR itself';
   box.querySelector('.ts-pos-head .ts-mono').remove();
   box.querySelector('.ts-pos-count').textContent = countText(part.keys.length);
-  if (part.id === 'dryc' && opts.devicesDashboardId) {
-    headButton(box, '<button type="button" class="ts-btn" data-a="relays">Dry contact interface</button>', function () {
-      tb.openDashboard(opts.devicesDashboardId, 'relays', { entityType: 'DEVICE', id: state.device.id.id, name: state.device.name });
-    });
-  }
+  if (part.id === 'dryc') { drycNote(box); }
   if (LOGR2_SENSORS[part.id] && state.writable) {
     headButton(box, '<button type="button" class="ts-btn danger" data-a="delete-data">Delete data</button>', function () { deleteSensorData(part); });
   }

@@ -11,7 +11,9 @@
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
 
-window.TerrySenseFirmware = function (ctx, container) {
+window.TerrySenseFirmware = function (ctx, container, opts) {
+
+opts = opts || {};
 
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
@@ -135,6 +137,7 @@ root.innerHTML =
   '    <div class="ts-fw-list"><div class="ts-loading">Loading…</div></div>' +
   '  </div></div>';
 var cardEl = root.querySelector('.ts-fw');
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var listEl = root.querySelector('.ts-fw-list');
 var input = root.querySelector('.ts-input');
 

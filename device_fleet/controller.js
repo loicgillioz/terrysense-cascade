@@ -104,28 +104,20 @@ function loadAlarms(byId) {
 }
 
 /** The stations a device feeds, each with its project, and the device's projects.
- * A station's project is looked up once per load, however many devices feed it. */
+ * A station's project is looked up once per load, however many devices feed it.
+ * An open pane redraws as its device's stations arrive. */
 function loadStations(devices) {
   var projectOf = {};
-  function project(st) {
-    return projectOf[st.id] || (projectOf[st.id] = tb.ancestors(st).then(function (chain) {
-      return chain.filter(function (a) { return a.kind === 'Project'; })[0] || null;
-    }));
-  }
   return Promise.all(devices.map(function (d) {
-    return tb.get('/api/relations/info', { toId: d.id, toType: 'DEVICE' }).then(function (rels) {
-      var refs = (rels || []).filter(function (r) { return r.type === 'Contains' && r.from.entityType === 'ASSET'; })
-        .map(function (r) { return { entityType: 'ASSET', id: r.from.id, name: r.fromName }; })
+    return tb.deviceStations(d, projectOf).catch(function () { return []; }).then(function (refs) {
+      var projects = {};
+      refs.forEach(function (s) { if (s.project) { projects[s.project.id] = s.project; } });
+      d.stationRefs = refs;
+      d.stations = refs.map(function (s) { return s.name; });
+      d.projects = Object.keys(projects).map(function (id) { return projects[id]; })
         .sort(function (a, b) { return a.name.localeCompare(b.name); });
-      return Promise.all(refs.map(function (s) { return project(s).then(function (p) { s.project = p; }); })).then(function () {
-        var projects = {};
-        refs.forEach(function (s) { if (s.project) { projects[s.project.id] = s.project; } });
-        d.stationRefs = refs;
-        d.stations = refs.map(function (s) { return s.name; });
-        d.projects = Object.keys(projects).map(function (id) { return projects[id]; })
-          .sort(function (a, b) { return a.name.localeCompare(b.name); });
-      });
-    }).catch(function () {});
+      if (state.pane && state.pane.id === d.id) { state.pane.fill(d); }
+    });
   }));
 }
 
@@ -325,6 +317,7 @@ var cardEl = h(
   '    <button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div>' +
   '</div>');
 root.appendChild(cardEl);
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
 var groupBar = cardEl.querySelector('[data-bar=group]');
@@ -590,6 +583,38 @@ function navRow(parent, label, meta, button, onClick) {
   return row;
 }
 
+/** Where to go from the pane, by kind: the device, the stations it feeds, their projects. */
+function fillGoTo(go, d) {
+  Array.prototype.slice.call(go.children, 1).forEach(function (el) { el.remove(); });
+  function group(title) {
+    var g = go.appendChild(h('<div class="ts-fleet-go"><div class="ts-fleet-go-kind"></div></div>'));
+    g.firstChild.textContent = title;
+    return g;
+  }
+  navRow(group('Device'), d.name, 'Peripherals, channels and settings', 'Device view', function () { openDevice(d); })
+    .querySelector('button').setAttribute('data-a', 'device-view');
+  if (!d.stationRefs) {
+    go.appendChild(h('<div class="ts-row-meta">Loading stations and projects…</div>'));
+    return;
+  }
+  if (!d.stationRefs.length) {
+    go.appendChild(h('<div class="ts-row-meta">On no station, so on no project.</div>'));
+    return;
+  }
+  var stations = group(d.stationRefs.length === 1 ? 'Station' : 'Stations');
+  d.stationRefs.forEach(function (s) {
+    navRow(stations, s.name, s.project ? 'in ' + s.project.name : 'on no project', 'Station view',
+      opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
+  });
+  if (!d.projects.length) { return; }
+  var projects = group(d.projects.length === 1 ? 'Project' : 'Projects');
+  d.projects.forEach(function (p) {
+    var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
+    navRow(projects, p.name, n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project view',
+      opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
+  });
+}
+
 /** The device at a glance, as its device view has it, and the ways on from there. */
 function openPane(d) {
   var live = liveness(d);
@@ -646,24 +671,9 @@ function openPane(d) {
     });
   }
 
-  // Where to go from here: the device view, then each project and station the device feeds.
   var go = section(body, 'Go to');
-  navRow(go, d.name, 'Peripherals, channels and settings', 'Device view', function () { openDevice(d); })
-    .querySelector('button').setAttribute('data-a', 'device-view');
-  if (!d.stationRefs) {
-    go.appendChild(h('<div class="ts-row-meta">Loading projects and stations…</div>'));
-  } else {
-    d.projects.forEach(function (p) {
-      var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
-      navRow(go, p.name, 'Project · ' + n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project',
-        opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
-    });
-    d.stationRefs.forEach(function (s) {
-      navRow(go, s.name, 'Station · ' + (s.project ? s.project.name : 'on no project'), 'Station',
-        opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
-    });
-    if (!d.stationRefs.length) { go.appendChild(h('<div class="ts-row-meta">On no station, so on no project.</div>')); }
-  }
+  state.pane = { id: d.id, fill: function (dev) { if (go.isConnected) { fillGoTo(go, dev); } } };
+  fillGoTo(go, d);
 
   if (d.alarms.length) {
     var al = section(body, 'Active alarms');

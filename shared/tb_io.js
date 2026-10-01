@@ -546,6 +546,31 @@ root.TerrySenseTbIo = function (ctx) {
     }).then(function (rels) { return (rels || []).map(function (r) { return { entityType: 'DEVICE', id: r.to.id }; }); });
   }
 
+  /** The Stations that contain the device, by name, each with its `project`
+   * or null. Only a Station feeds from a device: another asset that contains
+   * it is left out. `projectOf` caches a station's project across calls. */
+  function deviceStations(device, projectOf) {
+    projectOf = projectOf || {};
+    return post('/api/relations', {
+      parameters: { rootId: device.id, rootType: 'DEVICE', direction: 'TO', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
+      filters: [{ relationType: 'Contains', entityTypes: ['ASSET'] }]
+    }).then(function (rels) {
+      return Promise.all((rels || []).map(function (r) { return getAsset(r.from.id).catch(function () { return null; }); }));
+    }).then(function (assets) {
+      var stations = assets.filter(function (a) { return a && a.type === 'Station'; }).map(function (a) {
+        var s = assetLevel(a);
+        s.ownerId = a.ownerId && a.ownerId.id;
+        return s;
+      }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+      return Promise.all(stations.map(function (s) {
+        var p = projectOf[s.id] || (projectOf[s.id] = ancestors(s).then(function (chain) {
+          return chain.filter(function (a) { return a.kind === 'Project'; })[0] || null;
+        }));
+        return p.then(function (project) { s.project = project; });
+      })).then(function () { return stations; });
+    });
+  }
+
   /** The device's latest `p0.gnssFix`, `{lat, lon, sats, ts}`, or null. */
   function latestFix(deviceId) {
     return get('/api/plugins/telemetry/DEVICE/' + deviceId + '/values/timeseries', { keys: 'p0.gnssFix' }).then(function (r) {
@@ -567,7 +592,8 @@ root.TerrySenseTbIo = function (ctx) {
     relate: relate, unrelate: unrelate, createStation: createStation, ownerProjects: ownerProjects,
     settingChanges: settingChanges, moveStation: moveStation, deleteHistory: deleteHistory, deleteEntity: deleteEntity,
     serviceOf: serviceOf, setServiceState: setServiceState, silence: silence, endSilence: endSilence,
-    ackAlarm: ackAlarm, clearAlarm: clearAlarm, containedDevices: containedDevices, latestFix: latestFix, userName: userName,
+    ackAlarm: ackAlarm, clearAlarm: clearAlarm, containedDevices: containedDevices, deviceStations: deviceStations,
+    latestFix: latestFix, userName: userName,
     SILENCED_NOTICE: SILENCED_NOTICE, readingKeys: readingKeys, setLabel: setLabel, deviceParents: deviceParents,
     reassignDevice: reassignDevice
   };

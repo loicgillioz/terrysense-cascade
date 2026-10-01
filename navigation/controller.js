@@ -1,164 +1,21 @@
 /*
- * Navigation — the button bar above a view, linking the views of one LOGR
- * installation to each other.
+ * Navigation — the navigation row of shared/nav.js on its own, for a view with
+ * no terrySense widget to carry it: the station view of a station dashboard.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Navigation*.
  *
- * `opts`, set by the dashboard builders: `links`, a list of
- *   fleet     the Devices dashboard's landing view
- *   firmware  the Devices dashboard's firmware view
- *   device    the device view of the bound device
- *   relays    the dry contact interface view of the bound device, a LOGR2
- *             that has reported a DRYC reading
- *   projects  the Project dashboard's landing view
- *   project   the Project view of the bound project, or of the project above it
- *   home      the bound project's own home dashboard, `config.homeDashboard`,
- *             when the user can read it
- *   station   the station view of the bound station
- *   charts    the station's own template dashboard, `config.stationDashboard`
- *   settings  the Settings view of the bound customer, project or station, in
- *             the Project dashboard; of the bound device, in the Devices
- *             dashboard; never on a public link
- * and `devicesDashboardId`, `projectDashboardId`. A link that does not apply to
- * the bound entity is left out.
+ * `opts`: as shared/nav.js.
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and nav.js.
  */
 
 window.TerrySenseNavigation = function (ctx, container, opts) {
 
-opts = opts || {};
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
-var h = ui.h, ICON = ui.ICON;
-
-var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
-var ICON_STATION = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M8 21h8"/><circle cx="12" cy="6" r="3"/></svg>';
 
 root.innerHTML = '';
-var bar = root.appendChild(h('<div class="ts-nav"></div>'));
-
-function button(id, icon, text, onClick) {
-  var b = h('<button type="button" class="ts-btn ts-nav-btn">' + icon + '<span></span></button>');
-  b.dataset.nav = id;
-  b.querySelector('span').textContent = text;
-  b.addEventListener('click', onClick);
-  bar.appendChild(b);
-  return b;
-}
-
-function missing(id, text) {
-  var el = bar.appendChild(h('<span class="ts-nav-none"></span>'));
-  el.dataset.nav = id;
-  el.textContent = text;
-}
-
-function onDashboard(id) { return !!id && window.location.pathname.indexOf(id) >= 0; }
-
-var ICON_RELAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="8" rx="4"/><circle cx="16" cy="12" r="2"/></svg>';
-
-function fleet() {
-  button('fleet', ICON.back, 'Fleet', function () {
-    var sc = ctx.stateController;
-    if (onDashboard(opts.devicesDashboardId) && sc) { sc.resetState(); } else { tb.openDashboard(opts.devicesDashboardId); }
-  });
-}
-
-var ICON_CHIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>';
-
-function firmware() {
-  button('firmware', ICON_CHIP, 'Firmware', function () {
-    var sc = ctx.stateController;
-    if (onDashboard(opts.devicesDashboardId) && sc) { sc.openState('firmware', {}, false); } else { tb.openDashboard(opts.devicesDashboardId); }
-  });
-}
-
-function device(e) {
-  if (e.entityType !== 'DEVICE') { return; }
-  button('device', ICON.back, e.name, function () { tb.openDashboard(opts.devicesDashboardId, 'device', e); });
-}
-
-function relays(e) {
-  if (e.entityType !== 'DEVICE' || e.kind !== 'logr2') { return; }
-  // A LOGR2 has a DRYC once it has reported a `dryc.` reading.
-  return tb.get('/api/plugins/telemetry/DEVICE/' + e.id + '/keys/timeseries').then(function (keys) {
-    if (!(keys || []).some(function (k) { return k.indexOf('dryc.') === 0; })) { return; }
-    button('relays', ICON_RELAY, 'Dry contact interface', function () { tb.openDashboard(opts.devicesDashboardId, 'relays', e); });
-  });
-}
-
-function projects() {
-  button('projects', ICON.back, 'Projects', function () {
-    var sc = ctx.stateController;
-    if (onDashboard(opts.projectDashboardId) && sc) { sc.resetState(); } else { tb.openDashboard(opts.projectDashboardId); }
-  });
-}
-
-var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
-
-function home(e) {
-  if (e.kind !== 'Project') { return; }
-  return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.homeDashboard']); }).then(function (id) {
-    if (id) { button('home', ICON_HOME, 'Project dashboard', function () { tb.openDashboard(id); }); }
-  });
-}
-
-function project(e) {
-  if (e.entityType !== 'ASSET') { return; }
-  if (e.kind === 'Project') {
-    button('project', ICON.back, 'Project: ' + e.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', e); });
-    return;
-  }
-  return tb.ancestors(e).then(function (chain) {
-    var p = chain.filter(function (a) { return a.kind === 'Project'; })[0];
-    if (!p) { missing('project', 'On no project'); return; }
-    button('project', ICON.back, 'Project: ' + p.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', p); });
-  });
-}
-
-function stationLink(e) {
-  if (e.kind !== 'Station') { return; }
-  button('station', ICON_STATION, 'Station', function () { tb.openDashboard(opts.projectDashboardId, 'station', e); });
-}
-
-function charts(e) {
-  if (e.kind !== 'Station') { return; }
-  return tb.attrsMap(e).then(function (attrs) {
-    var id = attrs['config.stationDashboard'];
-    if (!id) { missing('charts', 'No charts dashboard yet'); return; }
-    button('charts', ICON_CHART, 'Charts', function () { tb.openDashboard(id, 'station', e); });
-  });
-}
-
-function settings(e) {
-  if (tb.isPublicView()) { return; }
-  var dashboard = e.entityType === 'DEVICE' ? opts.devicesDashboardId : opts.projectDashboardId;
-  button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(dashboard, 'settings', e); });
-}
-
-var LINKS = { fleet: fleet, firmware: firmware, device: device, relays: relays, projects: projects, project: project, home: home,
-  station: stationLink, charts: charts, settings: settings };
-
-function bound(ds) {
-  if (!ds) { return Promise.resolve(null); }
-  if (ds.entityType === 'DEVICE') {
-    return tb.get('/api/device/' + ds.entityId).then(function (d) {
-      return { entityType: 'DEVICE', id: ds.entityId, name: d.name, kind: d.type };
-    });
-  }
-  return tb.loadEntity(ds);
-}
-
-var links = opts.links || [];
-var needsEntity = links.some(function (l) { return l !== 'fleet' && l !== 'firmware' && l !== 'projects'; });
-tb.boundDatasource().then(function (ds) {
-  return needsEntity ? bound(ds) : null;
-}).then(function (e) {
-  if (needsEntity && !e) { return; }
-  // One after the other, so the bar keeps the order of `links`.
-  return links.reduce(function (done, link) {
-    return done.then(function () { return LINKS[link](e); });
-  }, Promise.resolve());
-}).catch(function () {});
+var card = root.appendChild(ui.h('<div class="ts-card ts-nav-only"></div>'));
+window.TerrySenseNav(ctx, tb, ui, card, opts);
 
 };

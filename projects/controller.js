@@ -181,6 +181,7 @@ var cardEl = h(
   '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
   '</div>');
 root.appendChild(cardEl);
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var mapEl = cardEl.querySelector('.ts-proj-map');
 var listEl = cardEl.querySelector('.ts-projs-rows');
 var searchEl = cardEl.querySelector('.ts-projs-search input');

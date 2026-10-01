@@ -13,7 +13,9 @@
  * shared/theme.css. Design: logr-product-docs/cloud/CASCADE_EDITOR.md.
  */
 
-window.TerrySenseConfigOverrides = function (ctx, container) {
+window.TerrySenseConfigOverrides = function (ctx, container, opts) {
+
+opts = opts || {};
 
 var resolver = window.TerrySenseResolver;
 var G = window.TerrySenseGlossary;
@@ -172,6 +174,7 @@ var cardEl = h('<div class="ts-card"><div class="ts-head"><div class="ts-head-ic
   '<div class="ts-foot" hidden><span class="ts-foot-left"></span><span class="ts-spacer"></span>' +
   '<label class="ts-switch ts-summary"><input type="checkbox" class="ts-show-inh"> Show inherited</label></div></div>');
 root.appendChild(cardEl);
+window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
 var footEl = cardEl.querySelector('.ts-foot');
 cardEl.querySelector('.ts-show-inh').addEventListener('change', function (e) { state.showInherited = e.target.checked; render(); });
@@ -346,6 +349,9 @@ function fmtScalar(def, v) {
   return esc(v);
 }
 
+/** A rule channel carries a dry contact interface rule, set in its DRYC view, not a measurement. */
+function isRule(ch) { return !!(state.names[resolver.splitChannelKey(ch).name] || {}).rule; }
+
 function emptyLine(what) {
   var el = h('<div class="ts-empty">Nothing set here, all inherited.' + (state.readOnly ? '' : ' <a>Add</a>') + '</div>');
   var a = el.querySelector('a');
@@ -361,7 +367,8 @@ function render() {
 
   var sec = h('<div class="ts-section"><div class="ts-section-head">Measurements ' + info('measurements') + '</div></div>');
   var own = channelsWith(state.own);
-  Object.keys(own).sort(function (a, b) { return chLabel(a).localeCompare(chLabel(b)); }).forEach(function (ch) {
+  var rules = Object.keys(own).filter(isRule);
+  Object.keys(own).filter(function (ch) { return !isRule(ch); }).sort(function (a, b) { return chLabel(a).localeCompare(chLabel(b)); }).forEach(function (ch) {
     var row = h('<div class="ts-row" tabindex="0"><div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div>' +
       '<div class="ts-row-value">' + channelChips(ch, own[ch], ownVal) + '</div>' +
       (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" title="Edit">' + ICON.edit + '</button></div>') + '</div>');
@@ -377,7 +384,7 @@ function render() {
     state.ancestors.forEach(function (a) {
       var byCh = channelsWith(a.attrs);
       Object.keys(byCh).forEach(function (ch) {
-        if (own[ch]) { return; }
+        if (own[ch] || isRule(ch)) { return; }
         byCh[ch].forEach(function (k) { if ((inh[ch] = inh[ch] || []).indexOf(k) < 0) { inh[ch].push(k); } });
       });
     });
@@ -393,6 +400,11 @@ function render() {
     });
   }
   if (!sec.querySelector('.ts-row')) { sec.appendChild(emptyLine('measurement')); }
+  if (rules.length) {
+    sec.appendChild(h('<div class="ts-field-hint" data-rules="' + rules.length + '"></div>')).textContent =
+      rules.length + (rules.length === 1 ? ' dry contact interface rule raises' : ' dry contact interface rules raise') +
+      ' alarms here; their names and severities are set in the station’s Dry contact interface view.';
+  }
   bodyEl.appendChild(sec);
   if (state.origin.kind === 'Station') { renderCalculations(); }
 
@@ -837,8 +849,10 @@ function openMeasurementPicker(fromAdd) {
   var dr = ui.openDrawer('Choose a measurement', 'Grouped by kind');
   if (fromAdd) { dr.onBack(openAdd); }
   var own = channelsWith(state.own);
+  var measurable = {};
+  Object.keys(state.names).forEach(function (n) { if (!state.names[n].rule) { measurable[n] = state.names[n]; } });
   dr.body.appendChild(ui.namePicker({
-    names: state.names,
+    names: measurable,
     kinds: state.kinds,
     allowKind: function (spec) { return !spec || spec.alarm !== 'none'; },
     inUse: Object.keys(state.channelKinds).map(function (k) { return resolver.splitChannelKey(k).name; }),
@@ -846,7 +860,7 @@ function openMeasurementPicker(fromAdd) {
     onPick: function (n) { openChannel(n, fromAdd); }
   }));
   // A name sets every instance at once; an instance key overrides one of them.
-  var instances = Object.keys(state.channelKinds).filter(function (k) { return resolver.splitChannelKey(k).instance; })
+  var instances = Object.keys(state.channelKinds).filter(function (k) { return resolver.splitChannelKey(k).instance && !isRule(k); })
     .sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
   if (instances.length) {
     dr.body.appendChild(h('<div class="ts-subhead">One instance only</div>'));
