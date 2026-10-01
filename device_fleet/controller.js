@@ -11,13 +11,19 @@
  * other device shows the hand-kept `register.*`. A tenant admin also sees each device's customer,
  * none for a device the tenant owns. Each LOGR shows its sensor families as chips; picking
  * families, in the tag bar or on a row, keeps the LOGRs that carry all of them. A column header sorts by that column; an empty
- * cell (a device never heard from, on no station) sorts last either way.
+ * cell (a device never heard from, on no station) sorts last either way. A row opens a pane
+ * summing the device up, with buttons to its device view, its stations and its projects.
+ *
+ * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose Station
+ * and Project views those buttons open.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
 
-window.TerrySenseDeviceFleet = function (ctx, container) {
+window.TerrySenseDeviceFleet = function (ctx, container, opts) {
+
+opts = opts || {};
 
 var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
@@ -58,7 +64,7 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', tags: [], sort: 'uplink', dir: -1, loadedAt: 0 };
+var state = { devices: [], tenant: false, group: 'logr', filter: 'all', search: '', tags: { sensor: {}, project: {} }, sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
@@ -92,11 +98,28 @@ function loadAlarms(byId) {
   }).catch(function () {});
 }
 
+/** The stations a device feeds, each with its project, and the device's projects.
+ * A station's project is looked up once per load, however many devices feed it. */
 function loadStations(devices) {
+  var projectOf = {};
+  function project(st) {
+    return projectOf[st.id] || (projectOf[st.id] = tb.ancestors(st).then(function (chain) {
+      return chain.filter(function (a) { return a.kind === 'Project'; })[0] || null;
+    }));
+  }
   return Promise.all(devices.map(function (d) {
     return tb.get('/api/relations/info', { toId: d.id, toType: 'DEVICE' }).then(function (rels) {
-      d.stations = (rels || []).filter(function (r) { return r.type === 'Contains' && r.from.entityType === 'ASSET'; })
-        .map(function (r) { return r.fromName; }).sort();
+      var refs = (rels || []).filter(function (r) { return r.type === 'Contains' && r.from.entityType === 'ASSET'; })
+        .map(function (r) { return { entityType: 'ASSET', id: r.from.id, name: r.fromName }; })
+        .sort(function (a, b) { return a.name.localeCompare(b.name); });
+      return Promise.all(refs.map(function (s) { return project(s).then(function (p) { s.project = p; }); })).then(function () {
+        var projects = {};
+        refs.forEach(function (s) { if (s.project) { projects[s.project.id] = s.project; } });
+        d.stationRefs = refs;
+        d.stations = refs.map(function (s) { return s.name; });
+        d.projects = Object.keys(projects).map(function (id) { return projects[id]; })
+          .sort(function (a, b) { return a.name.localeCompare(b.name); });
+      });
     }).catch(function () {});
   }));
 }
@@ -144,6 +167,8 @@ function load() {
       devices.forEach(function (d) {
         var old = state.devices.filter(function (x) { return x.id === d.id; })[0];
         d.stations = old ? old.stations : null;
+        d.stationRefs = old ? old.stationRefs : null;
+        d.projects = old ? old.projects : null;
         d.sensors = old ? old.sensors : null;
       });
       if (!state.loadedAt) {
@@ -195,6 +220,7 @@ var COLUMNS = {
   device: { label: 'Device', dir: 1, cell: 'ts-fleet-dev', width: 'minmax(180px, 2fr)', value: function (d) { return String(d.name || '').toLowerCase(); } },
   customer: { label: 'Customer', dir: 1, cell: 'ts-fleet-cust', width: 'minmax(110px, 1fr)', value: function (d) { return d.customer ? d.customer.toLowerCase() : null; } },
   uplink: { label: 'Last uplink', dir: -1, cell: 'ts-fleet-up', width: '110px', value: function (d) { return lastTs(d) || null; } },
+  projects: { label: 'Projects', dir: 1, cell: 'ts-fleet-proj', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.projects && d.projects.length ? d.projects[0].name.toLowerCase() : null; } },
   stations: { label: 'Stations', dir: 1, cell: 'ts-fleet-st', width: 'minmax(120px, 1.5fr)', value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
   sensors: { label: 'Sensors', dir: 1, cell: 'ts-fleet-sens', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.sensors && d.sensors.length ? codes(d).join(' ') : null; } },
   versions: { label: 'Versions', dir: 1, cell: 'ts-fleet-ver', width: 'minmax(120px, 1fr)', value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
@@ -203,21 +229,47 @@ var COLUMNS = {
   alarms: { label: 'Alarms', dir: -1, cell: 'ts-fleet-al', width: '90px', value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
 };
 function columnsOf(logr) {
-  return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'stations'], logr ? ['sensors', 'versions', 'hardware'] : ['type'], ['alarms']);
+  return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'projects', 'stations'], logr ? ['sensors', 'versions', 'hardware'] : ['type'], ['alarms']);
 }
 
 function codes(d) { return (d.sensors || []).map(function (s) { return s.code; }); }
 
-/** A device carries every sensor family picked in the tag bar. */
+/** The tag lines: a LOGR keeps every sensor family picked, any device any project picked. */
+var TAGS = {
+  sensor: { label: 'Sensors', every: true, options: function (d) {
+    return groupOf(d).id === 'logr' ? codes(d).map(function (c) { return { value: c, label: c }; }) : [];
+  } },
+  project: { label: 'Projects', every: false, options: function (d) {
+    return (d.projects || []).map(function (p) { return { value: p.id, label: p.name }; });
+  } }
+};
+
 function hasTags(d) {
-  var have = codes(d);
-  return state.tags.every(function (t) { return have.indexOf(t) >= 0; });
+  return Object.keys(TAGS).every(function (kind) {
+    var picked = Object.keys(state.tags[kind]);
+    if (!picked.length || (kind === 'sensor' && state.group !== 'logr')) { return true; }
+    var have = TAGS[kind].options(d).map(function (o) { return o.value; });
+    var held = picked.filter(function (v) { return have.indexOf(v) >= 0; }).length;
+    return TAGS[kind].every ? held === picked.length : held > 0;
+  });
 }
 
-function toggleTag(code) {
-  var i = state.tags.indexOf(code);
-  if (i < 0) { state.tags.push(code); } else { state.tags.splice(i, 1); }
+function toggleTag(kind, opt) {
+  if (state.tags[kind][opt.value] !== undefined) { delete state.tags[kind][opt.value]; } else { state.tags[kind][opt.value] = opt.label; }
   render();
+}
+
+/** A chip that picks or unpicks its tag, on a row as in the tag line. */
+function tagChip(kind, opt, text, title) {
+  var b = h('<button type="button" class="ts-chip ts-fleet-tag"></button>');
+  b.setAttribute('data-kind', kind);
+  b.setAttribute('data-tag', opt.value);
+  b.textContent = text || opt.label;
+  if (title) { b.title = title; }
+  if (state.tags[kind][opt.value] !== undefined) { b.classList.add('on'); }
+  b.addEventListener('click', function (e) { e.stopPropagation(); toggleTag(kind, opt); });
+  b.addEventListener('keydown', function (e) { e.stopPropagation(); });
+  return b;
 }
 
 function needsLook(d) {
@@ -229,9 +281,9 @@ function visible() {
   var list = state.devices.filter(function (d) {
     if (groupOf(d).id !== state.group) { return false; }
     if (state.filter === 'attention' && !needsLook(d)) { return false; }
-    if (state.group === 'logr' && !hasTags(d)) { return false; }
+    if (!hasTags(d)) { return false; }
     if (!q) { return true; }
-    return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [], codes(d))
+    return [d.name, d.label, d.owner, d.type, hwStatus(d)].concat(d.stations || [], codes(d), (d.projects || []).map(function (p) { return p.name; }))
       .some(function (x) { return x && String(x).toLowerCase().indexOf(q) >= 0; });
   });
   var value = COLUMNS[state.sort].value;
@@ -252,9 +304,10 @@ var cardEl = h(
   '  <div class="ts-fleet-bar">' +
   '    <div class="ts-seg" data-bar="group"></div>' +
   '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button></div>' +
-  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, station, sensor"></label>' +
+  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, project, station, sensor"></label>' +
   '  </div>' +
-  '  <div class="ts-fleet-tags" hidden><span class="ts-row-meta">Sensors</span><span class="ts-fleet-taglist"></span></div>' +
+  '  <div class="ts-fleet-tags" data-kind="project" hidden><span class="ts-row-meta">Projects</span><span class="ts-fleet-taglist"></span></div>' +
+  '  <div class="ts-fleet-tags" data-kind="sensor" hidden><span class="ts-row-meta">Sensors</span><span class="ts-fleet-taglist"></span></div>' +
   '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-fleet-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div>' +
@@ -272,33 +325,29 @@ cardEl.querySelector('.ts-fleet-bar').addEventListener('click', function (e) {
   render();
 });
 cardEl.querySelector('.ts-fleet-search input').addEventListener('input', function (e) { state.search = e.target.value; render(); });
-var tagsEl = cardEl.querySelector('.ts-fleet-tags');
-tagsEl.addEventListener('click', function (e) {
-  var b = e.target.closest('[data-tag]');
-  if (b) { toggleTag(b.getAttribute('data-tag')); }
-});
-
-/** Every sensor family on the group's devices, and every picked one, so it can be unpicked. */
+/** Each tag line: every value on the group's devices, and every picked one, so it can be unpicked. */
 function renderTags() {
-  var all = {};
-  state.devices.forEach(function (d) { if (groupOf(d).id === state.group) { codes(d).forEach(function (c) { all[c] = true; }); } });
-  state.tags.forEach(function (c) { all[c] = true; });
-  var list = Object.keys(all).sort();
-  tagsEl.hidden = state.group !== 'logr' || !list.length;
-  var holder = tagsEl.querySelector('.ts-fleet-taglist');
-  holder.innerHTML = '';
-  list.forEach(function (c) {
-    var b = holder.appendChild(h('<button type="button" class="ts-chip ts-fleet-tag"></button>'));
-    b.setAttribute('data-tag', c);
-    b.textContent = c;
-    if (state.tags.indexOf(c) >= 0) { b.classList.add('on'); }
-  });
-  if (state.tags.length) {
-    holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">Clear</button>')).addEventListener('click', function () {
-      state.tags = [];
-      render();
+  Object.keys(TAGS).forEach(function (kind) {
+    var line = cardEl.querySelector('.ts-fleet-tags[data-kind="' + kind + '"]');
+    var all = {};
+    state.devices.forEach(function (d) {
+      if (groupOf(d).id === state.group) { TAGS[kind].options(d).forEach(function (o) { all[o.value] = o.label; }); }
     });
-  }
+    var picked = state.tags[kind];
+    Object.keys(picked).forEach(function (v) { all[v] = picked[v]; });
+    var list = Object.keys(all).map(function (v) { return { value: v, label: all[v] }; })
+      .sort(function (a, b) { return a.label.localeCompare(b.label); });
+    line.hidden = !list.length;
+    var holder = line.querySelector('.ts-fleet-taglist');
+    holder.innerHTML = '';
+    list.forEach(function (o) { holder.appendChild(tagChip(kind, o)); });
+    if (Object.keys(picked).length) {
+      holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">Clear</button>')).addEventListener('click', function () {
+        state.tags[kind] = {};
+        render();
+      });
+    }
+  });
 }
 
 function fail(text) {
@@ -329,7 +378,8 @@ function render() {
 
   var list = visible();
   bodyEl.innerHTML = '';
-  if (!list.length) { fail(state.search || state.filter !== 'all' || state.tags.length ? 'No device matches.' : 'No device here yet.'); return; }
+  var tagged = Object.keys(state.tags.sensor).length + Object.keys(state.tags.project).length;
+  if (!list.length) { fail(state.search || state.filter !== 'all' || tagged ? 'No device matches.' : 'No device here yet.'); return; }
   var logr = state.group === 'logr';
   if (columnsOf(logr).indexOf(state.sort) < 0) { state.sort = 'uplink'; state.dir = -1; return render(); }
   var table = h('<div class="ts-fleet-list"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
@@ -367,15 +417,14 @@ function row(d, logr) {
     sens.appendChild(h('<span class="ts-row-meta">…</span>'));
   } else if (sens) {
     d.sensors.forEach(function (s) {
-      // A chip filters the fleet by its family rather than opening the device.
-      var chip = sens.appendChild(h('<button type="button" class="ts-chip ts-fleet-tag"></button>'));
-      chip.setAttribute('data-tag', s.code);
-      chip.textContent = s.code + (s.count > 1 ? ' ×' + s.count : '');
-      chip.title = s.names.join(', ');
-      if (state.tags.indexOf(s.code) >= 0) { chip.classList.add('on'); }
-      chip.addEventListener('click', function (e) { e.stopPropagation(); toggleTag(s.code); });
-      chip.addEventListener('keydown', function (e) { e.stopPropagation(); });
+      sens.appendChild(tagChip('sensor', { value: s.code, label: s.code }, s.code + (s.count > 1 ? ' ×' + s.count : ''), s.names.join(', ')));
     });
+  }
+  var proj = el.querySelector('.ts-fleet-proj');
+  if (!d.projects) {
+    proj.appendChild(h('<span class="ts-row-meta">…</span>'));
+  } else {
+    d.projects.forEach(function (p) { proj.appendChild(tagChip('project', { value: p.id, label: p.name })); });
   }
   var up = el.querySelector('.ts-fleet-up');
   up.textContent = ago(lastTs(d));
@@ -411,9 +460,106 @@ function row(d, logr) {
     chip.textContent = d.alarms.length + ' · ' + G.severity(worst.toLowerCase()).label;
     chip.title = d.alarms.map(function (a) { return a.type; }).join(', ');
   }
-  el.addEventListener('click', function () { openDevice(d); });
-  el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { openDevice(d); } });
+  el.addEventListener('click', function () { openPane(d); });
+  el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { openPane(d); } });
   return el;
+}
+
+// -- pane -------------------------------------------------------------------------------
+
+var LIVENESS = { live: 'Live', inactive: 'Inactive', never: 'Never heard from' };
+
+function kv(parent, label, value) {
+  var row = parent.appendChild(h('<div class="ts-kv"><div class="ts-kv-label"></div><div class="ts-kv-value"></div></div>'));
+  row.querySelector('.ts-kv-label').textContent = label;
+  var v = row.querySelector('.ts-kv-value');
+  if (typeof value === 'string') { v.textContent = value; } else { v.appendChild(value); }
+  return row;
+}
+
+function section(parent, title) {
+  var sec = parent.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div></div>'));
+  sec.firstChild.textContent = title;
+  return sec;
+}
+
+function navRow(parent, label, meta, button, onClick) {
+  var row = parent.appendChild(h('<div class="ts-fleet-pane-row"><div class="ts-row-main"><div class="ts-row-label"></div>' +
+    '<div class="ts-row-meta"></div></div></div>'));
+  row.querySelector('.ts-row-label').textContent = label;
+  row.querySelector('.ts-row-meta').textContent = meta || '';
+  if (onClick) {
+    var b = row.appendChild(h('<button type="button" class="ts-btn"></button>'));
+    b.textContent = button;
+    b.addEventListener('click', function () { ui.closeDrawer(); onClick(); });
+  }
+  return row;
+}
+
+/** The device at a glance, as its device view has it, and the ways on from there. */
+function openPane(d) {
+  var live = liveness(d);
+  var dr = ui.openDrawer(esc(d.name), esc([d.label, d.type].filter(Boolean).join(' · ')));
+  dr.el.classList.add('ts-fleet-pane');
+  dr.el.setAttribute('data-pane', d.name);
+  var body = dr.body;
+
+  var state0 = h('<span><span class="ts-dot"></span> <span></span></span>');
+  state0.querySelector('.ts-dot').style.background = live === 'live' ? 'var(--ts-ok)' : live === 'inactive' ? 'var(--ts-danger)' : 'var(--ts-text-3)';
+  state0.lastChild.textContent = LIVENESS[live] + (lastTs(d) ? ', last uplink ' + ago(lastTs(d)) : '');
+  state0.title = fmtTime(lastTs(d));
+  kv(body, 'State', state0);
+  if (state.tenant) { kv(body, 'Customer', d.customer || 'none, the tenant owns it'); }
+  if (groupOf(d).id === 'logr') {
+    var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
+    kv(body, 'Versions', [hw ? 'hw ' + hw.value + (hw.from === 'register' ? ' (kept by hand)' : '') : '', fw ? 'fw ' + fw.value : '',
+      !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + d.attrs['register.loraFw'] : ''].filter(Boolean).join(' · ') || 'not reported');
+  } else {
+    kv(body, 'Type', d.type || '');
+  }
+  var faults = [hwStatusBad(d) ? hwStatus(d) : '', dfuImpossible(d) ? 'DFU impossible' : ''].filter(Boolean);
+  if (faults.length) { kv(body, 'Hardware', faults.join(' · ')).classList.add('warn'); }
+
+  if (groupOf(d).id === 'logr') {
+    var sens = section(body, 'Sensors');
+    if (!d.sensors) { sens.appendChild(h('<div class="ts-row-meta">Loading…</div>')); }
+    else if (!d.sensors.length) { sens.appendChild(h('<div class="ts-row-meta">No sensor reported.</div>')); }
+    (d.sensors || []).forEach(function (s) {
+      navRow(sens, s.code + (s.count > 1 ? ' ×' + s.count : ''), s.names.join(', '));
+    });
+  }
+
+  var proj = section(body, 'Projects');
+  var st = section(body, 'Stations');
+  if (!d.stationRefs) {
+    [proj, st].forEach(function (s) { s.appendChild(h('<div class="ts-row-meta">Loading…</div>')); });
+  } else {
+    if (!d.projects.length) { proj.appendChild(h('<div class="ts-row-meta">On no project.</div>')); }
+    d.projects.forEach(function (p) {
+      var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
+      navRow(proj, p.name, n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project',
+        opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
+    });
+    if (!d.stationRefs.length) { st.appendChild(h('<div class="ts-row-meta">On no station.</div>')); }
+    d.stationRefs.forEach(function (s) {
+      navRow(st, s.name, s.project ? s.project.name : 'on no project', 'Station',
+        opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
+    });
+  }
+
+  if (d.alarms.length) {
+    var al = section(body, 'Active alarms');
+    d.alarms.slice().sort(function (a, b) { return G.rank(b.severity.toLowerCase()) - G.rank(a.severity.toLowerCase()); }).forEach(function (a) {
+      var row = navRow(al, a.type, '');
+      var chip = row.appendChild(h('<span class="ts-chip ts-fleet-sev"></span>'));
+      chip.style.setProperty('--sev', 'var(--sev-' + a.severity.toLowerCase() + ')');
+      chip.textContent = G.severity(a.severity.toLowerCase()).label;
+    });
+  }
+
+  dr.foot.hidden = false;
+  dr.foot.innerHTML = '<span class="ts-spacer"></span><button type="button" class="ts-btn primary" data-a="device-view">Device view</button>';
+  dr.foot.querySelector('[data-a="device-view"]').addEventListener('click', function () { ui.closeDrawer(); openDevice(d); });
 }
 
 // -- load -------------------------------------------------------------------------------
