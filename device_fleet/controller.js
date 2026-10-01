@@ -1,9 +1,9 @@
 /*
  * Fleet — every device at a glance: is it live, where does it feed, what is
  * it, what is wrong with it (TC-3, TC-12). The Devices dashboard's landing view
- * and the tenant's home page. A row opens a pane summing the device up; its row
- * menu, for a user who may write the device, puts it out of service (CA-23),
- * and under *Tenant only* reassigns it to another owner (TA-6). A device out of
+ * and the tenant's home page. A row opens a pane summing the device up; its
+ * actions, for a user who may write the device, put it out of service (CA-23),
+ * and under *Tenant only* reassign it to another owner (TA-6). A device out of
  * service leaves *Needs a look* for its own *Out of service* filter.
  *
  * One entity query brings every device of the configured profiles with its
@@ -422,7 +422,6 @@ function row(d, logr) {
   var dev = el.querySelector('.ts-fleet-dev');
   life.deviceChips(d.attrs).forEach(function (c) { dev.appendChild(c); });
   if (outOfService(d)) { el.setAttribute('data-service', tb.serviceOf(d.attrs).state); }
-  if (state.writable) { dev.appendChild(ui.rowMenu(function () { return menuItems(d); }, { tenant: state.tenant, title: 'Device actions' })); }
   var cust = el.querySelector('.ts-fleet-cust');
   if (cust) { cust.textContent = d.customer || 'none'; cust.classList.toggle('none', !d.customer); }
   var sens = el.querySelector('.ts-fleet-sens');
@@ -480,13 +479,6 @@ function row(d, logr) {
 
 function deviceRef(d) { return { entityType: 'DEVICE', id: d.id, name: d.name, label: d.label }; }
 
-/** The row menu: the device's service state, then *Reassign…* for the tenant. */
-function menuItems(d) {
-  return [
-    life.serviceItem(deviceRef(d), d.attrs, refresh),
-    { a: 'reassign', label: 'Reassign…', tenantOnly: true, run: function () { life.reassign(deviceRef(d), refresh); } }
-  ];
-}
 
 // -- pane -------------------------------------------------------------------------------
 
@@ -671,6 +663,18 @@ function openPane(d) {
       chip.style.setProperty('--sev', 'var(--sev-' + a.severity.toLowerCase() + ')');
       chip.textContent = G.severity(a.severity.toLowerCase()).label;
     });
+  }
+
+  if (state.writable) {
+    var act = section(body, 'Actions');
+    var service = tb.serviceOf(d.attrs).state, item = life.serviceItem(deviceRef(d), d.attrs, refresh);
+    navRow(act, 'Service', service ? G.SERVICE_STATES[service] : 'In service', item.label, item.run)
+      .querySelector('button').setAttribute('data-a', item.a);
+    if (state.tenant) {
+      var only = act.appendChild(ui.tenantSection(h('<div></div>'))).lastChild;
+      navRow(only, 'Owner', d.customer || 'the tenant', 'Reassign…', function () { life.reassign(deviceRef(d), refresh); })
+        .querySelector('button').setAttribute('data-a', 'reassign');
+    }
   }
 }
 
