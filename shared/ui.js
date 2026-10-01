@@ -152,6 +152,9 @@ root.TerrySenseUi = function (rootEl) {
     dr.querySelector('.ts-subtitle').innerHTML = subtitleHtml || '';
     back.addEventListener('click', closeDrawer);
     dr.querySelector('.ts-x').addEventListener('click', closeDrawer);
+    // Below the navigation row: ThingsBoard's fullscreen button floats over the card's top right corner.
+    var nav = card().querySelector(':scope > .ts-nav');
+    if (nav) { back.style.top = dr.style.top = nav.offsetHeight + 'px'; }
     card().appendChild(back);
     card().appendChild(dr);
     return {
