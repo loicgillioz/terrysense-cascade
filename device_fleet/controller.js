@@ -69,7 +69,7 @@ function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
 
-var state = { devices: [], tenant: false, writable: false, group: 'logr', filter: 'all', search: '', tags: { sensor: {}, project: {} }, sort: 'uplink', dir: -1, loadedAt: 0 };
+var state = { devices: [], tenant: false, writable: false, group: 'logr', filter: 'all', search: '', tags: { sensor: {}, project: {} }, tagsOpen: {}, sort: 'uplink', dir: -1, loadedAt: 0 };
 
 function queryDevices() {
   var profiles = [];
@@ -239,6 +239,9 @@ function columnsOf(logr) {
 
 function codes(d) { return (d.sensors || []).map(function (s) { return s.code; }); }
 
+/** A tag line longer than this folds to its first chips and the picked ones. */
+var TAG_LIMIT = 12;
+
 /** The tag lines: a LOGR keeps every sensor family picked, any device any project picked. */
 var TAGS = {
   sensor: { label: 'Sensors', every: true, options: function (d) {
@@ -349,7 +352,14 @@ function renderTags() {
     line.hidden = !list.length;
     var holder = line.querySelector('.ts-fleet-taglist');
     holder.innerHTML = '';
-    list.forEach(function (o) { holder.appendChild(tagChip(kind, o)); });
+    var open = state.tagsOpen[kind] || list.length <= TAG_LIMIT;
+    var shown = open ? list : list.filter(function (o, i) { return i < TAG_LIMIT || picked[o.value] !== undefined; });
+    shown.forEach(function (o) { holder.appendChild(tagChip(kind, o)); });
+    if (list.length > TAG_LIMIT) {
+      var more = holder.appendChild(h('<button type="button" class="ts-btn ghost ts-fleet-tagmore" data-a="tags-more"></button>'));
+      more.textContent = state.tagsOpen[kind] ? 'Show less' : '+' + (list.length - shown.length) + ' more';
+      more.addEventListener('click', function () { state.tagsOpen[kind] = !state.tagsOpen[kind]; renderTags(); });
+    }
     if (Object.keys(picked).length) {
       holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">Clear</button>')).addEventListener('click', function () {
         state.tags[kind] = {};
