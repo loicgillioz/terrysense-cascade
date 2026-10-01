@@ -297,6 +297,12 @@ root.TerrySenseTbIo = function (ctx) {
       function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); }));
   }
 
+  /** `id` when the user can open that dashboard, else null: a stored link can outlive its dashboard. */
+  function readableDashboard(id) {
+    if (!id) { return Promise.resolve(null); }
+    return get('/api/dashboard/info/' + id).then(function () { return id; }).catch(function () { return null; });
+  }
+
   /** A dashboard opened through a public link: its route is /dashboard, not /dashboards. */
   function isPublicView() { return /^\/dashboard\//.test(window.location.pathname); }
 
@@ -318,7 +324,7 @@ root.TerrySenseTbIo = function (ctx) {
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
     channelFreshness: channelFreshness,
     isComplexDevice: isComplexDevice,
-    ancestors: ancestors, openDashboard: openDashboard, isPublicView: isPublicView
+    ancestors: ancestors, openDashboard: openDashboard, readableDashboard: readableDashboard, isPublicView: isPublicView
   };
 };
 

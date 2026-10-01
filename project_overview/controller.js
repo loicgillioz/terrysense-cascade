@@ -108,7 +108,7 @@ var openDashboard = tb.openDashboard;
 var state = {
   entity: null, owner: null, names: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null,
-  publicReport: null, templates: null
+  publicReport: null, templates: null, homeId: null
 };
 
 function loadNames() {
@@ -155,6 +155,8 @@ function load() {
   var e = state.entity;
   return Promise.all([tb.io.fetchChildren(e), tb.attrsMap(e)]).then(function (got) {
     state.projectAttrs = got[1];
+    return tb.readableDashboard(got[1][HOME_KEY]).then(function (homeId) { state.homeId = homeId; return got; });
+  }).then(function (got) {
     return Promise.all(got[0].filter(function (c) { return c.kind === 'Station'; }).map(loadStation));
   }).then(function (stations) {
     state.stations = stations.sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
@@ -408,7 +410,7 @@ function renderHeader() {
   cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
   editBtn.hidden = !state.canEdit || !map;
   gearBtn.hidden = tb.isPublicView();
-  homeBtn.hidden = !state.projectAttrs[HOME_KEY];
+  homeBtn.hidden = !state.homeId;
 }
 
 function renderList() {
@@ -895,7 +897,7 @@ function refresh() {
 refreshBtn.addEventListener('click', function () { refresh().then(refreshPublic); });
 editBtn.addEventListener('click', function () { setEditMap(!state.editMap); });
 gearBtn.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'settings', state.entity); });
-homeBtn.addEventListener('click', function () { openDashboard(state.projectAttrs[HOME_KEY]); });
+homeBtn.addEventListener('click', function () { openDashboard(state.homeId); });
 
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project in the widget\'s Data tab.'); return; }

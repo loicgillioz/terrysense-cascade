@@ -106,11 +106,12 @@ function loadProject(asset) {
   var project = tb.assetLevel(asset);
   return Promise.all([tb.attrsMap(project), tb.io.fetchChildren(project), ownerName(asset.ownerId)]).then(function (got) {
     var stations = got[1].filter(function (c) { return c.kind === 'Station'; });
-    return Promise.all(stations.map(loadStation)).then(function (entries) {
+    return Promise.all([Promise.all(stations.map(loadStation)), tb.readableDashboard(got[0][HOME_KEY])]).then(function (more) {
+      var entries = more[0];
       var area = parseJson(got[0].perimeter);
       area = Array.isArray(area) && area.length >= 3 ? area : null;
       var entry = { project: project, ownerId: asset.ownerId, owner: got[2], attrs: got[0], area: area, stations: entries,
-        homeId: got[0][HOME_KEY] || null };
+        homeId: more[1] };
       entry.latLng = centre(area || entries.filter(function (s) { return s.latLng; }).map(function (s) { return s.latLng; }));
       entry.status = statusOf(entry);
       return entry;
