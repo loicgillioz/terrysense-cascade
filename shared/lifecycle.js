@@ -85,10 +85,14 @@ root.TerrySenseLifecycle = function (ui, tb) {
     }
   }
 
-  /** *Public* / *Private* (CA-12): in or out of the owner's public group. */
-  function setPublic(entity, owner, on, done) {
-    ui.confirm(on ? 'Make <b>' + esc(entity.name) + '</b> public? The project’s public link then shows it and its readings.'
-      : 'Make <b>' + esc(entity.name) + '</b> private? The public link no longer shows it.', on ? 'Make public' : 'Make private')
+  /** *Public* / *Private* (CA-12): in or out of the owner's public group.
+   * `projectPublic` false: the project has no public link, so nothing shows the station yet. */
+  function setPublic(entity, owner, on, done, projectPublic) {
+    var text = !on ? 'Make <b>' + esc(entity.name) + '</b> private? The public link no longer shows it.'
+      : projectPublic === false ? 'Make <b>' + esc(entity.name) + '</b> public? Its project has no public link yet, so no link shows it ' +
+        'until <i>Public link on</i> in the project’s menu.'
+      : 'Make <b>' + esc(entity.name) + '</b> public? The project’s public link then shows it and its readings.';
+    ui.confirm(text, on ? 'Make public' : 'Make private')
       .then(function (ok) {
         if (!ok) { return null; }
         return tb.setPublic(entity, owner, on).then(function () {
@@ -164,14 +168,14 @@ root.TerrySenseLifecycle = function (ui, tb) {
   }
 
   /** The row menu items of a station (FRONTEND.md *Project dashboard*, row menu).
-   * `s`: {station, attrs, project, owner, isPublic, nameEl, changed(), deleted()}. */
+   * `s`: {station, attrs, project, owner, isPublic, projectPublic, nameEl, changed(), deleted()}. */
   function stationItems(s) {
     var retired = tb.serviceOf(s.attrs).retired;
     return [
       { a: 'rename', label: 'Rename', run: function () { rename(s.station, s.nameEl, s.changed); } },
       s.project && { a: 'move', label: 'Move to project…', run: function () { moveStation(s.station, s.attrs, s.project, s.owner, s.changed); } },
       { a: s.isPublic ? 'private' : 'public', label: s.isPublic ? 'Make private' : 'Make public',
-        run: function () { setPublic(s.station, s.owner, !s.isPublic, s.changed); } },
+        run: function () { setPublic(s.station, s.owner, !s.isPublic, s.changed, s.projectPublic); } },
       retired ? { a: 'reactivate', label: 'Reactivate', run: function () { reactivate(s.station, s.changed); } }
         : { a: 'retire', label: 'Retire', run: function () { retire(s.station, s.changed); } },
       retired && { a: 'delete', label: 'Delete…', danger: true, run: function () { remove(s.station, [], s.deleted); } }

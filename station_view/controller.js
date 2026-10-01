@@ -281,7 +281,8 @@ function renderService() {
   actsEl.appendChild(ui.rowMenu(function () {
     return life.stationItems({
       station: state.station, attrs: state.attrs, project: project(), owner: state.owner,
-      isPublic: !!state.pub && !!state.pub.ids[state.station.id], nameEl: cardEl.querySelector('.ts-subtitle'),
+      isPublic: !!state.pub && !!state.pub.ids[state.station.id],
+      projectPublic: state.pub && project() ? !!state.pub.ids[project().id] : undefined, nameEl: cardEl.querySelector('.ts-subtitle'),
       changed: refresh, deleted: leave
     });
   }, { title: 'Station actions' }));

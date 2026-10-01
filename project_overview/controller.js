@@ -6,8 +6,7 @@
  * one, or creates a template for it, places and removes a station's position
  * and draws the project area, adds a station; the row menus of the project
  * and its stations rename, move, make public or private, retire and delete
- * (shared/lifecycle.js). Retired stations fold away at the end of the list. A
- * gear opens the Settings view of the project.
+ * (shared/lifecycle.js). Retired stations fold away at the end of the list.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
@@ -41,14 +40,12 @@ var STARTER_TITLE = 'Station (starter)';
 var STARTER_USE = 'New template';
 var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
 var DASHBOARD_KEY = 'config.stationDashboard';
-var HOME_KEY = 'config.homeDashboard';
 var STATUS = {
   nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
   ok: { label: 'OK', color: 'var(--ts-ok)', rank: 1 },
   none: { label: 'No station', color: 'var(--ts-nodata)', rank: 0 },
   retired: { label: 'Retired', color: 'var(--ts-nodata)', rank: -1 }
 };
-var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
 var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
@@ -115,7 +112,7 @@ var openDashboard = tb.openDashboard;
 var state = {
   entity: null, owner: null, names: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
-  publicReport: null, pub: null, templates: null, homeId: null, showRetired: false, followUps: {}, ghost: null
+  publicReport: null, pub: null, templates: null, showRetired: false, followUps: {}, ghost: null
 };
 
 function loadNames() {
@@ -180,7 +177,7 @@ function load() {
     state.canEdit ? tb.publicMembers(state.owner).catch(function () { return null; }) : null]).then(function (got) {
     state.projectAttrs = got[1];
     state.pub = got[2];
-    return tb.readableDashboard(got[1][HOME_KEY]).then(function (homeId) { state.homeId = homeId; return got; });
+    return got;
   }).then(function (got) {
     return Promise.all(got[0].filter(function (c) { return c.kind === 'Station'; }).map(loadStation));
   }).then(function (stations) {
@@ -237,9 +234,8 @@ var cardEl = h(
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
   '    <div class="ts-head-text"><div class="ts-title">Project</div><div class="ts-subtitle"><span class="ts-proj-pname"></span><span class="ts-proj-count"></span></div></div>' +
   '    <span class="ts-proj-public" tabindex="0" hidden></span><span class="ts-proj-worst"></span>' +
-  '    <button type="button" class="ts-btn ts-proj-home" hidden>' + ICON_HOME + ' Project dashboard</button>' +
   '    <button type="button" class="ts-btn ts-proj-edit" hidden>Edit map</button>' +
-  '    <button type="button" class="ts-icon-btn ts-proj-gear" hidden title="Settings">' + ICON.gear + '</button><span class="ts-proj-menu"></span></div>' +
+  '    <span class="ts-proj-menu"></span></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list"><div class="ts-loading">Loading…</div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
   '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
@@ -249,8 +245,6 @@ var mapEl = cardEl.querySelector('.ts-proj-map');
 var listEl = cardEl.querySelector('.ts-proj-list');
 var publicEl = cardEl.querySelector('.ts-proj-public');
 var editBtn = cardEl.querySelector('.ts-proj-edit');
-var gearBtn = cardEl.querySelector('.ts-proj-gear');
-var homeBtn = cardEl.querySelector('.ts-proj-home');
 var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
 var menuEl = cardEl.querySelector('.ts-proj-menu');
 
@@ -499,8 +493,6 @@ function renderHeader() {
   if (state.canEdit) { menuEl.appendChild(ui.rowMenu(projectItems, { title: 'Project actions' })); }
   cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
   editBtn.hidden = !state.canEdit || !map;
-  gearBtn.hidden = tb.isPublicView();
-  homeBtn.hidden = !state.homeId;
 }
 
 function renderList() {
@@ -659,7 +651,8 @@ function stationRow(entry) {
   if (state.canEdit) {
     side.appendChild(ui.rowMenu(life.stationItems({
       station: entry.station, attrs: entry.attrs, project: state.entity, owner: state.owner, isPublic: isPublic(entry.station.id),
-      nameEl: el.querySelector('.ts-proj-st-name'), changed: refresh, deleted: refresh
+      projectPublic: isPublic(state.entity.id),
+      nameEl: el.querySelector('.ts-proj-st-name'), changed: refreshAll, deleted: refreshAll
     }), { title: 'Station actions' }));
   }
   el.addEventListener('mouseenter', function () { highlight(entry.station.id, true); });
@@ -698,7 +691,7 @@ function setPublicLink(on) {
     });
     return work.then(function () {
       ui.toast(on ? 'Public link on' : 'Public link off');
-      return refresh();
+      return refreshAll();
     });
   }).catch(function (err) { ui.toast('Not changed: ' + errText(err), 'error'); });
 }
@@ -1096,10 +1089,11 @@ function refresh() {
   }).then(function () { refreshBtn.disabled = false; });
 }
 
-refreshBtn.addEventListener('click', function () { refresh().then(refreshPublic); });
+/** The stations and the public access check, which draws the public and private icons. */
+function refreshAll() { return refresh().then(refreshPublic); }
+
+refreshBtn.addEventListener('click', refreshAll);
 editBtn.addEventListener('click', function () { setEditMap(!state.editMap); });
-gearBtn.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'settings', state.entity); });
-homeBtn.addEventListener('click', function () { openDashboard(state.homeId); });
 
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('No project bound — bind a project in the widget\'s Data tab.'); return; }

@@ -11,6 +11,8 @@
  *             that has reported a DRYC reading
  *   projects  the Project dashboard's landing view
  *   project   the Project view of the bound project, or of the project above it
+ *   home      the bound project's own home dashboard, `config.homeDashboard`,
+ *             when the user can read it
  *   station   the station view of the bound station
  *   charts    the station's own template dashboard, `config.stationDashboard`
  *   settings  the Settings view of the bound customer, project or station, in
@@ -86,7 +88,19 @@ function relays(e) {
 }
 
 function projects() {
-  button('projects', ICON.back, 'Projects', function () { tb.openDashboard(opts.projectDashboardId); });
+  button('projects', ICON.back, 'Projects', function () {
+    var sc = ctx.stateController;
+    if (onDashboard(opts.projectDashboardId) && sc) { sc.resetState(); } else { tb.openDashboard(opts.projectDashboardId); }
+  });
+}
+
+var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
+
+function home(e) {
+  if (e.kind !== 'Project') { return; }
+  return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.homeDashboard']); }).then(function (id) {
+    if (id) { button('home', ICON_HOME, 'Project dashboard', function () { tb.openDashboard(id); }); }
+  });
 }
 
 function project(e) {
@@ -122,7 +136,7 @@ function settings(e) {
   button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(dashboard, 'settings', e); });
 }
 
-var LINKS = { fleet: fleet, firmware: firmware, device: device, relays: relays, projects: projects, project: project,
+var LINKS = { fleet: fleet, firmware: firmware, device: device, relays: relays, projects: projects, project: project, home: home,
   station: stationLink, charts: charts, settings: settings };
 
 function bound(ds) {

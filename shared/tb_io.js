@@ -312,7 +312,9 @@ root.TerrySenseTbIo = function (ctx) {
   /** `id` when the user can open that dashboard, else null: a stored link can outlive its dashboard. */
   function readableDashboard(id) {
     if (!id) { return Promise.resolve(null); }
-    return get('/api/dashboard/info/' + id).then(function () { return id; }).catch(function () { return null; });
+    // A dashboard deleted or unshared since the link was written is no error to show.
+    return toPromise(getService('dashboardService').getDashboardInfo(id, { ignoreErrors: true }))
+      .then(function () { return id; }).catch(function () { return null; });
   }
 
   /** A dashboard opened through a public link: its route is /dashboard, not /dashboards. */
