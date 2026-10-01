@@ -1,5 +1,0 @@
-/* Navigation bar, on top of shared/theme.css. */
-.ts-nav { display: flex; align-items: center; gap: 8px; height: 100%; padding: 0 12px; background: var(--ts-surface); border-top: 3px solid var(--ts-accent); overflow: hidden; }
-.ts-nav-btn { white-space: nowrap; max-width: 320px; }
-.ts-nav-btn span { overflow: hidden; text-overflow: ellipsis; }
-.ts-nav-none { color: var(--ts-text-3); font-size: 12px; white-space: nowrap; }
