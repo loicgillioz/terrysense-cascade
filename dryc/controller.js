@@ -190,7 +190,7 @@ function loadDevice() {
     state.live = {};
     Object.keys(got[2] || {}).forEach(function (key) {
       var p = got[2][key] && got[2][key][0];
-      if (p) { state.live[key.slice(LIVE_PREFIX.length)] = { ts: Number(p.ts), value: p.value }; }
+      if (p && p.value !== null && p.value !== undefined) { state.live[key.slice(LIVE_PREFIX.length)] = { ts: Number(p.ts), value: p.value }; }
     });
   });
 }

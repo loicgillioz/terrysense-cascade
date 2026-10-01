@@ -76,7 +76,7 @@ root.TerrySenseCalculations = function (ui, tb) {
         f.querySelector('.ts-calc-input').appendChild(use);
         tb.get('/api/plugins/telemetry/ASSET/' + station.id + '/values/timeseries', { keys: spec.reading }).then(function (got) {
           var p = got && got[spec.reading] && got[spec.reading][0];
-          var v = p ? Number(p.value) : NaN;
+          var v = p && p.value !== null && p.value !== undefined ? Number(p.value) : NaN;
           if (!isFinite(v)) { use.textContent = 'No reading yet'; return; }
           use.textContent = 'Use the latest reading, ' + v + (spec.unit ? ' ' + spec.unit : '');
           use.disabled = false;

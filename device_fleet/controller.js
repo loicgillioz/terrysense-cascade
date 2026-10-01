@@ -491,8 +491,9 @@ function loadLink(d) {
     tb.attrsMap(dev, 'SERVER_SCOPE').catch(function () { return {}; }),
     tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/values/timeseries', { keys: LINK_KEYS.join(',') }).catch(function () { return {}; })
   ]).then(function (got) {
+    // ThingsBoard answers a key never stored with a null value at the current time.
     var lat = {};
-    Object.keys(got[2] || {}).forEach(function (k) { var p = got[2][k] && got[2][k][0]; if (p) { lat[k] = { ts: Number(p.ts), value: p.value }; } });
+    Object.keys(got[2] || {}).forEach(function (k) { var p = got[2][k] && got[2][k][0]; if (p && p.value !== null && p.value !== undefined) { lat[k] = { ts: Number(p.ts), value: p.value }; } });
     return { client: got[0], server: got[1], latest: lat };
   });
 }
