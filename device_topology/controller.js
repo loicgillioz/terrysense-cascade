@@ -45,7 +45,7 @@ var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
-var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info;
+var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info, metric = ui.metric;
 var camel = resolver.camelKind;
 
 var EMPTY_MARKER = '(empty)';
@@ -73,11 +73,6 @@ var REGISTER = [
 ];
 var FINE_STATUS = /^(all functional|ok|)$/i;
 var ICON_STATION = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M8 21h8"/><circle cx="12" cy="6" r="3"/></svg>';
-// Tenant public images, by lower-case device type.
-var PRODUCT_IMAGES = {
-  logr4: '/api/images/public/MV2thHN69nM3RPzhnSOCvGluKYPRahrV',
-  logr2: '/api/images/public/5R9sxOWP2LwdjGai84MW8AVI0bn8vAFn'
-};
 // The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
 // (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
@@ -134,14 +129,9 @@ function fmtValue(v) {
   return String(Math.round(n * 1000) / 1000);
 }
 
-/** good | fair | poor: RSSI and SNR by their thresholds, higher is better (DEVICE_VIEW.md §2). */
-function radioLevel(v, good, fair) {
-  var n = Number(v);
-  return !isFinite(n) ? null : n >= good ? 'good' : n >= fair ? 'fair' : 'poor';
-}
-function rssiLevel(v) { return radioLevel(v, -100, -115); }
-function snrLevel(v) { return radioLevel(v, 0, -10); }
-function sfLevel(v) { return radioLevel(-Number(v), -8, -10); }
+function rssiLevel(v) { return ui.radioLevel('rssi', v); }
+function snrLevel(v) { return ui.radioLevel('snr', v); }
+function sfLevel(v) { return ui.radioLevel('sf', v); }
 
 function errText(err) { return (err && (err.message || (err.error && err.error.message))) || String(err); }
 
@@ -1108,7 +1098,7 @@ function renderStatus(pane) {
   var hw = state.client['deviceInfo.hwVersion'] || state.server['register.hwVersion'], fw = firmwareOf();
 
   var type = String(state.device.type || '');
-  var image = PRODUCT_IMAGES[type.toLowerCase()];
+  var image = ui.productImage(type);
   pane = pane.appendChild(h('<div class="ts-section" data-section="device"><div class="ts-section-head">Device</div></div>'));
   var id = pane.appendChild(h('<div class="ts-dev-id"><div class="ts-dev-figure"></div><div class="ts-dev-facts"></div></div>'));
   var figure = id.querySelector('.ts-dev-figure');
@@ -1435,13 +1425,6 @@ function statusSection() {
       (state.writable ? ' (Request reports below asks for it).' : '.') + '</div>'));
   }
   return grid.childNodes.length ? sec : null;
-}
-
-function metric(text, level) {
-  var el = h('<span class="ts-radio"></span>');
-  el.textContent = text;
-  if (level) { el.dataset.level = level; }
-  return el;
 }
 
 /** Items, each a string, a node or a list of both, flattened with `sep` between them. */

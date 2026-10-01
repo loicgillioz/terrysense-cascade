@@ -10,6 +10,14 @@
 (function (root) {
 'use strict';
 
+// Tenant public images, by lower-case device type.
+var PRODUCT_IMAGES = {
+  logr4: '/api/images/public/MV2thHN69nM3RPzhnSOCvGluKYPRahrV',
+  logr2: '/api/images/public/5R9sxOWP2LwdjGai84MW8AVI0bn8vAFn'
+};
+// [good from, fair from]; a spreading factor is compared negated, lower being better.
+var RADIO_LEVELS = { rssi: [-100, -115], snr: [0, -10], sf: [-8, -10] };
+
 var ICON = {
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
   map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="6" height="16" rx="1"/><path d="M9 8h6M9 16h6"/><rect x="15" y="5" width="6" height="6" rx="1"/><rect x="15" y="13" width="6" height="6" rx="1"/></svg>',
@@ -257,7 +265,25 @@ root.TerrySenseUi = function (rootEl) {
     return el;
   }
 
+  /** The tenant's public image of a device type, or null. */
+  function productImage(type) { return PRODUCT_IMAGES[String(type || '').toLowerCase()] || null; }
+
+  /** good | fair | poor: RSSI, SNR and spreading factor by their thresholds (DEVICE_VIEW.md §2). */
+  function radioLevel(kind, v) {
+    var t = RADIO_LEVELS[kind], n = kind === 'sf' ? -Number(v) : Number(v);
+    return !isFinite(n) ? null : n >= t[0] ? 'good' : n >= t[1] ? 'fair' : 'poor';
+  }
+
+  /** A value coloured by its radio level. */
+  function metric(text, level) {
+    var el = h('<span class="ts-radio"></span>');
+    el.textContent = text;
+    if (level) { el.dataset.level = level; }
+    return el;
+  }
+
   return {
+    productImage: productImage, radioLevel: radioLevel, metric: metric,
     ICON: ICON, esc: esc, h: h, info: info, sevDot: sevDot, glossary: glossary,
     toast: toast, confirm: confirm, openDrawer: openDrawer, closeDrawer: closeDrawer,
     drawerActions: drawerActions, popover: popover, namePicker: namePicker, nameOption: nameOption

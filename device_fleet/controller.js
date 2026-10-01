@@ -468,6 +468,74 @@ function row(d, logr) {
 // -- pane -------------------------------------------------------------------------------
 
 var LIVENESS = { live: 'Live', inactive: 'Inactive', never: 'Never heard from' };
+// Battery readings of both generations, as device_topology's BATTERY_VOLTAGE and BATTERY_CHARGING.
+var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
+var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
+var LINK_KEYS = ['rssi', 'snr', 'p0.percent'].concat(BATTERY_VOLTAGE, BATTERY_CHARGING);
+
+function parseJson(v) {
+  if (typeof v !== 'string') { return v === undefined ? null : v; }
+  try { return JSON.parse(v); } catch (e) { return null; }
+}
+
+function fmtDuration(s) {
+  s = Number(s);
+  return s >= 172800 ? Math.round(s / 86400) + ' days' : s >= 7200 ? Math.round(s / 3600) + ' h' : Math.round(s / 60) + ' min';
+}
+
+/** Battery and radio, fetched when the pane opens: the device's attributes and its latest readings. */
+function loadLink(d) {
+  var dev = { entityType: 'DEVICE', id: d.id };
+  return Promise.all([
+    tb.attrsMap(dev, 'CLIENT_SCOPE').catch(function () { return {}; }),
+    tb.attrsMap(dev, 'SERVER_SCOPE').catch(function () { return {}; }),
+    tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/values/timeseries', { keys: LINK_KEYS.join(',') }).catch(function () { return {}; })
+  ]).then(function (got) {
+    var lat = {};
+    Object.keys(got[2] || {}).forEach(function (k) { var p = got[2][k] && got[2][k][0]; if (p) { lat[k] = { ts: Number(p.ts), value: p.value }; } });
+    return { client: got[0], server: got[1], latest: lat };
+  });
+}
+
+function batteryLine(link) {
+  var c = link.client, lat = link.latest, parts = [];
+  var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
+  var charging = c['status.charging'] !== undefined ? c['status.charging'] : (BATTERY_CHARGING.map(function (k) { return lat[k]; }).filter(Boolean)[0] || {}).value;
+  if (soc !== undefined) { parts.push(Math.round(Number(soc)) + ' %'); }
+  if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + ago(volt.ts)); }
+  if (charging !== undefined) { parts.push(flag(charging) ? 'charging' : 'not charging'); }
+  if (Number(c['status.battRuntimeSeconds']) > 0) { parts.push('lasts about ' + fmtDuration(c['status.battRuntimeSeconds'])); }
+  return parts.join(' · ');
+}
+
+/** The uplink radio as the device view colours it, with the gateways that heard it; null when nothing is known. */
+function radioLine(link) {
+  var c = link.client, s = link.server, lat = link.latest, items = [];
+  var sf = s.spreadingFactor !== undefined ? s.spreadingFactor : c.spreadingFactor;
+  if (lat.rssi) { items.push(ui.metric(lat.rssi.value + ' dBm', ui.radioLevel('rssi', lat.rssi.value))); }
+  if (lat.snr) { items.push(ui.metric('SNR ' + lat.snr.value + ' dB', ui.radioLevel('snr', lat.snr.value))); }
+  if (sf !== undefined) { items.push(ui.metric('SF' + sf, ui.radioLevel('sf', sf))); }
+  var gws = parseJson(c.gateways || s.gateways) || [];
+  if (gws.length) { items.push(gws.length + (gws.length === 1 ? ' gateway' : ' gateways')); }
+  if (!items.length) { return null; }
+  var line = h('<span class="ts-fleet-radio"></span>');
+  items.forEach(function (x, i) {
+    if (i) { line.appendChild(document.createTextNode(' · ')); }
+    line.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
+  });
+  return line;
+}
+
+function downlinkLine(link) {
+  var c = link.client;
+  if (c['status.dlRssi'] === undefined) { return null; }
+  var line = h('<span class="ts-fleet-radio"></span>');
+  line.appendChild(ui.metric(c['status.dlRssi'] + ' dBm', ui.radioLevel('rssi', c['status.dlRssi'])));
+  line.appendChild(document.createTextNode(' · '));
+  line.appendChild(ui.metric('SNR ' + c['status.dlSnr'] + ' dB', ui.radioLevel('snr', c['status.dlSnr'])));
+  return line;
+}
 
 function kv(parent, label, value) {
   var row = parent.appendChild(h('<div class="ts-kv"><div class="ts-kv-label"></div><div class="ts-kv-value"></div></div>'));
@@ -504,21 +572,43 @@ function openPane(d) {
   dr.el.setAttribute('data-pane', d.name);
   var body = dr.body;
 
+  var id = body.appendChild(h('<div class="ts-fleet-pane-id"><div class="ts-fleet-pane-figure"></div><div class="ts-fleet-pane-facts"></div></div>'));
+  var figure = id.querySelector('.ts-fleet-pane-figure'), image = ui.productImage(d.type);
+  figure.setAttribute('data-figure', image ? 'image' : 'placeholder');
+  if (image) {
+    var img = figure.appendChild(h('<img>'));
+    img.src = image;
+    img.alt = d.type;
+  } else {
+    figure.appendChild(h('<span class="ts-fleet-pane-model"></span>')).textContent = String(d.type || 'device').toUpperCase();
+  }
+  var facts = id.querySelector('.ts-fleet-pane-facts');
+
   var state0 = h('<span><span class="ts-dot"></span> <span></span></span>');
   state0.querySelector('.ts-dot').style.background = live === 'live' ? 'var(--ts-ok)' : live === 'inactive' ? 'var(--ts-danger)' : 'var(--ts-text-3)';
   state0.lastChild.textContent = LIVENESS[live] + (lastTs(d) ? ', last uplink ' + ago(lastTs(d)) : '');
   state0.title = fmtTime(lastTs(d));
-  kv(body, 'State', state0);
-  if (state.tenant) { kv(body, 'Customer', d.customer || 'none, the tenant owns it'); }
+  kv(facts, 'State', state0);
+  if (state.tenant) { kv(facts, 'Customer', d.customer || 'none, the tenant owns it'); }
   if (groupOf(d).id === 'logr') {
     var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
-    kv(body, 'Versions', [hw ? 'hw ' + hw.value + (hw.from === 'register' ? ' (kept by hand)' : '') : '', fw ? 'fw ' + fw.value : '',
+    kv(facts, 'Versions', [hw ? 'hw ' + hw.value + (hw.from === 'register' ? ' (kept by hand)' : '') : '', fw ? 'fw ' + fw.value : '',
       !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + d.attrs['register.loraFw'] : ''].filter(Boolean).join(' · ') || 'not reported');
   } else {
-    kv(body, 'Type', d.type || '');
+    kv(facts, 'Type', d.type || '');
   }
   var faults = [hwStatusBad(d) ? hwStatus(d) : '', dfuImpossible(d) ? 'DFU impossible' : ''].filter(Boolean);
-  if (faults.length) { kv(body, 'Hardware', faults.join(' · ')).classList.add('warn'); }
+  if (faults.length) { kv(facts, 'Hardware', faults.join(' · ')).classList.add('warn'); }
+  var battery = kv(facts, 'Battery', 'Loading…'), radio = kv(facts, 'Radio', 'Loading…');
+  battery.setAttribute('data-kv', 'battery');
+  radio.setAttribute('data-kv', 'radio');
+  loadLink(d).then(function (link) {
+    battery.querySelector('.ts-kv-value').textContent = batteryLine(link) || 'not reported';
+    var up = radioLine(link), down = downlinkLine(link), value = radio.querySelector('.ts-kv-value');
+    value.innerHTML = '';
+    if (up) { value.appendChild(up); } else { value.textContent = 'nothing from the network server yet'; }
+    if (down) { kv(facts, 'Downlink', down).setAttribute('data-kv', 'downlink'); }
+  });
 
   if (groupOf(d).id === 'logr') {
     var sens = section(body, 'Sensors');
@@ -529,22 +619,23 @@ function openPane(d) {
     });
   }
 
-  var proj = section(body, 'Projects');
-  var st = section(body, 'Stations');
+  // Where to go from here: the device view, then each project and station the device feeds.
+  var go = section(body, 'Go to');
+  navRow(go, d.name, 'Peripherals, channels and settings', 'Device view', function () { openDevice(d); })
+    .querySelector('button').setAttribute('data-a', 'device-view');
   if (!d.stationRefs) {
-    [proj, st].forEach(function (s) { s.appendChild(h('<div class="ts-row-meta">Loading…</div>')); });
+    go.appendChild(h('<div class="ts-row-meta">Loading projects and stations…</div>'));
   } else {
-    if (!d.projects.length) { proj.appendChild(h('<div class="ts-row-meta">On no project.</div>')); }
     d.projects.forEach(function (p) {
       var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
-      navRow(proj, p.name, n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project',
+      navRow(go, p.name, 'Project · ' + n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project',
         opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
     });
-    if (!d.stationRefs.length) { st.appendChild(h('<div class="ts-row-meta">On no station.</div>')); }
     d.stationRefs.forEach(function (s) {
-      navRow(st, s.name, s.project ? s.project.name : 'on no project', 'Station',
+      navRow(go, s.name, 'Station · ' + (s.project ? s.project.name : 'on no project'), 'Station',
         opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
     });
+    if (!d.stationRefs.length) { go.appendChild(h('<div class="ts-row-meta">On no station, so on no project.</div>')); }
   }
 
   if (d.alarms.length) {
@@ -556,10 +647,6 @@ function openPane(d) {
       chip.textContent = G.severity(a.severity.toLowerCase()).label;
     });
   }
-
-  dr.foot.hidden = false;
-  dr.foot.innerHTML = '<span class="ts-spacer"></span><button type="button" class="ts-btn primary" data-a="device-view">Device view</button>';
-  dr.foot.querySelector('[data-a="device-view"]').addEventListener('click', function () { ui.closeDrawer(); openDevice(d); });
 }
 
 // -- load -------------------------------------------------------------------------------
