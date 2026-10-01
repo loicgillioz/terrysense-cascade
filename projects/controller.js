@@ -1,0 +1,423 @@
+/*
+ * Projects — every project the user can see, on a map and in a list, each with
+ * its state (EU-1). A project's pin stands at the centre of its area, else at
+ * the centre of its stations. Projects close together at the current zoom merge
+ * into one cluster. A pin or a cluster filters the list; a row opens the
+ * project's Project view, and its own home dashboard when it has one. A user who
+ * may create dashboards creates a missing home from the starter.
+ * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
+ *
+ * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
+ *
+ * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
+ * Leaflet and Leaflet.markercluster itself.
+ */
+
+window.TerrySenseProjects = function (ctx, container, opts) {
+
+opts = opts || {};
+var G = window.TerrySenseGlossary;
+var tb = window.TerrySenseTbIo(ctx);
+var root = container.querySelector('.ts-root') || container;
+var ui = window.TerrySenseUi(root);
+var h = ui.h, esc = ui.esc, ICON = ui.ICON;
+
+var REFRESH_MS = 300000;
+var LEAFLET = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/';
+var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
+var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
+var HOME_KEY = 'config.homeDashboard';
+var STARTER_TITLE = 'Project home (starter)';
+var STATUS = {
+  ok: { id: 'ok', label: 'OK', color: 'var(--ts-ok)', rank: 1 },
+  none: { id: 'none', label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
+};
+var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
+var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
+
+function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
+
+function parseJson(raw) {
+  if (!raw) { return null; }
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+}
+
+function errText(e) { return (e && e.error && e.error.message) || (e && e.message) || String(e); }
+
+function fmtTime(ts) {
+  var d = new Date(ts);
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+
+function loadOnce(tag, url) {
+  if (document.querySelector(tag + '[data-ts-src="' + url + '"]')) { return Promise.resolve(); }
+  return new Promise(function (resolve, reject) {
+    var el = document.createElement(tag);
+    el.setAttribute('data-ts-src', url);
+    if (tag === 'link') { el.rel = 'stylesheet'; el.href = url; } else { el.src = url; }
+    el.onload = resolve;
+    el.onerror = function () { reject(new Error('could not load ' + url)); };
+    document.head.appendChild(el);
+  });
+}
+
+function loadMapLibraries() {
+  var css = Promise.all([loadOnce('link', LEAFLET + 'leaflet.css'), loadOnce('link', CLUSTER + 'MarkerCluster.css')]);
+  var leaflet = window.L && window.L.version && window.L.version >= '1.9' ? Promise.resolve() : loadOnce('script', LEAFLET + 'leaflet.js');
+  return Promise.all([css, leaflet.then(function () {
+    return window.L.MarkerClusterGroup ? null : loadOnce('script', CLUSTER + 'leaflet.markercluster.js');
+  })]);
+}
+
+// -- data --------------------------------------------------------------------------------
+
+var state = { projects: [], owners: {}, loadedAt: 0, canCreateDashboards: false, filter: null, search: '' };
+
+function latLngOf(attrs) {
+  var lat = Number(attrs.latitude), lng = Number(attrs.longitude);
+  return attrs.latitude != null && attrs.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
+}
+
+function centre(points) {
+  if (!points.length) { return null; }
+  var sum = points.reduce(function (s, p) { return [s[0] + p[0], s[1] + p[1]]; }, [0, 0]);
+  return [sum[0] / points.length, sum[1] / points.length];
+}
+
+function loadStation(station) {
+  return Promise.all([
+    tb.attrsMap(station),
+    tb.get('/api/alarm/ASSET/' + station.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; })
+  ]).then(function (got) {
+    return { station: station, latLng: latLngOf(got[0]), alarms: (got[1] && got[1].data) || [] };
+  });
+}
+
+function ownerName(ownerId) {
+  if (!ownerId || ownerId.entityType !== 'CUSTOMER') { return Promise.resolve('in-terra'); }
+  if (!state.owners[ownerId.id]) {
+    state.owners[ownerId.id] = tb.get('/api/customer/' + ownerId.id).then(function (c) { return c.title || c.name; })
+      .catch(function () { return ''; });
+  }
+  return state.owners[ownerId.id];
+}
+
+function loadProject(asset) {
+  var project = tb.assetLevel(asset);
+  return Promise.all([tb.attrsMap(project), tb.io.fetchChildren(project), ownerName(asset.ownerId)]).then(function (got) {
+    var stations = got[1].filter(function (c) { return c.kind === 'Station'; });
+    return Promise.all(stations.map(loadStation)).then(function (entries) {
+      var area = parseJson(got[0].perimeter);
+      area = Array.isArray(area) && area.length >= 3 ? area : null;
+      var entry = { project: project, ownerId: asset.ownerId, owner: got[2], attrs: got[0], area: area, stations: entries,
+        homeId: got[0][HOME_KEY] || null };
+      entry.latLng = centre(area || entries.filter(function (s) { return s.latLng; }).map(function (s) { return s.latLng; }));
+      entry.status = statusOf(entry);
+      return entry;
+    });
+  });
+}
+
+function load() {
+  return tb.getAll('/api/user/assets', { type: 'Project' }).then(function (assets) {
+    return Promise.all(assets.map(loadProject));
+  }).then(function (projects) {
+    state.projects = projects.sort(function (a, b) { return a.project.name.localeCompare(b.project.name); });
+    state.loadedAt = Date.now();
+  });
+}
+
+// -- model -------------------------------------------------------------------------------
+
+/** A project's state: the worst active alarm of its stations, else OK. */
+function statusOf(entry) {
+  if (!entry.stations.length) { return STATUS.none; }
+  var worst = null;
+  entry.stations.forEach(function (s) {
+    s.alarms.forEach(function (a) {
+      var id = a.severity.toLowerCase();
+      if (!worst || G.rank(id) > G.rank(worst)) { worst = id; }
+    });
+  });
+  if (!worst) { return STATUS.ok; }
+  return { id: 'alarm', label: G.severity(worst).label, color: 'var(--sev-' + worst + ')', rank: 10 + G.rank(worst) };
+}
+
+function worstOf(entries) {
+  return entries.reduce(function (w, p) { return !w || p.status.rank > w.rank ? p.status : w; }, null) || STATUS.none;
+}
+
+function inAlarm(entry) { return entry.stations.filter(function (s) { return s.alarms.length; }).length; }
+
+function chip(status) {
+  var el = h('<span class="ts-chip ts-proj-sev"></span>');
+  el.style.setProperty('--c', status.color);
+  el.textContent = status.label;
+  return el;
+}
+
+function manyOwners() {
+  var seen = {};
+  state.projects.forEach(function (p) { seen[p.owner] = true; });
+  return Object.keys(seen).length > 1;
+}
+
+// -- scaffold ----------------------------------------------------------------------------
+
+var cardEl = h(
+  '<div class="ts-card ts-proj ts-projs">' +
+  '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
+  '    <div class="ts-head-text"><div class="ts-title">Projects</div><div class="ts-subtitle"></div></div>' +
+  '    <span class="ts-proj-worst"></span></div>' +
+  '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list">' +
+  '    <div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="Search projects"></div>' +
+  '    <div class="ts-projs-rows"><div class="ts-loading">Loading…</div></div></div></div>' +
+  '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
+  '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
+  '</div>');
+root.appendChild(cardEl);
+var mapEl = cardEl.querySelector('.ts-proj-map');
+var listEl = cardEl.querySelector('.ts-projs-rows');
+var searchEl = cardEl.querySelector('.ts-projs-search input');
+var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
+
+new ResizeObserver(function () {
+  cardEl.classList.toggle('narrow', cardEl.clientWidth < 720);
+  if (map) { map.invalidateSize(); }
+}).observe(cardEl);
+
+function fail(text) {
+  listEl.innerHTML = '';
+  listEl.appendChild(h('<div class="ts-empty"></div>')).textContent = text;
+}
+
+// -- map ---------------------------------------------------------------------------------
+
+var map = null, clusterLayer = null, areaLayer = null, markers = {}, fitted = false;
+
+function pinHtml(color, text) {
+  return '<span class="ts-pin" style="--c:' + color + '"><b>' + esc(text) + '</b></span>';
+}
+
+function select(ids) {
+  state.filter = ids;
+  renderList();
+  drawMarkers();
+}
+
+function initMap() {
+  var L = window.L;
+  map = L.map(mapEl, { zoomControl: true, attributionControl: true }).setView([46.8, 8.2], 7);
+  var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
+  var swiss = L.tileLayer(SWISSTOPO + 'pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg',
+    { maxZoom: 19, attribution: '&copy; swisstopo' });
+  var aerial = L.tileLayer(SWISSTOPO + 'swissimage/default/current/3857/{z}/{x}/{y}.jpeg',
+    { maxZoom: 20, attribution: '&copy; swisstopo' });
+  osm.addTo(map);
+  L.control.layers({ 'Map': osm, 'Swiss map': swiss, 'Aerial': aerial }, null, { position: 'topright' }).addTo(map);
+  areaLayer = L.layerGroup().addTo(map);
+  clusterLayer = L.markerClusterGroup({
+    showCoverageOnHover: false, maxClusterRadius: 40, zoomToBoundsOnClick: false,
+    iconCreateFunction: function (cluster) {
+      var entries = cluster.getAllChildMarkers().map(function (m) { return m.options.entry; });
+      return L.divIcon({ className: 'ts-pin-wrap', iconSize: [30, 30], iconAnchor: [15, 15],
+        html: pinHtml(worstOf(entries).color, String(entries.length)) });
+    }
+  }).addTo(map);
+  clusterLayer.on('clusterclick', function (ev) {
+    select(ev.layer.getAllChildMarkers().map(function (m) { return m.options.entry.project.id; }));
+    ev.layer.zoomToBounds({ padding: [30, 30] });
+  });
+}
+
+function toggle(entry) {
+  var only = state.filter && state.filter.length === 1 && state.filter[0] === entry.project.id;
+  select(only ? null : [entry.project.id]);
+}
+
+function drawMarkers() {
+  var L = window.L;
+  if (!map) { return; }
+  clusterLayer.clearLayers();
+  areaLayer.clearLayers();
+  markers = {};
+  var bounds = [];
+  state.projects.forEach(function (entry) {
+    if (!entry.latLng) { return; }
+    var selected = state.filter && state.filter.length === 1 && state.filter[0] === entry.project.id;
+    if (entry.area) {
+      var poly = L.polygon(entry.area, { color: '#0277b7', weight: selected ? 3 : 1.5, fillOpacity: selected ? 0.12 : 0.04 });
+      poly.on('click', function () { toggle(entry); });
+      areaLayer.addLayer(poly);
+    }
+    var icon = L.divIcon({ className: 'ts-pin-wrap', iconSize: [22, 22], iconAnchor: [11, 11], html: pinHtml(entry.status.color, '') });
+    var m = L.marker(entry.latLng, { icon: icon, keyboard: true, title: entry.project.name, entry: entry });
+    m.bindTooltip(esc(entry.project.name) + ' · ' + esc(entry.status.label), { direction: 'top', offset: [0, -10] });
+    m.on('click', function (ev) { L.DomEvent.stopPropagation(ev); toggle(entry); });
+    clusterLayer.addLayer(m);
+    if (selected && m.getElement()) { m.getElement().classList.add('selected'); }
+    markers[entry.project.id] = m;
+    bounds.push(entry.latLng);
+  });
+  if (!fitted && bounds.length) {
+    fitted = true;
+    if (bounds.length === 1) { map.setView(bounds[0], 13); } else { map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 }); }
+  }
+}
+
+function highlight(projectId, on) {
+  var m = markers[projectId];
+  var el = m && (clusterLayer.getVisibleParent(m) || m).getElement();
+  if (el) { el.classList.toggle('hover', on); }
+}
+
+// -- list --------------------------------------------------------------------------------
+
+function renderHeader() {
+  var n = state.projects.length;
+  cardEl.querySelector('.ts-subtitle').textContent = n + (n === 1 ? ' project' : ' projects');
+  var worstEl = cardEl.querySelector('.ts-proj-worst');
+  worstEl.innerHTML = '';
+  if (n) { worstEl.appendChild(chip(worstOf(state.projects))); }
+  cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
+}
+
+function matches(entry) {
+  var q = state.search.trim().toLowerCase();
+  return !q || entry.project.name.toLowerCase().indexOf(q) >= 0 || entry.owner.toLowerCase().indexOf(q) >= 0;
+}
+
+function renderList() {
+  listEl.innerHTML = '';
+  if (!state.projects.length) {
+    fail('No project to show.');
+    return;
+  }
+  var shown = state.projects.filter(function (p) { return (!state.filter || state.filter.indexOf(p.project.id) >= 0) && matches(p); });
+  if (state.filter) {
+    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every project">' + ICON.close + '</button></div>');
+    bar.querySelector('span').textContent = shown.length === 1 ? 'Showing ' + shown[0].project.name : 'Showing ' + shown.length + ' projects';
+    bar.querySelector('button').addEventListener('click', function () { select(null); });
+    listEl.appendChild(bar);
+  }
+  if (!shown.length) {
+    listEl.appendChild(h('<div class="ts-empty">No project matches.</div>'));
+    return;
+  }
+  var placed = shown.filter(function (p) { return p.latLng; });
+  var unplaced = shown.filter(function (p) { return !p.latLng; });
+  if (placed.length) {
+    var body = listEl.appendChild(h('<div class="ts-proj-loc"><div class="ts-proj-loc-body"></div></div>')).firstChild;
+    placed.forEach(function (entry) { body.appendChild(projectRow(entry)); });
+  }
+  if (unplaced.length) {
+    var card = listEl.appendChild(h('<div class="ts-proj-loc unplaced"></div>'));
+    var head = card.appendChild(h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + ICON_UNPLACE + '</span>' +
+      '<span class="ts-proj-group-name">No position</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
+    head.querySelector('.ts-count').textContent = unplaced.length;
+    head.appendChild(chip(worstOf(unplaced)));
+    var ubody = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
+    unplaced.forEach(function (entry) { ubody.appendChild(projectRow(entry)); });
+  }
+}
+
+function metaText(entry, withOwner) {
+  var n = entry.stations.length, alarmed = inAlarm(entry);
+  var parts = withOwner && entry.owner ? [entry.owner] : [];
+  parts.push(n === 1 ? '1 station' : n + ' stations');
+  if (alarmed) { parts.push(alarmed + ' in alarm'); }
+  return parts.join(' · ');
+}
+
+function projectRow(entry) {
+  var el = h('<div class="ts-proj-st linked" tabindex="0"><div class="ts-proj-st-main"><div class="ts-proj-st-name"></div>' +
+    '<div class="ts-row-meta"></div></div><div class="ts-proj-st-side"></div></div>');
+  el.setAttribute('data-project', entry.project.name);
+  el.querySelector('.ts-proj-st-name').textContent = entry.project.name;
+  el.querySelector('.ts-row-meta').textContent = metaText(entry, manyOwners());
+  var side = el.querySelector('.ts-proj-st-side');
+  side.appendChild(chip(entry.status));
+  function open() { tb.openDashboard(opts.projectDashboardId, 'project', entry.project); }
+  el.addEventListener('click', function (e) { if (!e.target.closest('button')) { open(); } });
+  el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { open(); } });
+  if (entry.homeId) {
+    var home = h('<button type="button" class="ts-btn" data-a="home">' + ICON_HOME + ' Project dashboard</button>');
+    home.addEventListener('click', function () { tb.openDashboard(entry.homeId); });
+    side.appendChild(home);
+  } else if (state.canCreateDashboards) {
+    var create = h('<button type="button" class="ts-icon-btn" data-a="create-home" title="Create home dashboard">' + ICON.plus + '</button>');
+    create.addEventListener('click', function () { createHome(entry); });
+    side.appendChild(create);
+  }
+  el.addEventListener('mouseenter', function () { highlight(entry.project.id, true); });
+  el.addEventListener('mouseleave', function () { highlight(entry.project.id, false); });
+  return el;
+}
+
+function render() {
+  renderHeader();
+  renderList();
+  drawMarkers();
+}
+
+// -- home dashboards (FRONTEND.md *Project home dashboards*) -----------------------------
+
+/** A copy of the starter with every reference to its own project replaced by
+ * this one, in the "All" dashboard group of the project's owner. */
+function createHome(entry) {
+  var name = entry.project.name;
+  ui.confirm('Create a home dashboard for <b>' + esc(name) + '</b> from the starter, then open it for editing?', 'Create')
+    .then(function (ok) {
+      if (!ok) { return null; }
+      return tb.get('/api/user/dashboards', { pageSize: '50', page: '0', textSearch: STARTER_TITLE }).then(function (page) {
+        var info = ((page && page.data) || []).filter(function (d) { return d.title === STARTER_TITLE; })[0];
+        if (!info) { throw new Error('the dashboard "' + STARTER_TITLE + '" is not visible to you'); }
+        var owner = entry.ownerId;
+        return Promise.all([
+          tb.get('/api/dashboard/' + info.id.id),
+          tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/All')
+        ]);
+      }).then(function (got) {
+        var starter = got[0], group = got[1];
+        var aliases = starter.configuration.entityAliases || {};
+        var alias = Object.keys(aliases).map(function (k) { return aliases[k]; }).filter(function (a) { return a.alias === 'project'; })[0];
+        var configuration = JSON.parse(JSON.stringify(starter.configuration).split(alias.filter.singleEntity.id).join(entry.project.id));
+        return tb.post('/api/dashboard?entityGroupId=' + group.id.id, { title: name + ' home', configuration: configuration });
+      }).then(function (dashboard) {
+        return tb.saveAttrs(entry.project, { 'config.homeDashboard': dashboard.id.id }).then(function () {
+          tb.openDashboard(dashboard.id.id);
+        });
+      });
+    }).catch(function (err) { ui.toast('Home dashboard not created: ' + errText(err), 'error'); });
+}
+
+// -- load --------------------------------------------------------------------------------
+
+var timer = null;
+function refresh() {
+  if (!root.isConnected && timer) { clearInterval(timer); return Promise.resolve(); }
+  refreshBtn.disabled = true;
+  return load().then(render).catch(function (err) {
+    ui.toast('Refresh failed: ' + errText(err), 'error');
+  }).then(function () { refreshBtn.disabled = false; });
+}
+
+refreshBtn.addEventListener('click', refresh);
+searchEl.addEventListener('input', function () { state.search = searchEl.value; renderList(); });
+
+tb.currentUser().then(function (me) {
+  var perms = service('userPermissionsService');
+  state.canCreateDashboards = !(me || {}).isPublic && !tb.isPublicView() && !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
+  return Promise.all([
+    loadMapLibraries().then(initMap).catch(function (err) {
+      mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);
+    }),
+    load()
+  ]);
+}).then(function () {
+  render();
+  timer = setInterval(refresh, REFRESH_MS);
+}).catch(function (err) { fail('Could not load: ' + errText(err)); });
+
+};
