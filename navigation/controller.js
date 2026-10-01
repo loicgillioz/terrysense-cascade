@@ -5,6 +5,7 @@
  *
  * `opts`, set by the dashboard builders: `links`, a list of
  *   fleet     the Devices dashboard's landing view
+ *   firmware  the Devices dashboard's firmware view
  *   device    the device view of the bound device
  *   relays    the dry contact interface view of the bound device, a LOGR2
  *             that has reported a DRYC reading
@@ -61,6 +62,15 @@ function fleet() {
   });
 }
 
+var ICON_CHIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>';
+
+function firmware() {
+  button('firmware', ICON_CHIP, 'Firmware', function () {
+    var sc = ctx.stateController;
+    if (onDashboard(opts.devicesDashboardId) && sc) { sc.openState('firmware', {}, false); } else { tb.openDashboard(opts.devicesDashboardId); }
+  });
+}
+
 function device(e) {
   if (e.entityType !== 'DEVICE') { return; }
   button('device', ICON.back, e.name, function () { tb.openDashboard(opts.devicesDashboardId, 'device', e); });
@@ -112,7 +122,7 @@ function settings(e) {
   button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(dashboard, 'settings', e); });
 }
 
-var LINKS = { fleet: fleet, device: device, relays: relays, projects: projects, project: project,
+var LINKS = { fleet: fleet, firmware: firmware, device: device, relays: relays, projects: projects, project: project,
   station: stationLink, charts: charts, settings: settings };
 
 function bound(ds) {
@@ -126,7 +136,7 @@ function bound(ds) {
 }
 
 var links = opts.links || [];
-var needsEntity = links.some(function (l) { return l !== 'fleet' && l !== 'projects'; });
+var needsEntity = links.some(function (l) { return l !== 'fleet' && l !== 'firmware' && l !== 'projects'; });
 tb.boundDatasource().then(function (ds) {
   return needsEntity ? bound(ds) : null;
 }).then(function (e) {
