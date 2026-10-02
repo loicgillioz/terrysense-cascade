@@ -139,8 +139,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
     },
     charts: function (e) {
       if (e.kind !== 'Station') { return; }
-      return tb.attrsMap(e).then(function (attrs) {
-        var id = attrs['config.stationDashboard'];
+      return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.stationDashboard']); }).then(function (id) {
         if (!id) { missing('charts', 'No charts dashboard yet'); return; }
         button('charts', ICON_CHART, 'Charts', function () { tb.openDashboard(id, 'station', e); });
       });

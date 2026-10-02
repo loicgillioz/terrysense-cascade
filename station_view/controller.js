@@ -45,6 +45,7 @@ var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
 var FAULT_PREFIX = 'peripheralFault.';
+var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
 var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>';
 var CHANNEL_ALARM_RE = /^(.+)\.(max|min|state)$/;
 var OTHER_ALARMS = [
@@ -263,7 +264,12 @@ var cardEl = h(
   '</div>');
 root.innerHTML = '';
 root.appendChild(cardEl);
-window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
+function renderNav() {
+  var bar = cardEl.querySelector(':scope > .ts-nav');
+  if (bar) { bar.remove(); }
+  window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
+}
+renderNav();
 var mainEl = cardEl.querySelector('.ts-stv-main');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
 var chipsEl = cardEl.querySelector('.ts-stv-chips');
@@ -375,12 +381,13 @@ function renderChannels() {
       : 'Show ' + hidden + ' more: diagnostic measurements and calculations waiting for a setting';
     more.addEventListener('click', function () { state.showDiagnostic = !state.showDiagnostic; renderChannels(); });
   }
-  if (state.canWrite && (opts.devicesDashboardId || state.canCreateDashboards)) { foot.appendChild(h('<span class="ts-spacer"></span>')); }
-  if (state.canWrite && state.canCreateDashboards) {
-    foot.appendChild(h('<button type="button" class="ts-btn" data-a="create-template">' + ICON.plus + 'Create from this station</button>'))
+  if (state.canWrite) {
+    foot.appendChild(h('<span class="ts-spacer"></span>'));
+    foot.appendChild(h('<button type="button" class="ts-btn" data-a="charts-dashboard">' + ICON_CHART + 'Charts dashboard</button>'))
       .addEventListener('click', function () {
-        templates.openCreate({ station: state.station, owner: state.owner, done: openCharts,
-          channels: templates.channelsOf(state.attrs, state.names, state.kinds, flowOrder(lanes)) });
+        templates.openPanel({ station: state.station, attrs: state.attrs, owner: state.owner, names: state.names, kinds: state.kinds,
+          calcAttributes: state.calcAttributes, canCreate: state.canCreateDashboards, order: flowOrder(lanes),
+          open: openCharts, changed: function () { renderNav(); return refresh(); } });
       });
   }
   if (state.canWrite && opts.devicesDashboardId) {

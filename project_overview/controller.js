@@ -36,7 +36,6 @@ var LEAFLET = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/';
 var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var GEOMAN = 'https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.17.0/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
-var TEMPLATE_GROUP = 'Station dashboards';
 var DASHBOARD_KEY = 'config.stationDashboard';
 var STATUS = {
   nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
@@ -102,7 +101,7 @@ var openDashboard = tb.openDashboard;
 var state = {
   entity: null, owner: null, names: {}, kinds: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
-  publicReport: null, pub: null, templates: null, showRetired: false, followUps: {}, ghost: null
+  publicReport: null, pub: null, showRetired: false, followUps: {}, ghost: null
 };
 
 function loadNames() {
@@ -118,22 +117,30 @@ function latLngOf(attrs) {
   return attrs.latitude != null && attrs.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
 }
 
+// A deleted or unshared dashboard leaves the station on its station view.
+var readableIds = {};
+function readable(id) {
+  if (!id) { return Promise.resolve(null); }
+  return readableIds[id] || (readableIds[id] = tb.readableDashboard(id));
+}
+
 function loadStation(station) {
   var entry = { station: station };
   var url = '/api/plugins/telemetry/ASSET/' + station.id + '/values/timeseries';
   return tb.attrsMap(station).then(function (attrs) {
     entry.attrs = attrs;
     entry.latLng = latLngOf(attrs);
-    entry.dashboardId = attrs[DASHBOARD_KEY] || null;
     entry.service = tb.serviceOf(attrs);
     var keys = Object.keys(resolver.channelsFromAttrs(attrs, state.names));
     return Promise.all([
       keys.length ? tb.get(url, { keys: keys.join(',') }).catch(function () { return {}; }) : {},
       tb.get('/api/alarm/ASSET/' + station.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }),
-      tb.containedDevices(station).catch(function () { return []; })
+      tb.containedDevices(station).catch(function () { return []; }),
+      readable(attrs[DASHBOARD_KEY])
     ]);
   }).then(function (got) {
     entry.devices = got[2];
+    entry.dashboardId = got[3];
     var latest = {};
     Object.keys(got[0] || {}).forEach(function (k) {
       var p = got[0][k] && got[0][k][0];
@@ -616,7 +623,7 @@ function stationRow(entry) {
     el.querySelector('.ts-row-meta').textContent += ' · No charts dashboard yet';
   }
   if (state.canEdit) {
-    var assign = h('<button type="button" class="ts-icon-btn" data-a="assign" title="' + (entry.dashboardId ? 'Change dashboard' : 'Assign dashboard') + '">' +
+    var assign = h('<button type="button" class="ts-icon-btn" data-a="assign" title="' + (entry.dashboardId ? 'Charts dashboard' : 'Link a charts dashboard') + '">' +
       (entry.dashboardId ? ICON.edit : ICON.plus) + '</button>');
     assign.addEventListener('click', function () { openAssign(entry); });
     side.appendChild(assign);
@@ -765,187 +772,10 @@ function refreshPublic() {
 
 // -- templates ---------------------------------------------------------------------------
 
-/** Every template the user can read: the tenant's and the user's own. */
-function loadTemplates() {
-  if (state.templates) { return Promise.resolve(state.templates); }
-  return tb.get('/api/entityGroups/DASHBOARD').then(function (groups) {
-    var mine = (groups || []).filter(function (g) { return g.name === TEMPLATE_GROUP; });
-    return Promise.all(mine.map(function (g) {
-      return tb.get('/api/entityGroup/' + g.id.id + '/dashboards', { pageSize: '200', page: '0' }).then(function (page) {
-        return Promise.all(((page && page.data) || []).map(function (d) {
-          return tb.get('/api/dashboard/' + d.id.id).then(function (full) {
-            return { id: d.id.id, title: d.title, tenant: g.ownerId.entityType === 'TENANT', channels: resolver.dashboardChannels(full) };
-          });
-        }));
-      });
-    }));
-  }).then(function (lists) {
-    state.templates = [].concat.apply([], lists);
-    return state.templates;
-  });
-}
-
-function calcMeta() { return { names: state.names, attributes: state.calcAttributes }; }
-
-function labelsOf(entry, keys) {
-  return keys.map(function (k) { return calc.channelLabel(calcMeta(), entry.attrs, k); });
-}
-
-function attrLabels(attrs) {
-  return attrs.map(function (a) { return (state.calcAttributes[a] || {}).label || a; });
-}
-
-/** A template row: its title, what it shows or lacks, and whose it is. */
-function templateOption(entry, r) {
-  var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
-    '<div class="ts-opt-side"></div></div>');
-  if (r.t.id === entry.dashboardId) { o.classList.add('selected'); }
-  o.querySelector('.ts-opt-label').textContent = r.t.title;
-  var side = o.querySelector('.ts-opt-side');
-  var desc = r.fit.fits ? 'Shows ' + calc.listText(labelsOf(entry, r.t.channels))
-    : !r.t.channels.length ? 'Shows no measurement'
-    : r.fit.missing.length ? 'Not measured here: ' + calc.listText(labelsOf(entry, r.fit.missing))
-    : 'Needs ' + calc.listText(attrLabels(r.fit.needs)) + ' to calculate ' + calc.listText(labelsOf(entry, r.t.channels.filter(function (c) {
-      return !(c in resolver.channelsFromAttrs(entry.attrs, state.names));
-    })));
-  o.querySelector('.ts-opt-desc').textContent = desc;
-  if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
-  else if (!r.fit.missing.length && r.fit.needs.length) {
-    side.appendChild(h('<span class="ts-chip">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
-  }
-  side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
-  var missing = r.t.id === entry.dashboardId && mayEdit(r.t) ? templates.missingFrom(r.t.channels, stationCharts(entry)) : [];
-  if (missing.length) {
-    var add = side.appendChild(h('<button type="button" class="ts-btn ghost" data-a="add-channels"></button>'));
-    add.textContent = 'Add this station\'s channels (' + missing.length + ')';
-    add.title = missing.map(function (c) { return c.label; }).join(', ');
-    add.addEventListener('click', function (e) { e.stopPropagation(); addChannels(entry, r.t, missing); });
-  }
-  function pick() {
-    if (!r.fit.missing.length && r.fit.needs.length) { openSetup(entry, r.t, r.fit.needs); } else { assign(entry, r.t); }
-  }
-  o.addEventListener('click', pick);
-  o.addEventListener('keydown', function (e) { if (e.key === 'Enter') { pick(); } });
-  return o;
-}
-
 function openAssign(entry) {
-  var dr = ui.openDrawer('Station dashboard', esc(entry.station.name));
-  dr.body.appendChild(h('<div class="ts-loading">Loading the templates…</div>'));
-  loadTemplates().then(function (templates) {
-    dr.body.innerHTML = '';
-    var rows = templates.map(function (t) { return { t: t, fit: resolver.templateFit(t.channels, entry.attrs, state.names) }; })
-      .sort(function (a, b) {
-        return (a.fit.missing.length - b.fit.missing.length) || (a.fit.needs.length - b.fit.needs.length) || a.t.title.localeCompare(b.t.title);
-      });
-    var groups = [
-      ['Ready for this station', rows.filter(function (r) { return r.fit.fits; })],
-      ['One step away: a setting to enter', rows.filter(function (r) { return !r.fit.fits && !r.fit.missing.length && r.fit.needs.length; })],
-      ['Other templates', rows.filter(function (r) { return r.fit.missing.length || !r.t.channels.length; })]
-    ];
-    if (!rows.length) { dr.body.appendChild(h('<div class="ts-empty">No template yet.</div>')); }
-    groups.forEach(function (g) {
-      if (!g[1].length) { return; }
-      var box = h('<div class="ts-opt-group"><div class="ts-section-head"></div></div>');
-      box.firstChild.textContent = g[0];
-      g[1].forEach(function (r) { box.appendChild(templateOption(entry, r)); });
-      dr.body.appendChild(box);
-    });
-    dr.foot.hidden = !entry.dashboardId;
-    dr.foot.innerHTML = '';
-    if (entry.dashboardId) {
-      var unlink = h('<button type="button" class="ts-btn">Remove the link</button>');
-      unlink.addEventListener('click', function () {
-        tb.deleteAttrs(entry.station, [DASHBOARD_KEY]).then(function () {
-          ui.closeDrawer();
-          ui.toast('Dashboard removed from ' + entry.station.name);
-          return refresh();
-        }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
-      });
-      dr.foot.appendChild(unlink);
-    }
-    if (state.canCreateDashboards) {
-      dr.foot.hidden = false;
-      dr.foot.appendChild(h('<span class="ts-spacer"></span>'));
-      dr.foot.appendChild(h('<button type="button" class="ts-btn primary" data-a="create-template">' + ICON.plus + ' Create from this station</button>'))
-        .addEventListener('click', function () {
-          templates.openCreate({ station: entry.station, owner: state.owner, channels: stationCharts(entry),
-            back: function () { openAssign(entry); },
-            done: function (id) { state.templates = null; openDashboard(id, 'station', entry.station); } });
-        });
-    }
-  }).catch(function (err) {
-    dr.body.innerHTML = '';
-    dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent = 'Could not load the templates: ' + errText(err);
-  });
-}
-
-/** The constants `needs` names, entered on the station; `done(written)` after the save and resolve. */
-function setupDrawer(entry, title, intro, needs, action, done, back) {
-  var dr = ui.openDrawer(esc(title), esc(entry.station.name));
-  dr.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = intro;
-  var f = calc.form(entry.station, entry.attrs, needs, calcMeta());
-  dr.body.appendChild(f.el);
-  dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
-  dr.onBack(back);
-  var go = ui.drawerActions(dr, action);
-  function check() { go.disabled = !f.values(); }
-  f.onChange(check);
-  check();
-  setTimeout(f.focus, 0);
-  go.addEventListener('click', function () {
-    var write = f.values();
-    if (!write) { return; }
-    go.disabled = true;
-    done(write).catch(function (err) {
-      go.disabled = false;
-      ui.toast('Not saved: ' + errText(err), 'error');
-    });
-  });
-}
-
-/** A template one setting away: enter the constants, then the station opens it. */
-function openSetup(entry, template, needs) {
-  var turnsOn = resolver.calculationPlan(entry.attrs, state.names).filter(function (p) {
-    return !p.on && p.needs.every(function (a) { return needs.indexOf(a) >= 0; }) && template.channels.indexOf(p.name) >= 0;
-  }).map(function (p) { return p.name; });
-  setupDrawer(entry, 'Set up ' + template.title,
-    template.title + ' shows ' + calc.listText(labelsOf(entry, turnsOn)) + ', calculated from this station\'s readings and the ' +
-      (needs.length === 1 ? 'setting' : 'settings') + ' below.',
-    needs, 'Save and assign', function (write) {
-      write[DASHBOARD_KEY] = template.id;
-      return calc.save(entry.station, write).then(function () {
-        ui.closeDrawer();
-        ui.toast(entry.station.name + ' opens ' + template.title);
-        return refresh();
-      });
-    }, function () { openAssign(entry); });
-}
-
-/** A template the user may change: the tenant's for a tenant admin, else the customer's own. */
-function mayEdit(t) { return state.canCreateDashboards && (state.me.authority === 'TENANT_ADMIN' || !t.tenant); }
-
-function stationCharts(entry) { return templates.channelsOf(entry.attrs, state.names, state.kinds); }
-
-function addChannels(entry, t, missing) {
-  ui.confirm('Add ' + missing.length + (missing.length === 1 ? ' channel' : ' channels') + ' to <b>' + esc(t.title) + '</b>, below its widgets? ' +
-    'Every station that opens it shows them.', 'Add').then(function (ok) {
-    if (!ok) { return null; }
-    return templates.addChannels(t.id, missing).then(function (n) {
-      state.templates = null;
-      ui.closeDrawer();
-      ui.toast(n + (n === 1 ? ' channel' : ' channels') + ' added to ' + t.title);
-      openDashboard(t.id, 'station', entry.station);
-    });
-  }).catch(function (err) { ui.toast('Not added: ' + errText(err), 'error'); });
-}
-
-function assign(entry, template) {
-  tb.saveAttrs(entry.station, { 'config.stationDashboard': template.id }).then(function () {
-    ui.closeDrawer();
-    ui.toast(entry.station.name + ' opens ' + template.title);
-    return refresh();
-  }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+  templates.openPanel({ station: entry.station, attrs: entry.attrs, owner: state.owner, names: state.names, kinds: state.kinds,
+    calcAttributes: state.calcAttributes, canCreate: state.canCreateDashboards,
+    open: function (id) { openDashboard(id, 'station', entry.station); }, changed: refresh });
 }
 
 // -- load --------------------------------------------------------------------------------
