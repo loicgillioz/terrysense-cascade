@@ -4,8 +4,7 @@
  * the centre of its stations. Projects close together at the current zoom merge
  * into one cluster. A pin or a cluster filters the list; a row opens the
  * project's Project view, and its own home dashboard when it has one. A user who
- * may create dashboards creates a missing home from the starter; one who may
- * create assets creates a project. Retired stations count for no state.
+ * may create assets creates a project. Retired stations count for no state.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
@@ -28,7 +27,6 @@ var LEAFLET = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/';
 var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var HOME_KEY = 'config.homeDashboard';
-var STARTER_TITLE = 'Project home (starter)';
 var STATUS = {
   ok: { id: 'ok', label: 'OK', color: 'var(--ts-ok)', rank: 1 },
   none: { id: 'none', label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
@@ -72,7 +70,7 @@ function loadMapLibraries() {
 
 // -- data --------------------------------------------------------------------------------
 
-var state = { projects: [], owners: {}, loadedAt: 0, canCreateDashboards: false, canCreateAssets: false, me: {}, filter: null, search: '' };
+var state = { projects: [], owners: {}, loadedAt: 0, canCreateAssets: false, me: {}, filter: null, search: '' };
 
 function latLngOf(attrs) {
   var lat = Number(attrs.latitude), lng = Number(attrs.longitude);
@@ -353,10 +351,6 @@ function projectRow(entry) {
     var home = h('<button type="button" class="ts-btn" data-a="home">' + ICON_HOME + ' Project dashboard</button>');
     home.addEventListener('click', function () { tb.openDashboard(entry.homeId); });
     side.appendChild(home);
-  } else if (state.canCreateDashboards) {
-    var create = h('<button type="button" class="ts-icon-btn" data-a="create-home" title="Create home dashboard">' + ICON.plus + '</button>');
-    create.addEventListener('click', function () { createHome(entry); });
-    side.appendChild(create);
   }
   el.addEventListener('mouseenter', function () { highlight(entry.project.id, true); });
   el.addEventListener('mouseleave', function () { highlight(entry.project.id, false); });
@@ -367,37 +361,6 @@ function render() {
   renderHeader();
   renderList();
   drawMarkers();
-}
-
-// -- home dashboards (FRONTEND.md *Project home dashboards*) -----------------------------
-
-/** A copy of the starter with every reference to its own project replaced by
- * this one, in the "All" dashboard group of the project's owner. */
-function createHome(entry) {
-  var name = entry.project.name;
-  ui.confirm('Create a home dashboard for <b>' + esc(name) + '</b> from the starter, then open it for editing?', 'Create')
-    .then(function (ok) {
-      if (!ok) { return null; }
-      return tb.get('/api/user/dashboards', { pageSize: '50', page: '0', textSearch: STARTER_TITLE }).then(function (page) {
-        var info = ((page && page.data) || []).filter(function (d) { return d.title === STARTER_TITLE; })[0];
-        if (!info) { throw new Error('the dashboard "' + STARTER_TITLE + '" is not visible to you'); }
-        var owner = entry.ownerId;
-        return Promise.all([
-          tb.get('/api/dashboard/' + info.id.id),
-          tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/All')
-        ]);
-      }).then(function (got) {
-        var starter = got[0], group = got[1];
-        var aliases = starter.configuration.entityAliases || {};
-        var alias = Object.keys(aliases).map(function (k) { return aliases[k]; }).filter(function (a) { return a.alias === 'project'; })[0];
-        var configuration = JSON.parse(JSON.stringify(starter.configuration).split(alias.filter.singleEntity.id).join(entry.project.id));
-        return tb.post('/api/dashboard?entityGroupId=' + group.id.id, { title: name + ' home', configuration: configuration });
-      }).then(function (dashboard) {
-        return tb.saveAttrs(entry.project, { 'config.homeDashboard': dashboard.id.id }).then(function () {
-          tb.openDashboard(dashboard.id.id);
-        });
-      });
-    }).catch(function (err) { ui.toast('Home dashboard not created: ' + errText(err), 'error'); });
 }
 
 // -- new project (CA-6) ------------------------------------------------------------------
@@ -462,7 +425,6 @@ tb.currentUser().then(function (me) {
   var perms = service('userPermissionsService');
   var signedIn = !(me || {}).isPublic && !tb.isPublicView() && !!perms;
   state.me = me || {};
-  state.canCreateDashboards = signedIn && perms.hasGenericPermission('DASHBOARD', 'CREATE');
   state.canCreateAssets = signedIn && perms.hasGenericPermission('ASSET', 'CREATE');
   newBtn.hidden = !state.canCreateAssets;
   return Promise.all([

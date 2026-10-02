@@ -3,7 +3,7 @@
  * its stale channels and the age of its last reading (EU-1). Stations close
  * together at the current zoom merge into one cluster. A station opens its
  * station view, and its charts on its own station dashboard; an editor assigns
- * one, or creates a template for it, places and removes a station's position
+ * one, places and removes a station's position
  * and draws the project area, adds a station; the row menus of the project
  * and its stations rename, move, make public or private, retire and delete
  * (shared/lifecycle.js). Retired stations fold away at the end of the list.
@@ -36,9 +36,6 @@ var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var GEOMAN = 'https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.17.0/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var TEMPLATE_GROUP = 'Station dashboards';
-var STARTER_TITLE = 'Station (starter)';
-var STARTER_USE = 'New template';
-var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
 var DASHBOARD_KEY = 'config.stationDashboard';
 var STATUS = {
   nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
@@ -50,8 +47,6 @@ var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
 var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
-
-function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
 
 function parseJson(raw) {
   if (!raw) { return null; }
@@ -71,14 +66,6 @@ function ago(ts) {
 function fmtTime(ts) {
   var d = new Date(ts);
   return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
-}
-
-function uuid() {
-  if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-    var r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 3 | 8)).toString(16);
-  });
 }
 
 function loadOnce(tag, url) {
@@ -111,7 +98,7 @@ var openDashboard = tb.openDashboard;
 
 var state = {
   entity: null, owner: null, names: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
-  canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
+  canEdit: false, editMap: false, filter: null, placing: null, adding: null,
   publicReport: null, pub: null, templates: null, showRetired: false, followUps: {}, ghost: null
 };
 
@@ -794,10 +781,6 @@ function loadTemplates() {
   });
 }
 
-function stationChannels(entry) {
-  return Object.keys(resolver.channelsFromAttrs(entry.attrs, state.names));
-}
-
 function calcMeta() { return { names: state.names, attributes: state.calcAttributes }; }
 
 function labelsOf(entry, keys) {
@@ -857,7 +840,7 @@ function openAssign(entry) {
       g[1].forEach(function (r) { box.appendChild(templateOption(entry, r)); });
       dr.body.appendChild(box);
     });
-    dr.foot.hidden = false;
+    dr.foot.hidden = !entry.dashboardId;
     dr.foot.innerHTML = '';
     if (entry.dashboardId) {
       var unlink = h('<button type="button" class="ts-btn">Remove the link</button>');
@@ -869,12 +852,6 @@ function openAssign(entry) {
         }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
       });
       dr.foot.appendChild(unlink);
-    }
-    dr.foot.appendChild(h('<span class="ts-spacer"></span>'));
-    if (state.canCreateDashboards) {
-      var create = h('<button type="button" class="ts-btn primary">' + ICON.plus + ' Create template</button>');
-      create.addEventListener('click', function () { openCreate(entry); });
-      dr.foot.appendChild(create);
     }
   }).catch(function (err) {
     dr.body.innerHTML = '';
@@ -932,138 +909,6 @@ function assign(entry, template) {
   }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
 }
 
-function channelList(entry) {
-  return stationChannels(entry).filter(function (c) {
-    return !(state.names[resolver.splitChannelKey(c).name] || {}).diagnostic;
-  }).map(function (c) {
-    var base = state.names[resolver.splitChannelKey(c).name] || {};
-    return { key: c, label: entry.attrs['effective.' + c + '.label'] || base.label || c, unit: entry.attrs['effective.' + c + '.unit'] || '' };
-  });
-}
-
-function openCreate(entry, use) {
-  var channels = channelList(entry);
-  var dr = ui.openDrawer('Create template', esc(entry.station.name));
-  var form = h('<div><div class="ts-field"><label class="ts-field-label">Name</label><div class="ts-proj-name">' +
-    '<span class="ts-row-meta">Station · </span><input class="ts-input wide" placeholder="River level"></div>' +
-    '<div class="ts-field-hint">What kind of station it shows, so the next station of that kind can reuse it.</div></div>' +
-    '<div class="ts-section-head">A value and a chart for each of</div><div class="ts-proj-chans"></div></div>');
-  var input = form.querySelector('input');
-  input.value = use || '';
-  var list = form.querySelector('.ts-proj-chans');
-  channels.forEach(function (c) {
-    var row = h('<div class="ts-proj-chan"><span></span><span class="ts-mono"></span></div>');
-    row.firstChild.textContent = c.label + (c.unit ? ' (' + c.unit + ')' : '');
-    row.lastChild.textContent = c.key;
-    list.appendChild(row);
-  });
-  if (!channels.length) { list.appendChild(h('<div class="ts-empty">The station maps no measurement yet.</div>')); }
-  var waiting = resolver.calculationPlan(entry.attrs, state.names).filter(function (p) { return !p.on; });
-  if (waiting.length) {
-    form.appendChild(h('<div class="ts-section-head ts-proj-waiting">Calculated, once a setting is entered</div>'));
-    waiting.forEach(function (p) {
-      var row = h('<div class="ts-proj-chan" data-calc-name="' + esc(p.name) + '"><span></span><button type="button" class="ts-btn ghost">Enter</button></div>');
-      row.firstChild.textContent = calc.channelLabel(calcMeta(), entry.attrs, p.name) + ' — needs ' + calc.listText(attrLabels(p.needs));
-      row.querySelector('button').addEventListener('click', function () {
-        var typed = input.value;
-        setupDrawer(entry, 'Calculated measurement', calc.channelLabel(calcMeta(), entry.attrs, p.name) + ' is calculated from this station\'s readings and the ' +
-          (p.needs.length === 1 ? 'setting' : 'settings') + ' below.', p.needs, 'Save', function (write) {
-          return calc.save(entry.station, write).then(function () { return tb.attrsMap(entry.station); }).then(function (attrs) {
-            entry.attrs = attrs;
-            openCreate(entry, typed);
-          });
-        }, function () { openCreate(entry, typed); });
-      });
-      form.appendChild(row);
-    });
-  }
-  var tenant = state.me.authority === 'TENANT_ADMIN';
-  var choose = tenant && state.owner.entityType === 'CUSTOMER';
-  form.appendChild(h('<div class="ts-row-meta">The template opens in ThingsBoard afterwards, to arrange as you like. ' +
-    (choose ? '' : tenant ? 'It is saved with the in-terra templates, shared with every customer.' : 'Only your organisation sees it.') + '</div>'));
-  if (choose) {
-    var where = h('<div class="ts-field ts-proj-tplgroup"><label class="ts-switch"><input type="radio" name="ts-tpl-group" value="tenant" checked>' +
-      ' With the in-terra templates, shared with every customer</label><label class="ts-switch"><input type="radio" name="ts-tpl-group" value="owner">' +
-      ' <span></span></label></div>');
-    where.querySelector('span').textContent = 'With the templates of ' + state.ownerName + ', which only it sees';
-    form.appendChild(ui.tenantSection(where));
-  }
-  dr.body.appendChild(form);
-  dr.onBack(function () { openAssign(entry); });
-  var go = ui.drawerActions(dr, 'Create');
-  go.disabled = !channels.length;
-  setTimeout(function () { input.focus(); }, 0);
-  go.addEventListener('click', function () {
-    var use = input.value.trim();
-    if (!use) { input.focus(); return; }
-    go.disabled = true;
-    var toOwner = choose && form.querySelector('[name=ts-tpl-group]:checked').value === 'owner';
-    createTemplate(entry, use, channels, toOwner ? state.owner : null).then(function (dashboardId) {
-      ui.closeDrawer();
-      openDashboard(dashboardId, 'station', entry.station);
-    }).catch(function (err) {
-      go.disabled = false;
-      ui.toast('Template not created: ' + errText(err), 'error');
-    });
-  });
-}
-
-/** The template group of `owner`, else the user's own — the tenant's for a tenant admin. */
-function templateGroup(owner) {
-  var me = state.me;
-  owner = owner || (me.authority === 'TENANT_ADMIN' ? { entityType: 'TENANT', id: me.tenantId.id } : { entityType: 'CUSTOMER', id: me.customerId.id });
-  return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(TEMPLATE_GROUP))
-    .catch(function () { return tb.post('/api/entityGroup', { type: 'DASHBOARD', name: TEMPLATE_GROUP, ownerId: owner }); });
-}
-
-function jsonText(v) { return JSON.stringify(String(v)).slice(1, -1); }
-
-/** The starter's configuration with its placeholder widgets repeated per channel,
- * one band of rows each, and its own id replaced by `dashboardId`. */
-function expandStarter(starter, dashboardId, use, channels) {
-  var text = JSON.stringify(starter.configuration).split(starter.id.id).join(dashboardId).split(STARTER_USE).join(jsonText(use));
-  var conf = JSON.parse(text);
-  var placeholders = Object.keys(conf.widgets).filter(function (id) { return JSON.stringify(conf.widgets[id]).indexOf(PLACEHOLDER.channel) >= 0; });
-  var layout = conf.states.station.layouts.main.widgets;
-  var top = Math.min.apply(null, placeholders.map(function (id) { return layout[id].row; }));
-  var band = Math.max.apply(null, placeholders.map(function (id) { return layout[id].row + layout[id].sizeY; })) - top;
-  channels.forEach(function (c, i) {
-    placeholders.forEach(function (id) {
-      var copy = JSON.stringify(conf.widgets[id]).split(PLACEHOLDER.channel).join(jsonText(c.key))
-        .split(PLACEHOLDER.label).join(jsonText(c.label)).split(PLACEHOLDER.unit).join(jsonText(c.unit));
-      var wid = uuid(), widget = JSON.parse(copy);
-      widget.id = wid;
-      conf.widgets[wid] = widget;
-      layout[wid] = Object.assign({}, layout[id], { row: layout[id].row + i * band });
-    });
-  });
-  placeholders.forEach(function (id) { delete conf.widgets[id]; delete layout[id]; });
-  return conf;
-}
-
-function createTemplate(entry, use, channels, owner) {
-  var title = 'Station · ' + use;
-  return Promise.all([
-    tb.get('/api/user/dashboards', { pageSize: '50', page: '0', textSearch: STARTER_TITLE }),
-    templateGroup(owner)
-  ]).then(function (got) {
-    var info = ((got[0] && got[0].data) || []).filter(function (d) { return d.title === STARTER_TITLE; })[0];
-    if (!info) { throw new Error('the dashboard "' + STARTER_TITLE + '" is not visible to you'); }
-    var group = got[1];
-    return Promise.all([
-      tb.get('/api/dashboard/' + info.id.id),
-      tb.post('/api/dashboard?entityGroupId=' + group.id.id, { title: title, configuration: {} })
-    ]);
-  }).then(function (got) {
-    var created = got[1];
-    created.configuration = expandStarter(got[0], created.id.id, use, channels);
-    return tb.post('/api/dashboard', created);
-  }).then(function (saved) {
-    state.templates = null;
-    return tb.saveAttrs(entry.station, { 'config.stationDashboard': saved.id.id }).then(function () { return saved.id.id; });
-  });
-}
-
 // -- load --------------------------------------------------------------------------------
 
 var timer = null;
@@ -1088,15 +933,11 @@ tb.boundDatasource().then(function (ds) {
     state.entity = got[0];
     state.owner = got[1].ownerId;
     state.me = got[3] || {};
-    var perms = service('userPermissionsService');
-    state.canCreateDashboards = !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
     return Promise.all([
       tb.canWrite(state.entity),
       loadMapLibraries().then(initMap).catch(function (err) {
         mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);
-      }),
-      state.me.authority === 'TENANT_ADMIN' && state.owner.entityType === 'CUSTOMER'
-        ? tb.get('/api/customer/' + state.owner.id).then(function (c) { state.ownerName = c.title || c.name; }) : null
+      })
     ]);
   }).then(function (got) {
     if (!got) { return null; }
