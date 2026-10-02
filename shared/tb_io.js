@@ -546,6 +546,16 @@ root.TerrySenseTbIo = function (ctx) {
     }).then(function (rels) { return (rels || []).map(function (r) { return { entityType: 'DEVICE', id: r.to.id }; }); });
   }
 
+  /** Make the station's `Contains` relations to devices follow its map entries. */
+  function relateToMap(station, entries) {
+    var wanted = resolver.mapDevices(entries);
+    return containedDevices(station).then(function (current) {
+      var ids = current.map(function (d) { return d.id; });
+      return Promise.all(wanted.filter(function (d) { return ids.indexOf(d) < 0; }).map(function (d) { return relate(station, { entityType: 'DEVICE', id: d }); })
+        .concat(current.filter(function (d) { return wanted.indexOf(d.id) < 0; }).map(function (d) { return unrelate(station, d); })));
+    });
+  }
+
   /** The Stations that contain the device, by name, each with its `project`
    * or null. Only a Station feeds from a device: another asset that contains
    * it is left out. `projectOf` caches a station's project across calls. */
@@ -592,7 +602,7 @@ root.TerrySenseTbIo = function (ctx) {
     relate: relate, unrelate: unrelate, createStation: createStation, ownerProjects: ownerProjects,
     settingChanges: settingChanges, moveStation: moveStation, deleteHistory: deleteHistory, deleteEntity: deleteEntity,
     serviceOf: serviceOf, setServiceState: setServiceState, silence: silence, endSilence: endSilence,
-    ackAlarm: ackAlarm, clearAlarm: clearAlarm, containedDevices: containedDevices, deviceStations: deviceStations,
+    ackAlarm: ackAlarm, clearAlarm: clearAlarm, containedDevices: containedDevices, relateToMap: relateToMap, deviceStations: deviceStations,
     latestFix: latestFix, userName: userName,
     SILENCED_NOTICE: SILENCED_NOTICE, readingKeys: readingKeys, setLabel: setLabel, deviceParents: deviceParents,
     reassignDevice: reassignDevice

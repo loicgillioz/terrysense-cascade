@@ -53,16 +53,13 @@ var life = window.TerrySenseLifecycle(ui, tb);
 var calc = window.TerrySenseCalculations(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info, metric = ui.metric;
 var camel = resolver.camelKind;
+var M = window.TerrySenseMapping;
 
-var EMPTY_MARKER = '(empty)';
-var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
-var SOURCE_KEY_RE = /^p(\d+)\.([a-z][A-Za-z0-9]*)(?:\.g(\d+))?(?:\.i(\d+))?$/;
 var FAULT_PREFIX = 'peripheralFault.';
 var MARKER_RE = /^cmd\.seq\.(\d+)$/;
 var REFRESH_MS = 60000;
 var HOUR_MS = 3600000;
 var DAY_MS = 86400000;
-var NETWORK_KEYS = ['rssi', 'snr'];
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
 var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
@@ -70,9 +67,7 @@ var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
 // A source is silent past this many of its intervals (HEALTH.md §2).
 var SILENT_INTERVALS = 3;
-// Device bookkeeping, not readings: radio, uplink markers, the dry contact interface's own counters.
-var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRuleCount', 'dryc.drycRulesSynced'];
-var RULE_SOURCE = /^drycRule\./;
+var NOT_READINGS = M.NOT_READINGS, RULE_SOURCE = M.RULE_SOURCE, DRYC_KEY = M.DRYC_KEY, LOGR2_SENSORS = M.LOGR2_SENSORS;
 var REGISTER = [
   { key: 'register.hwVersion', label: 'Hardware version' },
   { key: 'register.hwStatus', label: 'Hardware status' },
@@ -81,20 +76,7 @@ var REGISTER = [
 ];
 var FINE_STATUS = /^(all functional|ok|)$/i;
 var ICON_STATION = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M8 21h8"/><circle cx="12" cy="6" r="3"/></svg>';
-// The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
-// (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
-// smoke_test_config_widgets.py. `logr` is the LOGR itself.
-var LOGR2_SENSORS = { phpr: 'pH probe', cond: 'Conductivity probe', dryc: 'Dry contact interface', flow: 'Flow meter',
-  clmt: 'Climate sensor', inclTilt: 'Inclinometer or tiltmeter', usonRdar: 'Ultrasonic or radar level sensor' };
-
-function parseSource(key) {
-  var m = SOURCE_KEY_RE.exec(key);
-  return m ? {
-    sourceKey: key, position: Number(m[1]), kind: m[2],
-    group: m[3] !== undefined ? Number(m[3]) : 0, index: m[4] !== undefined ? Number(m[4]) : 0,
-    hasGroup: m[3] !== undefined, hasIndex: m[4] !== undefined
-  } : null;
-}
+var parseSource = M.parseSource;
 
 /** `ph` -> `PH`, `drycStatus` -> `DRYC_STATUS`: the wire kind the encoder takes. */
 function wireKind(kind) { return String(kind).replace(/([A-Z])/g, '_$1').toUpperCase(); }
@@ -187,10 +169,7 @@ function loadDevice(id) {
     ((got[4] && got[4].data) || []).forEach(function (a) {
       if (a.type.indexOf(FAULT_PREFIX) === 0) { state.faults[a.type.slice(FAULT_PREFIX.length)] = a; }
     });
-    var bus = family() === 'bus';
-    var keys = tb.readingKeys(got[3]).filter(function (k) {
-      return bus ? parseSource(k.replace(/\.status$/, '')) || NETWORK_KEYS.indexOf(k) >= 0 : !/\.status$/.test(k);
-    });
+    var keys = M.latestKeys(family() === 'bus', tb.readingKeys(got[3]));
     if (!keys.length) { return {}; }
     return tb.get('/api/plugins/telemetry/DEVICE/' + id + '/values/timeseries', { keys: keys.join(',') });
   }).then(function (latest) {
@@ -239,30 +218,12 @@ function loadBindings(id) {
 
 // -- model ------------------------------------------------------------------------------
 
-function topology() {
-  var nodes = {};
-  Object.keys(state.client).forEach(function (key) {
-    var m = TOPOLOGY_TYPE_RE.exec(key);
-    if (!m) { return; }
-    var type = String(state.client[key] || '').trim();
-    if (!type || type === EMPTY_MARKER) { return; }
-    nodes[m[1]] = { position: Number(m[1]), type: type, version: state.client['topology.p' + m[1] + '.version'] };
-  });
-  return nodes;
+function model() {
+  return { bus: family() === 'bus', device: state.device, client: state.client, latest: state.latest, faults: state.faults,
+           peripherals: state.peripherals, kinds: state.kinds, names: state.names };
 }
-
-function sources() {
-  var out = {};
-  function add(key) { var s = parseSource(key); if (s && !out[key]) { out[key] = s; } return out[key]; }
-  Object.keys(state.client).forEach(function (key) {
-    var m = /^subscriptions\.(.+)\.(enabled|interval)$/.exec(key);
-    var s = m && add(m[1]);
-    if (s) { s[m[2]] = state.client[key]; }
-  });
-  Object.keys(state.latest).forEach(function (key) { add(key.replace(/\.status$/, '')); });
-  Object.keys(state.faults).forEach(add);
-  return Object.keys(out).map(function (k) { return out[k]; });
-}
+function topology() { return M.topology(model()); }
+function sources() { return M.sources(model()); }
 
 /** ok | fault | waiting | disabled, from the latest value and status of one source. */
 function sourceState(s) {
@@ -273,113 +234,20 @@ function sourceState(s) {
   return { state: 'waiting' };
 }
 
-function measureOf(s, node) {
-  var p = node && state.peripherals[node.type];
-  return p && (p.measures || []).filter(function (m) {
-    return camel(m.kind) === s.kind && m.group === s.group && m.index === s.index;
-  })[0];
-}
-
-function sourceLabel(s, node) {
-  var m = measureOf(s, node);
-  var entry = m && state.names[m.defaultName];
-  return entry && entry.label ? entry.label : ((resolver.kindSpec(s.kind, state.kinds) || {}).label || s.kind);
-}
-
-function unitOf(s) { return (resolver.kindSpec(s.kind, state.kinds) || {}).cloudUnit || ''; }
-
-/** A LOGR2's or any other device's readings: its stored keys, dictionary names. */
-function readings() {
-  return Object.keys(state.latest).filter(function (k) {
-    return NOT_READINGS.indexOf(k) < 0 && !RULE_SOURCE.test(k);
-  }).sort(function (a, b) { return labelOf(a).localeCompare(labelOf(b)); });
-}
-
-/** The channel name a reading carries: a LOGR2 key after its peripheral prefix, any other key whole. */
-function nameOf(key) { return family() === 'logr2' ? key.slice(key.indexOf('.') + 1) : key; }
-function entryOf(key) { return state.names[resolver.splitChannelKey(nameOf(key)).name] || null; }
-function labelOf(key) { var e = entryOf(key); return (e && e.label) || key; }
-function readingUnit(key) {
-  var e = entryOf(key);
-  return e ? ((resolver.kindSpec(camel(e.kind), state.kinds) || {}).cloudUnit || '') : '';
-}
-
-/** A LOGR2 as the LOGR and its sensors: `[{ id, label, keys }]`, the LOGR first
- * (label null), then each sensor that reported, then readings of no known part. */
-function logr2Parts(keys) {
-  var logger = { id: 'logr', label: null, keys: [] }, sensors = {}, rest = [];
-  keys.forEach(function (key) {
-    var prefix = key.slice(0, key.indexOf('.'));
-    if (prefix === 'logr') { logger.keys.push(key); return; }
-    if (LOGR2_SENSORS[prefix]) { (sensors[prefix] = sensors[prefix] || []).push(key); return; }
-    rest.push(key);
-  });
-  var parts = [logger].concat(Object.keys(LOGR2_SENSORS).filter(function (g) { return sensors[g]; }).map(function (g) {
-    return { id: g, label: LOGR2_SENSORS[g], keys: sensors[g] };
-  }));
-  if (rest.length) { parts.push({ id: 'other', label: 'Other readings', keys: rest }); }
-  return parts;
-}
-
-function retiredName(n) { return !!(state.names[n] || {}).retired; }
+function measureOf(s, node) { return M.measureOf(model(), s, node); }
+function sourceLabel(s, node) { return M.sourceLabel(model(), s, node); }
+function unitOf(s) { return M.unitOf(model(), s); }
+function readings() { return M.readings(model()); }
+function nameOf(key) { return M.nameOf(model(), key); }
+function entryOf(key) { return M.entryOf(model(), key); }
+function labelOf(key) { return M.labelOf(model(), key); }
+function readingUnit(key) { return M.readingUnit(model(), key); }
+var logr2Parts = M.logr2Parts;
 
 /** The names this device's channels carry on its stations. */
-function mappedNames() {
-  var out = {};
-  state.bindings.forEach(function (b) {
-    Object.keys(mineOf(b.entries)).forEach(function (c) { out[resolver.splitChannelKey(c).name] = true; });
-  });
-  return out;
-}
-
-/** The names a source of `kind` can be stored under: a retired name only where a channel of this device already carries it. */
-function namesForKind(kind) {
-  var mapped = mappedNames();
-  return Object.keys(state.names).filter(function (n) {
-    var e = state.names[n];
-    return camel(e.kind) === kind && !e.fixed && !e.rule && (!retiredName(n) || mapped[n]);
-  })
-    .sort(function (a, b) {
-      return !!state.names[a].diagnostic - !!state.names[b].diagnostic || (state.names[a].label || a).localeCompare(state.names[b].label || b);
-    });
-}
-
-/** The names a reading can be stored under: its own name first, then the other
- * vocabulary names of its kind. */
-function namesForReading(key) {
-  var own = nameOf(key), e = entryOf(key);
-  if (e && e.fixed) { return [own]; }
-  return [own].concat(e ? namesForKind(camel(e.kind)).filter(function (n) { return n !== own; }) : []);
-}
-
-/** What a station can take from this device: one row per measurement, with the
- * channel name it gets by default and the names it may take instead. A LOGR3 or
- * LOGR4 source defaults to a vocabulary name of its kind; any other reading to
- * its own name, a LOGR2's without its peripheral prefix. */
-function mappable() {
-  if (family() !== 'bus') {
-    var parts = family() === 'logr2' ? logr2Parts(readings()).filter(function (p) { return p.id !== 'dryc'; })
-      : [{ id: 'device', label: state.device.type || 'Device', keys: readings() }];
-    return [].concat.apply([], parts.map(function (part) {
-      return part.keys.map(function (key) {
-        return { key: key, label: labelOf(key), group: part.id, groupLabel: part.label || 'LOGR itself', names: namesForReading(key), name: nameOf(key),
-                 diagnostic: part.id === 'logr' || !!(entryOf(key) || {}).diagnostic };
-      });
-    }));
-  }
-  var nodes = topology();
-  return sources().sort(function (a, b) { return a.position - b.position || a.sourceKey.localeCompare(b.sourceKey); }).map(function (s) {
-    var node = nodes[s.position], p = node && state.peripherals[node.type];
-    var m = measureOf(s, node);
-    var name = m && state.names[m.defaultName] && !retiredName(m.defaultName) ? m.defaultName
-      : namesForKind(s.kind).filter(function (n) { return !retiredName(n); })[0] || null;
-    return {
-      key: s.sourceKey, label: sourceLabel(s, node), group: 'p' + s.position,
-      groupLabel: s.position === 0 ? 'LOGR itself' : s.position + ' · ' + (p ? p.displayName : node ? node.type : 'Unknown peripheral'),
-      names: namesForKind(s.kind), name: name, diagnostic: s.position === 0 || !!(name && (state.names[name] || {}).diagnostic)
-    };
-  }).filter(function (r) { return r.names.length; });
-}
+function mappedNames() { return M.mappedNames(state.device.id.id, state.bindings.map(function (b) { return b.entries; })); }
+function namesForKind(kind) { return M.namesForKind(model(), kind, mappedNames()); }
+function mappable() { return M.mappable(model(), mappedNames()); }
 
 // -- commands (CA-4, TC-8/9) ---------------------------------------------------------------
 
@@ -525,28 +393,10 @@ function commandsSection() {
 
 function ownerOf() { return state.device.ownerId || {}; }
 
-/** This device's channels among a station's map entries: `{channel: sourceKey}`. */
-function mineOf(entries) {
-  var out = {};
-  Object.keys(entries || {}).forEach(function (c) {
-    if (entries[c].device === state.device.id.id) { out[c] = entries[c].key; }
-  });
-  return out;
-}
+function mineOf(entries) { return M.mineOf(entries, state.device.id.id); }
+function othersOf(entries) { return M.othersOf(entries, state.device.id.id); }
 
-/** The channels of `entries` another device feeds. */
-function othersOf(entries) {
-  return Object.keys(entries || {}).filter(function (c) { return entries[c].device && entries[c].device !== state.device.id.id; });
-}
-
-/** Make the station's `Contains` relations to devices follow its map. */
-function relateToMap(stationId, entries) {
-  var wanted = resolver.mapDevices(entries);
-  return stationDevices(stationId).then(function (current) {
-    return Promise.all(wanted.filter(function (d) { return current.indexOf(d) < 0; }).map(function (d) { return relate(stationId, d, 'DEVICE'); })
-      .concat(current.filter(function (d) { return wanted.indexOf(d) < 0; }).map(function (d) { return unrelate(stationId, d); })));
-  });
-}
+function relateToMap(stationId, entries) { return tb.relateToMap({ entityType: 'ASSET', id: stationId }, entries); }
 
 function stationsToPick() {
   var owner = ownerOf();
@@ -563,22 +413,6 @@ function parentsToPick() {
       return level;
     }).sort(function (a, b) { return a.name.localeCompare(b.name); });
   });
-}
-
-function relate(fromId, toId, toType) {
-  return tb.post('/api/relation', {
-    from: { id: fromId, entityType: 'ASSET' }, to: { id: toId, entityType: toType }, type: 'Contains', typeGroup: 'COMMON'
-  });
-}
-function unrelate(stationId, deviceId) {
-  return tb.del('/api/relation', { fromId: stationId, fromType: 'ASSET', toId: deviceId, toType: 'DEVICE', relationType: 'Contains', relationTypeGroup: 'COMMON' });
-}
-function stationDevices(stationId) {
-  var query = {
-    parameters: { rootId: stationId, rootType: 'ASSET', direction: 'FROM', relationTypeGroup: 'COMMON', maxLevel: 1, fetchLastLevelOnly: false },
-    filters: [{ relationType: 'Contains', entityTypes: ['DEVICE'] }]
-  };
-  return tb.post('/api/relations', query).then(function (rels) { return (rels || []).map(function (r) { return r.to.id; }); });
 }
 
 /** Pick a station, a new one included, or the channels of one already fed;
@@ -751,86 +585,24 @@ function bindDrawer(binding, preset) {
   });
 }
 
-function channelLabel(key) {
-  var k = resolver.splitChannelKey(key);
-  return ((state.names[k.name] || {}).label || k.name) + (k.instance ? ' ' + k.instance : '');
-}
+function channelLabel(key) { return M.channelLabel(state.names, key); }
 
-/** The next free instance of `name` among the station's channels, `name-2` on. */
-function nextInstance(name, entries) {
-  var used = {};
-  Object.keys(entries || {}).forEach(function (c) {
-    var k = resolver.splitChannelKey(c);
-    if (k.name === name) { used[k.instance || 1] = true; }
-  });
-  var n = 2;
-  while (used[n]) { n++; }
-  return name + '-' + n;
-}
-
-/** A row's name choices on the picked station: its names, the channel it already
- * feeds, and for a repeatable name another device feeds there, its next instance,
- * picked by default so a second sensor of a kind never takes over the first. */
 function fillNames(select, r, entries, channel) {
-  var others = othersOf(entries).map(function (c) { return resolver.splitChannelKey(c).name; });
-  var options = r.names.slice();
-  if (channel && options.indexOf(channel) < 0) { options.unshift(channel); }
-  r.names.forEach(function (n) {
-    if ((state.names[n] || {}).repeatable && others.indexOf(n) >= 0) { options.splice(options.indexOf(n) + 1, 0, nextInstance(n, entries)); }
-  });
+  var o = M.nameOptions(model(), r, entries, channel, state.device.id.id);
+  var options = o.options;
   select.innerHTML = '';
   options.forEach(function (n) {
-    var o = document.createElement('option'); o.value = n; o.textContent = channelLabel(n); select.appendChild(o);
+    var opt = document.createElement('option'); opt.value = n; opt.textContent = channelLabel(n); select.appendChild(opt);
   });
-  select.value = channel || (others.indexOf(r.name) >= 0 && (state.names[r.name] || {}).repeatable ? nextInstance(r.name, entries) : r.name);
+  select.value = o.value;
 }
 
-/** Channel keys for the chosen measurements: a name picked once is its own key;
- * a repeatable name picked several times becomes numbered instances, in bus
- * order. A channel the station already has for a measurement keeps its key, so
- * its history keeps it too. */
-function channelsFor(old, chosen) {
-  var channels = {};
-  // The dry contact interface's channels are its DRYC view's and stay with this device.
-  Object.keys(old).forEach(function (c) { if (DRYC_KEY.test(old[c])) { channels[c] = old[c]; } });
-  var byName = {};
-  chosen.forEach(function (c) { (byName[c.name] = byName[c.name] || []).push(c); });
-  Object.keys(byName).forEach(function (name) {
-    var group = byName[name];
-    if (group.length > 1 && (resolver.splitChannelKey(name).instance || !(state.names[name] || {}).repeatable)) {
-      throw new Error(channelLabel(name) + ' (' + name + ') is picked twice and does not repeat');
-    }
-    var taken = {};
-    var rest = group.filter(function (c) {
-      var kept = Object.keys(old).filter(function (k) { return old[k] === c.key && resolver.splitChannelKey(k).name === name; })[0];
-      if (!kept || (group.length > 1 && !resolver.splitChannelKey(kept).instance)) { return true; }
-      channels[kept] = c.key;
-      taken[resolver.splitChannelKey(kept).instance || 1] = true;
-      return false;
-    });
-    if (group.length === 1) { rest.forEach(function (c) { channels[name] = c.key; }); return; }
-    var n = 1;
-    rest.forEach(function (c) {
-      while (taken[n]) { n++; }
-      taken[n] = true;
-      channels[name + '-' + n] = c.key;
-    });
-  });
-  return channels;
-}
+function channelsFor(old, chosen) { return M.channelsFor(state.names, old, chosen); }
 
 function save(station, entries, chosen, create) {
   var me = state.device.id.id, channels;
   try { channels = channelsFor(mineOf(entries), chosen); } catch (e) { ui.toast(e.message, 'error'); return; }
-  // This device's channels replace its old ones; another device's channel stays
-  // unless a name picked here takes it over (DEVICE_VIEW.md §2).
-  var next = {}, takenOver = [];
-  Object.keys(entries).forEach(function (c) {
-    if (entries[c].device === me) { return; }
-    if (channels[c] !== undefined) { takenOver.push(c); return; }
-    next[c] = entries[c];
-  });
-  Object.keys(channels).forEach(function (c) { next[c] = { device: me, key: channels[c] }; });
+  var merged = M.withDevice(entries, me, channels), next = merged.next, takenOver = merged.takenOver;
   var n = chosen.length + (chosen.length === 1 ? ' measurement' : ' measurements');
   var device = esc(state.device.label || state.device.name);
   var text = create
@@ -916,7 +688,6 @@ function deleteSensorData(part) {
 // -- replace device (DEVICE_VIEW.md §2, CA-13) -------------------------------------------------
 
 var PROVENANCE_KEY = /^(uplinkCause|uplinkLatest|rssi|snr)$|\.status$/;
-var DRYC_KEY = /^(dryc|drycRule)\./;
 
 /** The stations whose channels this device feeds and the user may write. */
 function replaceable() {
