@@ -1,7 +1,8 @@
 /*
  * Station — one station as a data flow: each device that feeds it, the
  * measurements the device provides, the channel each is stored under, and the
- * station's latest value of each, with the channels gone stale; the project
+ * station's latest value of each; then the calculated channels, each from the
+ * station channels and the `calc.*` settings it reads (vocabulary.md §4), with the channels gone stale; the project
  * the station stands in above. A device opens its device view. A user who may
  * write the station changes the channel a measurement is stored under, or its
  * label, stores one not stored yet, or removes one (shared/mapping.js); and
@@ -38,6 +39,7 @@ var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
 var life = window.TerrySenseLifecycle(ui, tb);
 var templates = window.TerrySenseTemplates(ui, tb);
+var calc = window.TerrySenseCalculations(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
@@ -83,7 +85,7 @@ function worst(severities) {
 // -- data -------------------------------------------------------------------------------
 
 var state = {
-  station: null, attrs: {}, entries: {}, names: {}, kinds: {}, peripherals: {},
+  station: null, attrs: {}, entries: {}, names: {}, kinds: {}, peripherals: {}, calcAttributes: {}, waiting: [],
   channels: [], alarms: [], devices: [], chain: [], showDiagnostic: false, loadedAt: 0,
   canWrite: false, canCreateDashboards: false, owner: null, service: null, pub: null
 };
@@ -93,6 +95,7 @@ function loadDefaults() {
     state.names = parseJson(a['config.channelNames']) || {};
     state.kinds = parseJson(a['config.kinds']) || {};
     state.peripherals = parseJson(a['config.peripherals']) || {};
+    state.calcAttributes = parseJson(a['config.calcAttributes']) || {};
   });
 }
 
@@ -159,19 +162,24 @@ function load() {
   return Promise.all([tb.attrsMap(s), tb.ancestors(s),
     state.canWrite ? tb.publicMembers(state.owner).catch(function () { return null; }) : null]).then(function (got) {
     var attrs = got[0], entries = resolver.mapEntries(attrs['config.channelMap']);
-    var names = Object.keys(entries);
+    // The mapped channels and the calculated ones the station carries; then
+    // the calculated names still waiting for a setting, read for their history.
+    var names = Object.keys(resolver.channelsFromAttrs(attrs, state.names));
+    var waiting = resolver.calculationPlan(attrs, state.names).filter(function (p) { return !p.on; });
+    var keys = names.concat(waiting.map(function (p) { return p.name; }));
     state.attrs = attrs;
     state.entries = entries;
     state.service = tb.serviceOf(attrs);
     state.chain = got[1];
     state.pub = got[2];
     return Promise.all([
-      names.length ? tb.get(url, { keys: names.join(',') }).catch(function () { return {}; }) : {},
+      keys.length ? tb.get(url, { keys: keys.join(',') }).catch(function () { return {}; }) : {},
       tb.get('/api/alarm/ASSET/' + s.id, { searchStatus: 'ACTIVE', pageSize: '100', page: '0' }).catch(function () { return null; }),
       loadDevices(s, entries)
     ]).then(function (r) {
-      state.channels = names.map(function (n) { return channelOf(n, entries[n], attrs, r[0] || {}); })
+      state.channels = names.map(function (n) { return channelOf(n, entries[n] || { device: null, key: null }, attrs, r[0] || {}); })
         .sort(function (a, b) { return a.label.localeCompare(b.label); });
+      state.waiting = waiting.map(function (p) { return { plan: p, channel: channelOf(p.name, { device: null, key: null }, attrs, r[0] || {}) }; });
       var byName = {};
       state.channels.forEach(function (c) { byName[c.name] = c; });
       state.alarms = [];
@@ -353,7 +361,7 @@ function renderChannels() {
   lanes.forEach(function (lane) {
     var shown = lane.items.filter(function (it) { return state.showDiagnostic || !folded(it); });
     hidden += lane.items.length - shown.length;
-    sec.appendChild(laneEl(lane, shown));
+    if (shown.length || !lane.calc) { sec.appendChild(laneEl(lane, shown)); }
   });
   if (!lanes.length) {
     sec.appendChild(h('<div class="ts-empty">No channel mapped yet: no measurement reaches this station.</div>'));
@@ -361,7 +369,8 @@ function renderChannels() {
   var foot = sec.appendChild(h('<div class="ts-flow-foot"></div>'));
   if (hidden || state.showDiagnostic && lanes.some(function (l) { return l.items.some(folded); })) {
     var more = foot.appendChild(h('<button type="button" class="ts-more"></button>'));
-    more.textContent = state.showDiagnostic ? 'Hide diagnostic measurements' : 'Show ' + hidden + ' diagnostic measurement' + (hidden === 1 ? '' : 's');
+    more.textContent = state.showDiagnostic ? 'Hide diagnostic measurements and waiting calculations'
+      : 'Show ' + hidden + ' more: diagnostic measurements and calculations waiting for a setting';
     more.addEventListener('click', function () { state.showDiagnostic = !state.showDiagnostic; renderChannels(); });
   }
   if (state.canWrite && (opts.devicesDashboardId || state.canCreateDashboards)) { foot.appendChild(h('<span class="ts-spacer"></span>')); }
@@ -397,8 +406,33 @@ function flowOrder(lanes) {
 /** A template just created: the station's charts on it. */
 function openCharts(id) { tb.openDashboard(id, 'station', state.station); }
 
-/** A diagnostic measurement folds away, unless its channel is in alarm. */
-function folded(it) { return it.channel ? it.channel.diagnostic && !it.channel.alarm : it.row.diagnostic; }
+/** A diagnostic measurement folds away, unless its channel is in alarm; so does
+ * a calculation waiting for a setting that has never been calculated. */
+function folded(it) {
+  if (it.calc) { return !it.channel && !(it.waiting && it.waiting.latest); }
+  return it.channel ? it.channel.diagnostic && !it.channel.alarm : it.row.diagnostic;
+}
+
+function calcOf(name) { return (state.names[resolver.splitChannelKey(name).name] || {}).calculated || null; }
+
+/** Every `calc.*` setting a calculated name reads, through the calculated names it reads too. */
+function readsOf(name, seen) {
+  var k = calcOf(name);
+  seen = seen || {};
+  if (!k || seen[name]) { return []; }
+  seen[name] = true;
+  var out = (k.attributes || []).slice();
+  (k.channels || []).forEach(function (c) { readsOf(c, seen).forEach(function (a) { if (out.indexOf(a) < 0) { out.push(a); } }); });
+  return out;
+}
+
+function calcMeta() { return { names: state.names, attributes: state.calcAttributes }; }
+
+/** How many calculated names deep `name` is: a channel it reads comes before it. */
+function depth(name) {
+  var k = calcOf(name);
+  return k ? 1 + Math.max.apply(null, [0].concat((k.channels || []).map(depth))) : 0;
+}
 
 /** One lane per visible device, its measurements in bus order, stored or not;
  * then the channels of a device not visible, or of none. Rule channels are the
@@ -423,6 +457,13 @@ function flowLanes() {
     });
     return { device: d, items: items };
   });
+  // A calculated name is drawn from the station channels it reads, whatever its map entry says.
+  var calculated = state.channels.filter(function (c) { return !c.rule && !placed[c.name] && calcOf(c.name); });
+  var items = calculated.map(function (c) { placed[c.name] = true; return { calc: true, channel: c, name: c.name }; })
+    .concat(state.waiting.map(function (w) { return { calc: true, channel: null, name: w.plan.name, waiting: w.channel }; }));
+  if (items.length) {
+    lanes.push({ device: null, calc: true, items: items.sort(function (a, b) { return depth(a.name) - depth(b.name) || a.name.localeCompare(b.name); }) });
+  }
   var rest = state.channels.filter(function (c) { return !c.rule && !placed[c.name]; });
   if (rest.length) {
     var unseen = rest.some(function (c) { return c.device; });
@@ -434,7 +475,11 @@ function flowLanes() {
 function laneEl(lane, items) {
   var el = h('<div class="ts-flow-lane"><div class="ts-flow-dev"></div><div class="ts-flow-rows"></div></div>');
   var dev = el.querySelector('.ts-flow-dev');
-  if (lane.device) { deviceNode(dev, lane.device); } else {
+  if (lane.device) { deviceNode(dev, lane.device); } else if (lane.calc) {
+    el.classList.add('calc');
+    dev.appendChild(h('<div class="ts-flow-title">Calculated</div>'));
+    dev.appendChild(h('<div class="ts-row-meta">From this station\'s channels and settings</div>'));
+  } else {
     el.classList.add('orphan');
     dev.appendChild(h('<div class="ts-flow-title"></div>')).textContent = lane.unseen ? 'Device not visible to you' : 'No device';
     dev.appendChild(h('<div class="ts-row-meta"></div>')).textContent = lane.unseen ? 'Its channels below' : 'Channels mapped to no device';
@@ -484,6 +529,7 @@ function clickable(el, title, go) {
 
 /** Measurement → channel → station value. A measurement stored nowhere here ends at its channel slot. */
 function flowRow(device, it) {
+  if (it.calc) { return calcRow(it); }
   var c = it.channel, r = it.row;
   var el = h('<div class="ts-flow-row"><div class="ts-flow-node ts-flow-meas"><div class="ts-flow-name"></div><div class="ts-row-meta"></div></div>' +
     '<span class="ts-flow-link"></span><div class="ts-flow-node ts-flow-ch"></div><span class="ts-flow-link"></span>' +
@@ -515,6 +561,70 @@ function flowRow(device, it) {
     ch.title = 'Set in the dry contact interface view';
   }
   return el;
+}
+
+/** The channels and settings a calculated name reads → the name → its value.
+ * A writer opens its settings from the channel; one still waiting for a setting
+ * names it, and shows its last value when it has a history. */
+function calcRow(it) {
+  var k = calcOf(it.name), c = it.channel || it.waiting, reads = readsOf(it.name);
+  var needs = reads.filter(function (a) { return state.attrs[resolver.CALC_PREFIX + a] == null; });
+  var el = h('<div class="ts-flow-row"><div class="ts-flow-node ts-flow-meas"><div class="ts-flow-name"></div><div class="ts-row-meta"></div></div>' +
+    '<span class="ts-flow-link"></span><div class="ts-flow-node ts-flow-ch"></div><span class="ts-flow-link"></span>' +
+    '<div class="ts-flow-node ts-flow-val"></div></div>');
+  el.dataset.channel = it.name;
+  el.dataset.calc = needs.length ? 'waiting' : 'on';
+  var meas = el.querySelector('.ts-flow-meas');
+  meas.querySelector('.ts-flow-name').textContent = 'From ' + calc.listText((k.channels || []).map(function (ch) { return calc.channelLabel(calcMeta(), state.attrs, ch); }));
+  var settings = (k.attributes || []).filter(function (a) { return state.attrs[resolver.CALC_PREFIX + a] != null; }).map(function (a) {
+    var spec = state.calcAttributes[a] || {};
+    return (spec.label || a) + ' ' + fmtRaw(state.attrs[resolver.CALC_PREFIX + a]) + (spec.unit ? ' ' + spec.unit : '');
+  });
+  meas.querySelector('.ts-row-meta').textContent = settings.join(' · ');
+  var ch = el.querySelector('.ts-flow-ch'), val = el.querySelector('.ts-flow-val');
+  ch.appendChild(h('<div class="ts-flow-name"></div>')).textContent = c.label;
+  ch.appendChild(h('<div class="ts-mono"></div>')).textContent = it.name;
+  if (needs.length) {
+    el.classList.add('off');
+    ch.classList.add('empty');
+    var why = ch.appendChild(h('<div class="ts-row-meta ts-flow-needs"></div>'));
+    why.textContent = 'Needs ' + calc.listText(needs.map(function (a) { return (state.calcAttributes[a] || {}).label || a; }));
+  }
+  if (it.channel) { valueNode(el, val, it.channel); } else {
+    val.appendChild(h('<span class="ts-row-meta"></span>')).textContent = c.latest ? 'last ' + display(c).text + (display(c).unit ? ' ' + display(c).unit : '') + ', ' + ago(c.latest.ts) : 'not calculated yet';
+  }
+  if (state.canWrite && reads.length) {
+    ch.dataset.a = 'calc';
+    clickable(ch, 'Change its settings', function () { calcDrawer(it.name, c.label, reads); });
+  }
+  return el;
+}
+
+/** The `calc.*` settings a calculated name reads, saved and resolved at once. */
+function calcDrawer(name, label, reads) {
+  var dr = ui.openDrawer('Settings of ' + esc(label), esc(state.station.name));
+  var k = calcOf(name);
+  dr.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = label + ' is calculated from ' +
+    calc.listText((k.channels || []).map(function (ch) { return calc.channelLabel(calcMeta(), state.attrs, ch); })) +
+    ' and the ' + (reads.length === 1 ? 'setting' : 'settings') + ' below.';
+  var f = calc.form(state.station, state.attrs, reads, calcMeta());
+  dr.body.appendChild(f.el);
+  dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
+  var go = ui.drawerActions(dr, 'Save');
+  function check() { go.disabled = !f.values(); }
+  f.onChange(check);
+  check();
+  setTimeout(f.focus, 0);
+  go.addEventListener('click', function () {
+    var write = f.values();
+    if (!write) { return; }
+    go.disabled = true;
+    calc.save(state.station, write).then(function () {
+      ui.closeDrawer();
+      ui.toast('Saved');
+      return refresh();
+    }).catch(function (err) { go.disabled = false; ui.toast('Not saved: ' + errText(err), 'error'); });
+  });
 }
 
 function fmtRaw(v) {
