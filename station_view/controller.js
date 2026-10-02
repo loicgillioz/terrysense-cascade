@@ -5,7 +5,8 @@
  * station channels and the `calc.*` settings it reads (vocabulary.md §4), with the channels gone stale; the project
  * the station stands in above. A device opens its device view. A user who may
  * write the station changes the channel a measurement is stored under, or its
- * label, stores one not stored yet, or removes one (shared/mapping.js); and
+ * label, stores one not stored yet, or deletes a channel, its history with it
+ * if asked (shared/mapping.js); and
  * gets the header's row menu (shared/lifecycle.js), *Silence*, and
  * *Acknowledge* and *Clear* on each active alarm. A user who may create
  * dashboards creates a station dashboard from its channels (shared/templates.js).
@@ -44,6 +45,7 @@ var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
 var FAULT_PREFIX = 'peripheralFault.';
+var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>';
 var CHANNEL_ALARM_RE = /^(.+)\.(max|min|state)$/;
 var OTHER_ALARMS = [
   { prefix: 'peripheralFault.', text: 'Sensor fault' },
@@ -553,6 +555,7 @@ function flowRow(device, it) {
     ch.appendChild(h('<div class="ts-flow-name"></div>')).textContent = c.label;
     ch.appendChild(h('<div class="ts-mono"></div>')).textContent = c.name;
     valueNode(el, val, c);
+    deleteButton(ch, c);
   }
   if (editable) {
     ch.dataset.a = 'map';
@@ -590,7 +593,7 @@ function calcRow(it) {
     var why = ch.appendChild(h('<div class="ts-row-meta ts-flow-needs"></div>'));
     why.textContent = 'Needs ' + calc.listText(needs.map(function (a) { return (state.calcAttributes[a] || {}).label || a; }));
   }
-  if (it.channel) { valueNode(el, val, it.channel); } else {
+  if (it.channel) { valueNode(el, val, it.channel); deleteButton(ch, it.channel); } else {
     val.appendChild(h('<span class="ts-row-meta"></span>')).textContent = c.latest ? 'last ' + display(c).text + (display(c).unit ? ' ' + display(c).unit : '') + ', ' + ago(c.latest.ts) : 'not calculated yet';
   }
   if (state.canWrite && reads.length) {
@@ -598,6 +601,56 @@ function calcRow(it) {
     clickable(ch, 'Change its settings', function () { calcDrawer(it.name, c.label, reads); });
   }
   return el;
+}
+
+/** The delete button on a stored channel, for a user who may write the station. */
+function deleteButton(node, c) {
+  if (!state.canWrite) { return; }
+  var b = node.appendChild(h('<button type="button" class="ts-icon-btn ts-flow-del" data-a="delete-channel">' + ICON_TRASH + '</button>'));
+  b.title = 'Delete ' + c.name;
+  b.addEventListener('click', function (e) { e.stopPropagation(); deleteChannel(c); });
+}
+
+/** What deleting `c` does: a channel in the map leaves it; a calculated one
+ * turned on by its settings goes with them, and every calculation they turn on
+ * with it. `{map, attrs, off}`. */
+function deletion(c) {
+  if (state.entries[c.name]) { return { map: true, attrs: [], off: [c.name] }; }
+  var attrs = readsOf(c.name);
+  var off = state.channels.filter(function (x) {
+    return calcOf(x.name) && !state.entries[x.name] && readsOf(x.name).some(function (a) { return attrs.indexOf(a) >= 0; });
+  }).map(function (x) { return x.name; });
+  return { map: false, attrs: attrs, off: off };
+}
+
+function deleteChannel(c) {
+  var d = deletion(c), s = state.station;
+  var others = d.off.filter(function (n) { return n !== c.name; });
+  var text = d.map
+    ? 'Delete <b>' + esc(c.label) + '</b> (' + esc(c.name) + ') from <b>' + esc(s.name) + '</b>? It leaves the station\'s channels and its dashboards.'
+    : 'Delete <b>' + esc(c.label) + '</b> (' + esc(c.name) + ')? Its ' + (d.attrs.length === 1 ? 'setting' : 'settings') + ' <b>' +
+      esc(calc.listText(d.attrs.map(function (a) { return (state.calcAttributes[a] || {}).label || a; }))) + '</b> ' +
+      (d.attrs.length === 1 ? 'is' : 'are') + ' cleared, so it is no longer calculated' +
+      (others.length ? ', nor ' + esc(calc.listText(others.map(function (n) { return calc.channelLabel(calcMeta(), state.attrs, n); }))) : '') + '.';
+  ui.confirmTyped(text + ' The stored history stays unless deleted below.', c.name, 'Delete', 'Also delete the stored history of ' + calc.listText(d.off) + ' — cannot be undone')
+    .then(function (answer) {
+      if (!answer) { return null; }
+      var next = Object.assign({}, state.entries);
+      delete next[c.name];
+      var work = d.map
+        ? tb.saveAttrs(s, { 'config.channelMap': resolver.buildMap(next) }).then(function () { return tb.relateToMap(s, next); })
+        : tb.deleteAttrs(s, d.attrs.map(function (a) { return resolver.CALC_PREFIX + a; }));
+      return work.then(function () {
+        return answer.checked ? tb.del('/api/plugins/telemetry/ASSET/' + s.id + '/timeseries/delete',
+          { keys: d.off.join(','), deleteAllDataForKeys: 'true' }) : null;
+      }).then(function () {
+        return tb.resolveStations([s]);
+      }).then(function () {
+        ui.closeDrawer();
+        ui.toast(c.name + ' deleted' + (answer.checked ? ', with its history' : ''));
+        return refresh();
+      });
+    }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
 }
 
 /** The `calc.*` settings a calculated name reads, saved and resolved at once. */
