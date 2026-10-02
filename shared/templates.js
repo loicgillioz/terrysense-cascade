@@ -227,6 +227,8 @@ root.TerrySenseTemplates = function (ui, tb) {
     });
   }
 
+  var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>';
+
   function errText(e) { return (e && e.error && e.error.message) || (e && e.message) || String(e); }
 
   var listed = null;
@@ -360,34 +362,108 @@ root.TerrySenseTemplates = function (ui, tb) {
           side.appendChild(h('<span class="ts-chip">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
         }
         side.appendChild(h('<span class="ts-chip level">' + whose(r.t) + '</span>'));
+        if (mayEdit(r.t)) { el.appendChild(ownerButtons(r.t)); }
         function pick() { if (!r.fit.missing.length && r.fit.needs.length) { openSetup(r.t, r.fit.needs); } else { assign(r.t); } }
         el.addEventListener('click', pick);
         el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { pick(); } });
         return el;
       }
 
-      /** The linked dashboard: open it, add the station's new channels to it, unlink it. */
+      /** Every station that opens `t`, among those the user can read. */
+      function stationsOf(t) {
+        return tb.post('/api/entitiesQuery/find', {
+          entityFilter: { type: 'assetType', assetTypes: ['Station'], assetNameFilter: '' },
+          entityFields: [{ type: 'ENTITY_FIELD', key: 'name' }],
+          keyFilters: [{ key: { type: 'SERVER_ATTRIBUTE', key: 'config.stationDashboard' }, valueType: 'STRING',
+            predicate: { type: 'STRING', operation: 'EQUAL', value: { defaultValue: t.id }, ignoreCase: false } }],
+          pageLink: { page: 0, pageSize: 1000, sortOrder: { key: { type: 'ENTITY_FIELD', key: 'name' }, direction: 'ASC' } }
+        }).then(function (page) {
+          return ((page && page.data) || []).map(function (e) {
+            return { entityType: 'ASSET', id: e.entityId.id, name: ((e.latest.ENTITY_FIELD || {}).name || {}).value || e.entityId.id };
+          });
+        });
+      }
+
+      /** Delete `t`: the stations that open it are unlinked first, so none keeps a link to nothing. */
+      function remove(t) {
+        stationsOf(t).then(function (stations) {
+          var names = stations.slice(0, 5).map(function (st) { return '<b>' + esc(st.name) + '</b>'; });
+          var who = !stations.length ? 'No station opens it.'
+            : (stations.length === 1 ? '1 station opens it: ' : stations.length + ' stations open it: ') + calc.listText(names) +
+              (stations.length > 5 ? ' and ' + (stations.length - 5) + ' more' : '') + '. They go back to their station view.';
+          return ui.confirm('Delete the template <b>' + esc(t.title) + '</b>? ' + who + ' This cannot be undone.', 'Delete').then(function (ok) {
+            if (!ok) { return null; }
+            return Promise.all(stations.map(function (st) { return tb.deleteAttrs(st, ['config.stationDashboard']); })).then(function () {
+              return tb.del('/api/dashboard/' + t.id);
+            }).then(function () {
+              listed = null;
+              ui.closeDrawer();
+              ui.toast(t.title + ' deleted');
+              o.changed();
+            });
+          });
+        }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
+      }
+
+      /** Open `t` on this station for editing: ThingsBoard's own edit mode arranges its widgets. */
+      function edit(t) {
+        ui.closeDrawer();
+        ui.toast('Click the pencil at the bottom right of ' + t.title + ' to edit it. Every station that opens it follows.');
+        o.open(t.id);
+      }
+
+      /** Edit and Delete for a template the user may change. */
+      function ownerButtons(t) {
+        var box = h('<span class="ts-tpl-own"></span>');
+        box.appendChild(h('<button type="button" class="ts-icon-btn" data-a="edit-template" title="Edit this template">' + ui.ICON.edit + '</button>'))
+          .addEventListener('click', function (e) { e.stopPropagation(); edit(t); });
+        box.appendChild(h('<button type="button" class="ts-icon-btn ts-tpl-del" data-a="delete-template" title="Delete this template">' + ICON_TRASH + '</button>'))
+          .addEventListener('click', function (e) { e.stopPropagation(); remove(t); });
+        return box;
+      }
+
+      /** The linked dashboard: Edit and Delete beside its title, what it shows here, then Open, add the station's other channels, Unlink. */
       function linkedCard(t) {
         var card = h('<div class="ts-section ts-tpl-current"><div class="ts-section-head">Linked now</div>' +
-          '<div class="ts-tpl-current-row"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div>' +
-          '<div class="ts-tpl-current-acts"></div></div></div>');
+          '<div class="ts-tpl-current-box"><div class="ts-tpl-current-title"><span class="ts-opt-label"></span></div>' +
+          '<div class="ts-tpl-current-lines"></div><div class="ts-tpl-current-acts"></div></div></div>');
+        var title = card.querySelector('.ts-tpl-current-title'), lines = card.querySelector('.ts-tpl-current-lines');
         var acts = card.querySelector('.ts-tpl-current-acts');
+        function line(text, warn) {
+          var l = lines.appendChild(h('<div class="ts-opt-desc"></div>'));
+          l.textContent = text;
+          if (warn) { l.classList.add('ts-tpl-warn'); }
+        }
+        var own = t && t.fit && mayEdit(t);
         if (!t) {
-          card.querySelector('.ts-opt-label').textContent = 'A dashboard that no longer exists or that you cannot read';
-          card.querySelector('.ts-opt-desc').textContent = 'The station opens its station view instead. Pick a template below, or unlink it.';
+          title.firstChild.textContent = 'A dashboard that no longer exists or that you cannot read';
+          line('The station opens its station view instead. Link a template below, or unlink it.', true);
         } else {
-          card.querySelector('.ts-opt-label').textContent = t.title;
-          card.querySelector('.ts-opt-desc').textContent = t.fit ? describe({ t: t, fit: t.fit }) : 'A dashboard outside the station templates';
+          title.firstChild.textContent = t.title;
+          if (t.fit) {
+            title.appendChild(h('<span class="ts-chip level">' + whose(t) + '</span>'));
+            if (own) { title.appendChild(ownerButtons(t)).classList.add('ts-tpl-current-own'); }
+            var shown = t.channels.filter(function (c) { return t.fit.missing.indexOf(c) < 0; });
+            if (shown.length) { line('Shows ' + calc.listText(labelsOf(shown))); }
+            if (t.fit.missing.length) { line('Stays empty for ' + calc.listText(labelsOf(t.fit.missing)) + ': this station does not measure them', true); }
+            else if (t.fit.needs.length) { line('Waits for ' + calc.listText(attrLabels(t.fit.needs)) + ' to calculate what it shows', true); }
+          } else {
+            line('A dashboard outside the station templates');
+          }
           acts.appendChild(h('<button type="button" class="ts-btn" data-a="open-dashboard">Open</button>'))
             .addEventListener('click', function () { ui.closeDrawer(); o.open(t.id); });
-          var missing = t.channels && mayEdit(t) ? missingFrom(t.channels, charts()) : [];
+          var missing = t.channels ? missingFrom(t.channels, charts()) : [];
           if (missing.length) {
-            var add = acts.appendChild(h('<button type="button" class="ts-btn" data-a="add-channels"></button>'));
-            add.textContent = 'Add this station\'s channels (' + missing.length + ')';
-            add.title = missing.map(function (c) { return c.label; }).join(', ');
-            add.addEventListener('click', function () { addTo(t, missing); });
+            line('Not shown: ' + calc.listText(missing.map(function (c) { return c.label; })));
+            if (own) {
+              var add = acts.appendChild(h('<button type="button" class="ts-btn" data-a="add-channels"></button>'));
+              add.textContent = missing.length === 1 ? 'Add ' + missing[0].label : 'Add these ' + missing.length;
+              add.title = 'Append to the template, below its widgets';
+              add.addEventListener('click', function () { addTo(t, missing); });
+            }
           }
         }
+        acts.appendChild(h('<span class="ts-spacer"></span>'));
         acts.appendChild(h('<button type="button" class="ts-btn ghost" data-a="unlink">Unlink</button>')).addEventListener('click', unlink);
         return card;
       }
@@ -411,11 +487,16 @@ root.TerrySenseTemplates = function (ui, tb) {
             ['One step away: a setting to enter', others.filter(function (r) { return !r.fit.fits && !r.fit.missing.length && r.fit.needs.length; })],
             ['Other templates', others.filter(function (r) { return r.fit.missing.length || !r.t.channels.length; })]
           ];
+          dr.body.appendChild(h('<div class="ts-section-head ts-tpl-list-head"></div>')).textContent = current ? 'Link another template' : 'Link a template';
+          if (!current) {
+            dr.body.appendChild(h('<p class="ts-field-hint ts-tpl-intro">The station\'s <i>Charts</i> button opens the template linked here. ' +
+              'A template shows channels by name, so one serves every station that has them.</p>'));
+          }
           if (!others.length) { dr.body.appendChild(h('<div class="ts-empty">' + (current ? 'No other template yet.' : 'No template yet.') + '</div>')); }
           groups.forEach(function (g) {
             if (!g[1].length) { return; }
-            var box = h('<div class="ts-opt-group"><div class="ts-section-head"></div></div>');
-            box.firstChild.textContent = current ? 'Or link another: ' + g[0].charAt(0).toLowerCase() + g[0].slice(1) : g[0];
+            var box = h('<div class="ts-opt-group"><div class="ts-subhead"></div></div>');
+            box.firstChild.textContent = g[0];
             g[1].forEach(function (r) { box.appendChild(option(r)); });
             dr.body.appendChild(box);
           });
