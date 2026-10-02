@@ -3,7 +3,7 @@
  * its stale channels and the age of its last reading (EU-1). Stations close
  * together at the current zoom merge into one cluster. A station opens its
  * station view, and its charts on its own station dashboard; an editor assigns
- * one, places and removes a station's position
+ * one, creates one from the station's channels (shared/templates.js), places and removes a station's position
  * and draws the project area, adds a station; the row menus of the project
  * and its stations rename, move, make public or private, retire and delete
  * (shared/lifecycle.js). Retired stations fold away at the end of the list.
@@ -14,7 +14,7 @@
  *
  * `opts.devicesDashboardId`, the fleet, for the follow-up of a new station.
  *
- * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js, calculations.js and lifecycle.js; loads
+ * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js, calculations.js, lifecycle.js and templates.js; loads
  * Leaflet, Leaflet.markercluster and Leaflet-Geoman itself.
  */
 
@@ -28,6 +28,7 @@ var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
 var calc = window.TerrySenseCalculations(ui, tb);
 var life = window.TerrySenseLifecycle(ui, tb);
+var templates = window.TerrySenseTemplates(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
@@ -47,6 +48,8 @@ var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
 var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
+
+function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
 
 function parseJson(raw) {
   if (!raw) { return null; }
@@ -97,8 +100,8 @@ var openDashboard = tb.openDashboard;
 // -- data --------------------------------------------------------------------------------
 
 var state = {
-  entity: null, owner: null, names: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
-  canEdit: false, editMap: false, filter: null, placing: null, adding: null,
+  entity: null, owner: null, names: {}, kinds: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
+  canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
   publicReport: null, pub: null, templates: null, showRetired: false, followUps: {}, ghost: null
 };
 
@@ -106,6 +109,7 @@ function loadNames() {
   return calc.loadMeta().then(function (meta) {
     state.names = meta.names;
     state.calcAttributes = meta.attributes;
+    state.kinds = meta.kinds;
   });
 }
 
@@ -810,6 +814,13 @@ function templateOption(entry, r) {
     side.appendChild(h('<span class="ts-chip">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
   }
   side.appendChild(h('<span class="ts-chip level">' + (r.t.tenant ? 'in-terra' : 'own') + '</span>'));
+  var missing = r.t.id === entry.dashboardId && mayEdit(r.t) ? templates.missingFrom(r.t.channels, stationCharts(entry)) : [];
+  if (missing.length) {
+    var add = side.appendChild(h('<button type="button" class="ts-btn ghost" data-a="add-channels"></button>'));
+    add.textContent = 'Add this station\'s channels (' + missing.length + ')';
+    add.title = missing.map(function (c) { return c.label; }).join(', ');
+    add.addEventListener('click', function (e) { e.stopPropagation(); addChannels(entry, r.t, missing); });
+  }
   function pick() {
     if (!r.fit.missing.length && r.fit.needs.length) { openSetup(entry, r.t, r.fit.needs); } else { assign(entry, r.t); }
   }
@@ -852,6 +863,16 @@ function openAssign(entry) {
         }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
       });
       dr.foot.appendChild(unlink);
+    }
+    if (state.canCreateDashboards) {
+      dr.foot.hidden = false;
+      dr.foot.appendChild(h('<span class="ts-spacer"></span>'));
+      dr.foot.appendChild(h('<button type="button" class="ts-btn primary" data-a="create-template">' + ICON.plus + ' Create from this station</button>'))
+        .addEventListener('click', function () {
+          templates.openCreate({ station: entry.station, owner: state.owner, channels: stationCharts(entry),
+            back: function () { openAssign(entry); },
+            done: function (id) { state.templates = null; openDashboard(id, 'station', entry.station); } });
+        });
     }
   }).catch(function (err) {
     dr.body.innerHTML = '';
@@ -901,6 +922,24 @@ function openSetup(entry, template, needs) {
     }, function () { openAssign(entry); });
 }
 
+/** A template the user may change: the tenant's for a tenant admin, else the customer's own. */
+function mayEdit(t) { return state.canCreateDashboards && (state.me.authority === 'TENANT_ADMIN' || !t.tenant); }
+
+function stationCharts(entry) { return templates.channelsOf(entry.attrs, state.names, state.kinds); }
+
+function addChannels(entry, t, missing) {
+  ui.confirm('Add ' + missing.length + (missing.length === 1 ? ' channel' : ' channels') + ' to <b>' + esc(t.title) + '</b>, below its widgets? ' +
+    'Every station that opens it shows them.', 'Add').then(function (ok) {
+    if (!ok) { return null; }
+    return templates.addChannels(t.id, missing).then(function (n) {
+      state.templates = null;
+      ui.closeDrawer();
+      ui.toast(n + (n === 1 ? ' channel' : ' channels') + ' added to ' + t.title);
+      openDashboard(t.id, 'station', entry.station);
+    });
+  }).catch(function (err) { ui.toast('Not added: ' + errText(err), 'error'); });
+}
+
 function assign(entry, template) {
   tb.saveAttrs(entry.station, { 'config.stationDashboard': template.id }).then(function () {
     ui.closeDrawer();
@@ -933,6 +972,8 @@ tb.boundDatasource().then(function (ds) {
     state.entity = got[0];
     state.owner = got[1].ownerId;
     state.me = got[3] || {};
+    var perms = service('userPermissionsService');
+    state.canCreateDashboards = !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
     return Promise.all([
       tb.canWrite(state.entity),
       loadMapLibraries().then(initMap).catch(function (err) {

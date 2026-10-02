@@ -6,7 +6,8 @@
  * write the station changes the channel a measurement is stored under, or its
  * label, stores one not stored yet, or removes one (shared/mapping.js); and
  * gets the header's row menu (shared/lifecycle.js), *Silence*, and
- * *Acknowledge* and *Clear* on each active alarm.
+ * *Acknowledge* and *Clear* on each active alarm. A user who may create
+ * dashboards creates a station dashboard from its channels (shared/templates.js).
  * Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
  *
  * Channels are the keys of `config.channelMap`, each fed by a source key of
@@ -23,7 +24,7 @@
  * `opts`, set by build_project_dashboard.py: `devicesDashboardId` (the device
  * card), `projectDashboardId` (the project card).
  *
- * Loads after shared/resolver.js, mapping.js, glossary.js, ui.js, tb_io.js and lifecycle.js.
+ * Loads after shared/resolver.js, mapping.js, glossary.js, ui.js, tb_io.js, lifecycle.js and templates.js.
  */
 
 window.TerrySenseStationView = function (ctx, container, opts) {
@@ -36,6 +37,7 @@ var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
 var life = window.TerrySenseLifecycle(ui, tb);
+var templates = window.TerrySenseTemplates(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var REFRESH_MS = 60000;
@@ -83,7 +85,7 @@ function worst(severities) {
 var state = {
   station: null, attrs: {}, entries: {}, names: {}, kinds: {}, peripherals: {},
   channels: [], alarms: [], devices: [], chain: [], showDiagnostic: false, loadedAt: 0,
-  canWrite: false, owner: null, service: null, pub: null
+  canWrite: false, canCreateDashboards: false, owner: null, service: null, pub: null
 };
 
 function loadDefaults() {
@@ -362,8 +364,15 @@ function renderChannels() {
     more.textContent = state.showDiagnostic ? 'Hide diagnostic measurements' : 'Show ' + hidden + ' diagnostic measurement' + (hidden === 1 ? '' : 's');
     more.addEventListener('click', function () { state.showDiagnostic = !state.showDiagnostic; renderChannels(); });
   }
+  if (state.canWrite && (opts.devicesDashboardId || state.canCreateDashboards)) { foot.appendChild(h('<span class="ts-spacer"></span>')); }
+  if (state.canWrite && state.canCreateDashboards) {
+    foot.appendChild(h('<button type="button" class="ts-btn" data-a="create-template">' + ICON.plus + 'Create from this station</button>'))
+      .addEventListener('click', function () {
+        templates.openCreate({ station: state.station, owner: state.owner, done: openCharts,
+          channels: templates.channelsOf(state.attrs, state.names, state.kinds, flowOrder(lanes)) });
+      });
+  }
   if (state.canWrite && opts.devicesDashboardId) {
-    foot.appendChild(h('<span class="ts-spacer"></span>'));
     foot.appendChild(h('<button type="button" class="ts-btn" data-a="connect-device">' + ICON.plus + 'Connect a device</button>'))
       .addEventListener('click', connectDrawer);
   }
@@ -379,6 +388,14 @@ function renderChannels() {
     });
   }
 }
+
+/** The channels in the order the flow draws them. */
+function flowOrder(lanes) {
+  return [].concat.apply([], lanes.map(function (l) { return l.items.filter(function (it) { return it.channel; }).map(function (it) { return it.channel.name; }); }));
+}
+
+/** A template just created: the station's charts on it. */
+function openCharts(id) { tb.openDashboard(id, 'station', state.station); }
 
 /** A diagnostic measurement folds away, unless its channel is in alarm. */
 function folded(it) { return it.channel ? it.channel.diagnostic && !it.channel.alarm : it.row.diagnostic; }
@@ -784,6 +801,8 @@ tb.boundDatasource().then(function (ds) {
     state.owner = got[2].ownerId;
     return tb.canWrite(state.station).then(function (w) {
       state.canWrite = w && !(got[3] || {}).isPublic && !tb.isPublicView();
+      var perms = ctx.$scope.$injector.get(ctx.servicesMap.get('userPermissionsService'));
+      state.canCreateDashboards = state.canWrite && !!perms && perms.hasGenericPermission('DASHBOARD', 'CREATE');
       return load();
     }).then(function () {
       render();

@@ -25,7 +25,8 @@ root.TerrySenseCalculations = function (ui, tb) {
   /** The channel names and the constants' labels, from the Defaults asset. */
   function loadMeta() {
     return tb.io.fetchDefaults().then(function (d) { return d ? tb.attrsMap(d) : {}; }).then(function (a) {
-      return { names: parseJson(a['config.channelNames']) || {}, attributes: parseJson(a['config.calcAttributes']) || {} };
+      return { names: parseJson(a['config.channelNames']) || {}, attributes: parseJson(a['config.calcAttributes']) || {},
+               kinds: parseJson(a['config.kinds']) || {} };
     });
   }
 

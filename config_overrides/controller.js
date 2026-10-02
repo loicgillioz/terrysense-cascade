@@ -115,17 +115,10 @@ function chLabel(ch) {
 }
 function kindLabel(ch) { return kindSpec(ch).label || channelKind(ch) || 'Unknown kind'; }
 
-function unitOf(ch, draftUnit) {
-  if (draftUnit) { return draftUnit; }
-  if (isOwn(CH + ch + '.unit')) { return ownVal(CH + ch + '.unit'); }
-  var hit = inherited(CH + ch + '.unit');
-  return hit ? hit.value : (entryOf(ch).unit || kindSpec(ch).cloudUnit || '');
-}
-
-// Thresholds and hysteresis are stored in the kind's cloudUnit and read and
-// entered in the channel's display unit.
-function shown(ch, v, draftUnit) { return resolver.toDisplay(Number(v), channelKind(ch), unitOf(ch, draftUnit), state.kinds); }
-function stored(ch, v, draftUnit) { return resolver.fromDisplay(Number(v), channelKind(ch), unitOf(ch, draftUnit), state.kinds); }
+// The unit a channel is stored in, which its thresholds and hysteresis are
+// entered in: a station channel's name's unit, else its kind's cloud unit; a
+// device source key's the cloud unit (vocabulary.md §2.3).
+function unitOf(ch) { return (ch.indexOf('.') < 0 && entryOf(ch).unit) || kindSpec(ch).cloudUnit || ''; }
 
 function stateText(ch, v) {
   if (alarmClass(ch) === 'boolean') {
@@ -140,9 +133,9 @@ function stateText(ch, v) {
 
 // Every per-channel key this widget manages.
 var ALARM_RE = /^alarm\.([a-z]+)\.(thresholdMax|thresholdMin|state)$/;
-var FIELDS = ['label', 'unit', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
+var FIELDS = ['label', 'hysteresis', 'textWhenTrue', 'textWhenFalse'];
 // The channel may hold dots on the device branch, so the field is matched from the end.
-var KEY_RE = /^channel\.(.+?)\.(alarm\.[a-z]+\.(?:thresholdMax|thresholdMin|state)|label|unit|hysteresis|textWhenTrue|textWhenFalse)$/;
+var KEY_RE = /^channel\.(.+?)\.(alarm\.[a-z]+\.(?:thresholdMax|thresholdMin|state)|label|hysteresis|textWhenTrue|textWhenFalse)$/;
 function parseKey(key) {
   var m = KEY_RE.exec(key);
   if (!m) { return null; }
@@ -328,12 +321,11 @@ function channelChips(ch, keys, source) {
   }).map(function (p) {
     var v = source(condKey(ch, p.sev, p.dir));
     var s = G.severity(p.sev);
-    var txt = p.dir === 'is' ? '= ' + esc(stateText(ch, v)) : (p.dir === 'above' ? '&gt; ' : '&lt; ') + esc(shown(ch, v)) + ' ' + esc(unit);
+    var txt = p.dir === 'is' ? '= ' + esc(stateText(ch, v)) : (p.dir === 'above' ? '&gt; ' : '&lt; ') + esc(Number(v)) + ' ' + esc(unit);
     return chip(sevDot(p.sev) + txt, s.label + ': ' + s.desc);
   });
   var has = function (f) { return keys.indexOf(CH + ch + '.' + f) >= 0; };
-  if (has('unit')) { conds.push(chip('unit ' + esc(source(CH + ch + '.unit')))); }
-  if (has('hysteresis')) { conds.push(chip('± ' + esc(shown(ch, source(CH + ch + '.hysteresis'))) + ' ' + esc(unit))); }
+  if (has('hysteresis')) { conds.push(chip('± ' + esc(Number(source(CH + ch + '.hysteresis'))) + ' ' + esc(unit))); }
   if (has('textWhenTrue')) { conds.push(chip('true = ' + esc(source(CH + ch + '.textWhenTrue')))); }
   if (has('textWhenFalse')) { conds.push(chip('false = ' + esc(source(CH + ch + '.textWhenFalse')))); }
   if (has('label')) { conds.push(chip('“' + esc(source(CH + ch + '.label')) + '”', 'Name in alarm messages')); }
@@ -897,12 +889,6 @@ function openChannel(ch, fromAdd) {
 }
 
 // A text field bound to one per-channel key, with its inherited value as placeholder.
-function unitChoices(ch) {
-  var spec = kindSpec(ch);
-  var others = Object.keys(spec.units || {}).filter(function (u) { return u !== spec.cloudUnit; });
-  return others.length ? '; also ' + others.join(', ') : '';
-}
-
 function channelTextField(ch, field, label, tip, draft, onChange) {
   var key = CH + ch + '.' + field;
   var hit = inherited(key);
@@ -911,9 +897,9 @@ function channelTextField(ch, field, label, tip, draft, onChange) {
   el.querySelector('.ts-field-label span').textContent = label;
   var input = el.querySelector('input'), reset = el.querySelector('.ts-reset');
   input.value = draft[field] || '';
-  input.placeholder = hit ? String(hit.value) : (field === 'label' ? chLabel(ch) : field === 'unit' ? (kindSpec(ch).cloudUnit || '') : '');
+  input.placeholder = hit ? String(hit.value) : (field === 'label' ? chLabel(ch) : '');
   el.querySelector('.ts-field-hint').textContent = hit ? 'Inherited: ' + hit.value + ' from ' + levelLabel(hit.from)
-    : field === 'label' ? 'Standard name: ' + chLabel(ch) : field === 'unit' ? 'Standard unit: ' + (kindSpec(ch).cloudUnit || 'none') + unitChoices(ch) : '';
+    : field === 'label' ? 'Standard name: ' + chLabel(ch) : '';
   function sync() { reset.hidden = !draft[field]; if (onChange) { onChange(); } }
   input.addEventListener('input', function () { draft[field] = input.value.trim(); sync(); });
   reset.addEventListener('click', function () { draft[field] = ''; input.value = ''; sync(); });
@@ -954,20 +940,18 @@ function debounceWrites(ch, draft, write, remove) {
 }
 
 function numericEditor(ch, dr) {
-  var draft = { conds: [], unit: '', hysteresis: '', label: '', debounce: '' };
+  var draft = { conds: [], hysteresis: '', label: '', debounce: '' };
   G.SEVERITIES.forEach(function (s) { ['above', 'below'].forEach(function (dir) {
     var k = condKey(ch, s.id, dir);
-    if (isOwn(k)) { draft.conds.push({ sev: s.id, dir: dir, value: String(shown(ch, ownVal(k))) }); }
+    if (isOwn(k)) { draft.conds.push({ sev: s.id, dir: dir, value: String(Number(ownVal(k))) }); }
   }); });
-  ['unit', 'hysteresis', 'label'].forEach(function (f) { if (isOwn(CH + ch + '.' + f)) { draft[f] = String(ownVal(CH + ch + '.' + f)); } });
-  if (draft.hysteresis !== '') { draft.hysteresis = String(shown(ch, draft.hysteresis)); }
+  ['hysteresis', 'label'].forEach(function (f) { if (isOwn(CH + ch + '.' + f)) { draft[f] = String(ownVal(CH + ch + '.' + f)); } });
 
   var thr = h('<div class="ts-field"><div class="ts-field-label">Alarm thresholds ' + info('thresholds') + '</div><div class="ts-scale"></div>' +
     '<div class="ts-thr-list"></div><button type="button" class="ts-btn ghost ts-thr-add">' + ICON.plus + 'Add threshold</button><div class="ts-field-error"></div></div>');
   var hyst = h('<div class="ts-field"><div class="ts-field-label">Hysteresis ' + info('hysteresis') + '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div>' +
     '<span><input class="ts-input num" type="number" step="any" min="0"> <span class="ts-thr-unit"></span></span><div class="ts-field-hint"></div><div class="ts-field-error"></div></div>');
   dr.body.appendChild(thr);
-  dr.body.appendChild(channelTextField(ch, 'unit', 'Display unit', 'unit', draft, function () { renderList(); hyst.querySelector('.ts-thr-unit').textContent = unitOf(ch, draft.unit); }));
   dr.body.appendChild(hyst);
   var deb = debounceField(ch, draft, function () { validate(); });
   dr.body.appendChild(deb);
@@ -976,9 +960,9 @@ function numericEditor(ch, dr) {
   var hystKey = CH + ch + '.hysteresis', hystHit = inherited(hystKey);
   var hystInput = hyst.querySelector('input'), hystReset = hyst.querySelector('.ts-reset');
   hystInput.value = draft.hysteresis;
-  hystInput.placeholder = hystHit ? String(shown(ch, hystHit.value)) : '0';
-  hyst.querySelector('.ts-thr-unit').textContent = unitOf(ch, draft.unit);
-  hyst.querySelector('.ts-field-hint').textContent = hystHit ? 'Inherited: ' + shown(ch, hystHit.value) + ' from ' + levelLabel(hystHit.from) : 'Not set above: no margin';
+  hystInput.placeholder = hystHit ? String(hystHit.value) : '0';
+  hyst.querySelector('.ts-thr-unit').textContent = unitOf(ch);
+  hyst.querySelector('.ts-field-hint').textContent = hystHit ? 'Inherited: ' + hystHit.value + ' from ' + levelLabel(hystHit.from) : 'Not set above: no margin';
   hystReset.hidden = draft.hysteresis === '';
   hystInput.addEventListener('input', function () { draft.hysteresis = hystInput.value; hystReset.hidden = draft.hysteresis === ''; validate(); });
   hystReset.addEventListener('click', function () { draft.hysteresis = ''; hystInput.value = ''; hystReset.hidden = true; validate(); });
@@ -998,7 +982,7 @@ function numericEditor(ch, dr) {
     var out = [];
     G.SEVERITIES.forEach(function (s) { ['above', 'below'].forEach(function (dir) {
       var hit = inherited(condKey(ch, s.id, dir));
-      if (hit) { out.push({ sev: s.id, dir: dir, value: shown(ch, hit.value, draft.unit), from: hit.from }); }
+      if (hit) { out.push({ sev: s.id, dir: dir, value: Number(hit.value), from: hit.from }); }
     }); });
     return out;
   }
@@ -1006,7 +990,7 @@ function numericEditor(ch, dr) {
 
   function renderList() {
     list.innerHTML = '';
-    var u = unitOf(ch, draft.unit);
+    var u = unitOf(ch);
     draft.conds.forEach(function (d, i) {
       var row = h('<div class="ts-thr"><select class="ts-select ts-dir"><option value="above">Above</option><option value="below">Below</option></select>' +
         '<input class="ts-input num ts-thr-val" type="number" step="any"><span class="ts-thr-unit"></span>' +
@@ -1079,10 +1063,6 @@ function numericEditor(ch, dr) {
       }
     }); });
     var hystErr = draft.hysteresis !== '' && !(Number(draft.hysteresis) >= 0) ? 'Hysteresis is an absolute margin: zero or positive.' : '';
-    var units = Object.keys(kindSpec(ch).units || {});
-    if (draft.unit && units.length && units.indexOf(draft.unit) < 0) {
-      err = err || 'Display unit ' + draft.unit + ' is not one of ' + units.join(', ') + '.';
-    }
     msg.textContent = err;
     hyst.querySelector('.ts-field-error').textContent = hystErr;
     save.disabled = !!(err || hystErr) || !deb.valid();
@@ -1091,9 +1071,8 @@ function numericEditor(ch, dr) {
   save.addEventListener('click', function () {
     var write = {}, remove = [];
     G.SEVERITIES.forEach(function (s) { ['above', 'below'].forEach(function (dir) { remove.push(condKey(ch, s.id, dir)); }); });
-    draft.conds.forEach(function (d) { write[condKey(ch, d.sev, d.dir)] = stored(ch, d.value, draft.unit); });
-    if (draft.unit) { write[CH + ch + '.unit'] = draft.unit; } else { remove.push(CH + ch + '.unit'); }
-    if (draft.hysteresis !== '') { write[hystKey] = stored(ch, draft.hysteresis, draft.unit); } else { remove.push(hystKey); }
+    draft.conds.forEach(function (d) { write[condKey(ch, d.sev, d.dir)] = Number(d.value); });
+    if (draft.hysteresis !== '') { write[hystKey] = Number(draft.hysteresis); } else { remove.push(hystKey); }
     if (draft.label) { write[CH + ch + '.label'] = draft.label; } else { remove.push(CH + ch + '.label'); }
     debounceWrites(ch, draft, write, remove);
     commit(write, remove.filter(function (k) { return !(k in write); }), chLabel(ch), save);

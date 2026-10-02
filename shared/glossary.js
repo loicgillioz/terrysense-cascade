@@ -12,12 +12,11 @@
 
 var TERMS = {
   cascade: 'Settings flow down: <b>in-terra defaults → Customer → Project → Station</b>, and for a device <b>in-terra defaults → Device defaults → Device</b>. The nearest level that sets a value wins. A value set here applies to every station or device below.',
-  measurements: 'Alarm thresholds, display unit and hysteresis, set per measurement.',
+  measurements: 'Alarm thresholds and hysteresis, set per measurement, in the unit it is stored in.',
   notifications: 'Who receives alarm messages, by SMS and e-mail, and what the messages say. Measurement alarms and device alarms each have their own contacts.',
   retention: 'How long measured data is kept before it is deleted. A change applies to new data only.',
   debounce: 'How many readings in a row must meet an alarm condition before anyone is notified. The alarm is recorded from the first reading but stays pending until then. Empty or 1 notifies on the first reading.',
   hysteresis: 'An absolute margin, zero or positive, in the measurement unit. The alarm clears only once the value is back past the threshold by this margin, so a value hovering at the limit does not trigger alarms repeatedly.',
-  unit: 'The unit shown in dashboards and alarm messages. Leave empty to use the standard unit of the measurement.',
   label: 'The name alarm messages use for this measurement, e.g. “Tank 3 pH”. Leave empty to use the standard name.',
   severity: '<b>Critical</b> — immediate action required, significant damage possible.<br><b>Major</b> — action required, damage possible.<br><b>Minor</b> — action required, no damage expected.<br><b>Warning</b> — heads-up; action on site not mandatory.<br><b>Indeterminate</b> — no severity chosen.',
   thresholds: 'An alarm is raised when a value goes above or below a threshold. Several thresholds with different severities escalate one alarm, e.g. Warning above 8, Critical above 9.',
@@ -118,7 +117,7 @@ var SETTING_LABELS = {
   'emailText.created': 'E-mail when an alarm starts', 'emailText.cleared': 'E-mail when an alarm ends'
 };
 var BAND_WORDS = { thresholdMax: 'above', thresholdMin: 'below', state: 'when', debounce: 'debounce' };
-var FIELD_WORDS = { label: 'name', unit: 'unit', hysteresis: 'hysteresis', textWhenTrue: 'text when on', textWhenFalse: 'text when off' };
+var FIELD_WORDS = { label: 'name', hysteresis: 'hysteresis', textWhenTrue: 'text when on', textWhenFalse: 'text when off' };
 
 function severityLabel(id) { return (SEVERITIES.filter(function (s) { return s.id === id; })[0] || { label: id }).label; }
 

@@ -237,9 +237,10 @@ function firstSet(chain, attrKey, io, cache) {
 }
 
 // -- field resolution -----------------------------------------------------
-// Nearest-set `channel.<channel>.<field>` on the whole chain, else the kind's
-// cloud unit from `config.kinds` for `unit` (CONFIG_CASCADE.md §1). For an
-// instance key each level is asked for the instance key, then the name.
+// Nearest-set `channel.<channel>.<field>` on the whole chain (CONFIG_CASCADE.md
+// §1). For an instance key each level is asked for the instance key, then the
+// name. `unit` is never set on a level: a station channel's is its name's
+// `unit`, else the kind's cloud unit; a device source key's the kind's cloud unit.
 
 /** The `config.kinds` entry for `kind`, matched in either spelling. */
 function kindSpec(kind, kinds) {
@@ -252,25 +253,14 @@ function kindSpec(kind, kinds) {
 }
 
 // -- units ------------------------------------------------------------------
-// A value is stored in its kind's cloudUnit; a display unit is a key of the
-// kind's `units` with the factor that turns it into cloudUnit (vocabulary.md
-// §2). A unit the kind cannot convert is shown as it is, factor 1.
+// A device reading is in its kind's cloudUnit; a station channel is stored in
+// its name's `unit`, a key of the kind's `units` with the factor that turns it
+// into cloudUnit (vocabulary.md §2.3). A unit the kind cannot convert has factor 1.
 
 function unitFactor(kind, unit, kinds) {
   var spec = kindSpec(kind, kinds);
   var f = unit ? (spec.units || {})[unit] : 1;
   return typeof f === 'number' && f > 0 ? f : 1;
-}
-
-// toPrecision drops the float noise of a division (3.9840000000000004).
-function toDisplay(value, kind, unit, kinds) {
-  var f = unitFactor(kind, unit, kinds);
-  return f === 1 ? value : Number((value / f).toPrecision(12));
-}
-
-function fromDisplay(value, kind, unit, kinds) {
-  var f = unitFactor(kind, unit, kinds);
-  return f === 1 ? value : Number((value * f).toPrecision(12));
 }
 
 function resolveField(chain, channel, kind, field, io, cache) {
@@ -279,6 +269,13 @@ function resolveField(chain, channel, kind, field, io, cache) {
   // its prefix; it has no instances.
   var split = channel.indexOf('.') >= 0 ? { name: channel.split('.').pop(), instance: null } : splitChannelKey(channel);
   var chanKey = CHANNEL_PREFIX + channel + '.' + field;
+  if (field === 'unit') {
+    return Promise.all([defaultsJson('channelNames', io, cache), defaultsJson('kinds', io, cache)]).then(function (got) {
+      var own = channel.indexOf('.') >= 0 ? null : (got[0][split.name] || {}).unit;
+      var unit = own || (kind ? kindSpec(kind, got[1]).cloudUnit : null);
+      return unit ? { value: unit, level: null, source: own ? 'Channel name' : 'Kind default (' + kind + ')', overrideKey: chanKey } : null;
+    });
+  }
   if (split.instance && field === 'label') {
     // An instance keeps its number unless it has a label of its own.
     return firstSet(chain, chanKey, io, cache).then(function (hit) {
@@ -299,16 +296,21 @@ function resolveField(chain, channel, kind, field, io, cache) {
         return label ? { value: label, level: null, source: 'Channel dictionary', overrideKey: chanKey } : null;
       });
     }
-    if (field !== 'unit') { return null; }
-    return defaultsJson('channelNames', io, cache).then(function (names) {
-      var own = (names[split.name] || {}).unit;
-      if (own) { return { value: own, level: null, source: 'Channel dictionary', overrideKey: chanKey }; }
-      if (!kind) { return null; }
-      return defaultsJson('kinds', io, cache).then(function (kinds) {
-        var unit = kindSpec(kind, kinds).cloudUnit;
-        return unit ? { value: unit, level: null, source: 'Kind default (' + kind + ')', overrideKey: chanKey } : null;
-      });
+    return null;
+  });
+}
+
+/** `effective.unitFactors`: each station channel whose unit is not its kind's
+ * cloud unit, with the factor a reading is divided by on its way in. */
+function unitFactors(keys, io, cache) {
+  return Promise.all([defaultsJson('channelNames', io, cache), defaultsJson('kinds', io, cache)]).then(function (got) {
+    var out = {};
+    Object.keys(keys).forEach(function (channel) {
+      var f = unitFactor(keys[channel], (got[0][splitChannelKey(channel).name] || {}).unit, got[1]);
+      if (f !== 1) { out[channel] = f; }
     });
+    return Object.keys(out).length ? [{ effectiveKey: EFFECTIVE_PREFIX + 'unitFactors', overrideKey: EFFECTIVE_PREFIX + 'unitFactors',
+      value: out, source: 'Channel names', level: null }] : [];
   });
 }
 
@@ -732,8 +734,11 @@ function resolveStation(station, io, cache) {
           });
         });
 
-        return work.then(function () { return device ? resolveDeviceScalars(chain, io, cache) : resolveScalars(chain, io, cache); }).then(function (scalarEntries) {
-          var entries = scalarEntries.concat(channelEntries);
+        return work.then(function () {
+          return Promise.all([device ? resolveDeviceScalars(chain, io, cache) : resolveScalars(chain, io, cache),
+            device ? [] : unitFactors(keys, io, cache)]);
+        }).then(function (got) {
+          var entries = got[0].concat(channelEntries, got[1]);
           var effective = {};
           entries.forEach(function (e) { effective[e.effectiveKey] = e.value; });
           return { station: station, chain: chain, measuredKeys: keys, entries: entries, effective: effective };
@@ -793,8 +798,6 @@ return {
   contactBook: contactBook,
   kindSpec: kindSpec,
   unitFactor: unitFactor,
-  toDisplay: toDisplay,
-  fromDisplay: fromDisplay,
   defaultsJson: defaultsJson,
   channelFields: channelFields,
   levelDisplay: levelDisplay,
