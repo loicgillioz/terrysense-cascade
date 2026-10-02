@@ -405,11 +405,11 @@ root.TerrySenseTemplates = function (ui, tb) {
         }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
       }
 
-      /** Open `t` on this station for editing: ThingsBoard's own edit mode arranges its widgets. */
+      /** Open `t` on its landing view: ThingsBoard edits a dashboard only when no view state names an entity. */
       function edit(t) {
         ui.closeDrawer();
-        ui.toast('Click the pencil at the bottom right of ' + t.title + ' to edit it. Every station that opens it follows.');
-        o.open(t.id);
+        ui.toast('Click the pencil at the bottom right of ' + t.title + ', then pick its "station" view in the view list. Every station that opens it follows.');
+        tb.openDashboard(t.id);
       }
 
       /** Edit and Delete for a template the user may change. */
