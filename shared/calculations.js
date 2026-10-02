@@ -49,6 +49,9 @@ root.TerrySenseCalculations = function (ui, tb) {
     return items.length < 2 ? items.join('') : items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
   }
 
+  /** A reading for a person: at most four decimals, no float noise. */
+  function shown(v) { return String(Number(Number(v).toFixed(4))); }
+
   function parseNumber(text) {
     var t = String(text == null ? '' : text).trim().replace(',', '.');
     if (!t) { return null; }
@@ -64,8 +67,8 @@ root.TerrySenseCalculations = function (ui, tb) {
     attrNames.forEach(function (attr) {
       var spec = attrSpec(meta, attr), current = attrs[PREFIX + attr];
       var f = h('<div class="ts-field" data-calc="' + esc(attr) + '"><label class="ts-field-label"></label>' +
-        '<div class="ts-calc-input"><input class="ts-input num" inputmode="decimal"><span class="ts-calc-unit"></span></div>' +
-        '<div class="ts-field-hint"></div></div>');
+        '<div class="ts-field-hint"></div>' +
+        '<div class="ts-calc-input"><input class="ts-input num" inputmode="decimal"><span class="ts-calc-unit"></span></div></div>');
       f.querySelector('label').textContent = spec.label;
       f.querySelector('.ts-calc-unit').textContent = spec.unit;
       f.querySelector('.ts-field-hint').textContent = spec.description;
@@ -73,13 +76,14 @@ root.TerrySenseCalculations = function (ui, tb) {
       if (current != null) { input.value = String(current); }
       input.addEventListener('input', function () { listeners.forEach(function (fn) { fn(); }); });
       if (spec.reading) {
-        var use = h('<button type="button" class="ts-btn ts-calc-reading" disabled>Latest reading…</button>');
-        f.querySelector('.ts-calc-input').appendChild(use);
+        var use = h('<button type="button" class="ts-btn ghost ts-calc-reading" disabled>Latest reading…</button>');
+        f.appendChild(use);
         tb.get('/api/plugins/telemetry/ASSET/' + station.id + '/values/timeseries', { keys: spec.reading }).then(function (got) {
           var p = got && got[spec.reading] && got[spec.reading][0];
           var v = p && p.value !== null && p.value !== undefined ? Number(p.value) : NaN;
           if (!isFinite(v)) { use.textContent = 'No reading yet'; return; }
-          use.textContent = 'Use the latest reading, ' + v + (spec.unit ? ' ' + spec.unit : '');
+          use.textContent = 'Use the latest reading: ' + shown(v) + (spec.unit ? ' ' + spec.unit : '');
+          use.title = String(v);
           use.disabled = false;
           use.addEventListener('click', function () {
             input.value = String(v);
@@ -124,7 +128,7 @@ root.TerrySenseCalculations = function (ui, tb) {
 
   return {
     loadMeta: loadMeta, attrLabel: attrLabel, channelLabel: channelLabel, listText: listText,
-    form: form, save: save, clear: clear, enabledBy: enabledBy, parseNumber: parseNumber
+    form: form, save: save, clear: clear, enabledBy: enabledBy, parseNumber: parseNumber, shown: shown
   };
 };
 

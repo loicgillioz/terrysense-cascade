@@ -653,13 +653,39 @@ function deleteChannel(c) {
     }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
 }
 
-/** The `calc.*` settings a calculated name reads, saved and resolved at once. */
+/** `name` and the calculated names it reads, the measured channels first. */
+function chainOf(name, out) {
+  out = out || [];
+  ((calcOf(name) || {}).channels || []).forEach(function (ch) { chainOf(ch, out); });
+  if (out.indexOf(name) < 0) { out.push(name); }
+  return out;
+}
+
+/** How `name` is calculated, step by step from what is measured, then the
+ * `calc.*` settings it reads, saved and resolved at once. */
 function calcDrawer(name, label, reads) {
-  var dr = ui.openDrawer('Settings of ' + esc(label), esc(state.station.name));
-  var k = calcOf(name);
-  dr.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = label + ' is calculated from ' +
-    calc.listText((k.channels || []).map(function (ch) { return calc.channelLabel(calcMeta(), state.attrs, ch); })) +
-    ' and the ' + (reads.length === 1 ? 'setting' : 'settings') + ' below.';
+  var dr = ui.openDrawer(esc(label), 'Calculated channel · ' + esc(state.station.name));
+  var steps = dr.body.appendChild(h('<div class="ts-calc-steps"><div class="ts-section-head">How it is calculated</div></div>'));
+  chainOf(name).forEach(function (n) {
+    var c = state.channels.filter(function (x) { return x.name === n; })[0];
+    var row = steps.appendChild(h('<div class="ts-calc-step"><div class="ts-calc-step-main"><span class="ts-calc-step-name"></span>' +
+      '<span class="ts-mono"></span></div><div class="ts-row-meta"></div><div class="ts-calc-step-val"></div></div>'));
+    row.classList.toggle('measured', !calcOf(n));
+    row.classList.toggle('this', n === name);
+    row.querySelector('.ts-calc-step-name').textContent = calc.channelLabel(calcMeta(), state.attrs, n);
+    row.querySelector('.ts-mono').textContent = n;
+    row.querySelector('.ts-row-meta').textContent = calcOf(n) ? (state.names[resolver.splitChannelKey(n).name] || {}).description || '' : 'Measured';
+    var uses = (calcOf(n) || {}).attributes || [];
+    if (uses.length) {
+      row.appendChild(h('<div class="ts-calc-step-uses"></div>')).textContent = 'Uses ' +
+        calc.listText(uses.map(function (a) { return (state.calcAttributes[a] || {}).label || a; })) + ', set below';
+    }
+    if (c && c.latest) {
+      var d = display(c);
+      row.querySelector('.ts-calc-step-val').textContent = d.text + (d.unit ? ' ' + d.unit : '');
+    }
+  });
+  dr.body.appendChild(h('<div class="ts-section-head ts-calc-settings-head"></div>')).textContent = reads.length === 1 ? 'Setting' : 'Settings';
   var f = calc.form(state.station, state.attrs, reads, calcMeta());
   dr.body.appendChild(f.el);
   dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
