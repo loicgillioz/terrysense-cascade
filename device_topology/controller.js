@@ -61,7 +61,6 @@ var REFRESH_MS = 60000;
 var HOUR_MS = 3600000;
 var DAY_MS = 86400000;
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
-var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
 var POWER_SOURCES = { usb: 'USB', sp_int: 'internal solar', sp_ext: 'external solar', bus: 'bus', none: 'none' };
 var SD_STATES = { ready: 'ready', fault: 'fault', not_inserted: 'no card' };
 var NEW_STATION = '__new';
@@ -1497,10 +1496,9 @@ function statusSection() {
   var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var batt = [];
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
-  var charging = BATTERY_CHARGING.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   if (soc !== undefined) { batt.push('Charge ' + fmtValue(soc) + ' %'); }
   if (volt) { batt.push(fmtValue(volt.value) + ' V, ' + ago(volt.ts)); }
-  if (!hasStatus && charging) { batt.push(truthyFlag(charging.value) ? 'Charging' : 'Not charging'); }
+  if (!hasStatus && c['status.charging'] !== undefined) { batt.push(truthyFlag(c['status.charging']) ? 'Charging' : 'Not charging'); }
   if (Number(c['status.battRuntimeSeconds']) > 0) { batt.push('Lasts about ' + fmtDuration(c['status.battRuntimeSeconds']) + ', the LOGR\u2019s own estimate'); }
   if (bus || batt.length) { card('Battery', 'device', batt.length ? batt : ['Not reported']); }
   if (hasStatus) {

@@ -486,10 +486,9 @@ function deviceRef(d) { return { entityType: 'DEVICE', id: d.id, name: d.name, l
 // -- pane -------------------------------------------------------------------------------
 
 var LIVENESS = { live: 'Live', inactive: 'Inactive', never: 'Never heard from' };
-// Battery readings of both generations, as device_topology's BATTERY_VOLTAGE and BATTERY_CHARGING.
+// Battery voltage of both generations, as device_topology's BATTERY_VOLTAGE; charging is the status.charging attribute.
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
-var BATTERY_CHARGING = ['p0.boolean', 'logr.batteryCharging'];
-var LINK_KEYS = ['rssi', 'snr', 'p0.percent'].concat(BATTERY_VOLTAGE, BATTERY_CHARGING);
+var LINK_KEYS = ['rssi', 'snr', 'p0.percent'].concat(BATTERY_VOLTAGE);
 
 function parseJson(v) {
   if (typeof v !== 'string') { return v === undefined ? null : v; }
@@ -520,7 +519,7 @@ function batteryLine(link) {
   var c = link.client, lat = link.latest, parts = [];
   var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
-  var charging = c['status.charging'] !== undefined ? c['status.charging'] : (BATTERY_CHARGING.map(function (k) { return lat[k]; }).filter(Boolean)[0] || {}).value;
+  var charging = c['status.charging'];
   if (soc !== undefined) { parts.push(Math.round(Number(soc)) + ' %'); }
   if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + ago(volt.ts)); }
   if (charging !== undefined) { parts.push(flag(charging) ? 'charging' : 'not charging'); }
