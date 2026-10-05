@@ -10,7 +10,8 @@
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
- * and Settings views; checked for public access).
+ * and Settings views). A public link opens the project's own dashboard,
+ * `config.homeDashboard`, created here from picked stations (shared/templates.js).
  *
  * `opts.devicesDashboardId`, the fleet, for the follow-up of a new station.
  *
@@ -37,6 +38,7 @@ var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var GEOMAN = 'https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.17.0/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var DASHBOARD_KEY = 'config.stationDashboard';
+var HOME_KEY = 'config.homeDashboard';
 var STATUS = {
   nodata: { label: 'No data', color: 'var(--ts-nodata)', rank: 2 },
   ok: { label: 'OK', color: 'var(--ts-ok)', rank: 1 },
@@ -101,7 +103,7 @@ var openDashboard = tb.openDashboard;
 var state = {
   entity: null, owner: null, names: {}, kinds: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
-  publicReport: null, pub: null, showRetired: false, followUps: {}, ghost: null
+  publicReport: null, pub: null, pubDash: null, home: null, showRetired: false, followUps: {}, ghost: null
 };
 
 function loadNames() {
@@ -169,17 +171,27 @@ function deviceFix(devices) {
   });
 }
 
+/** The project's own dashboard, `{id, title, stations}`, the stations it shows by id; null without one. */
+function loadHome(id) {
+  return readable(id).then(function (readId) {
+    return readId && tb.get('/api/dashboard/' + readId).then(function (d) {
+      return { id: readId, title: d.title, stations: templates.homeStations(d, state.entity.id) };
+    });
+  }).catch(function () { return null; });
+}
+
 function load() {
   var e = state.entity;
-  return Promise.all([tb.io.fetchChildren(e), tb.attrsMap(e),
-    state.canEdit ? tb.publicMembers(state.owner).catch(function () { return null; }) : null]).then(function (got) {
+  function members(type) { return state.canEdit ? tb.publicMembers(state.owner, type).catch(function () { return null; }) : null; }
+  return Promise.all([tb.io.fetchChildren(e), tb.attrsMap(e), members('ASSET'), members('DASHBOARD')]).then(function (got) {
     state.projectAttrs = got[1];
     state.pub = got[2];
-    return got;
+    state.pubDash = got[3];
+    return Promise.all([Promise.all(got[0].filter(function (c) { return c.kind === 'Station'; }).map(loadStation)),
+      state.canEdit ? loadHome(got[1][HOME_KEY]) : null]);
   }).then(function (got) {
-    return Promise.all(got[0].filter(function (c) { return c.kind === 'Station'; }).map(loadStation));
-  }).then(function (stations) {
-    state.stations = stations.sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
+    state.stations = got[0].sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
+    state.home = got[1];
     state.loadedAt = Date.now();
   });
 }
@@ -217,6 +229,10 @@ function active() { return state.stations.filter(function (s) { return !s.servic
 function retiredOnes() { return state.stations.filter(function (s) { return s.service.retired; }); }
 
 function isPublic(id) { return !!state.pub && !!state.pub.ids[id]; }
+function onHome(entry) { return !!state.home && !!state.home.stations[entry.station.id]; }
+function dashRef(id) { return { entityType: 'DASHBOARD', id: id }; }
+/** The public link is on when the project dashboard is in a public group of the owner. */
+function linkOn() { return !!state.home && !!state.pubDash && !!state.pubDash.ids[state.home.id]; }
 
 function chip(status) {
   var el = h('<span class="ts-chip ts-proj-sev"></span>');
@@ -572,15 +588,15 @@ function lastReading(entry) {
   return stale ? text + ' · ' + stale : text;
 }
 
-/** Public access of one station for a public link: null before the check,
- * else `{open, why}` (FRONTEND.md *Public links*). */
+/** Public access of one station for the project dashboard's public link: null
+ * before the check, else `{open, why}` (FRONTEND.md *Public links*). */
 function publicState(entry) {
   var r = state.publicReport;
   if (!r) { return null; }
   if (!r.token) { return { open: false, why: r.reason }; }
-  if (r.denied[entry.station.id]) { return { open: false, why: 'Private: a public link cannot show this station, which is in no public group of its owner.' }; }
-  if (entry.dashboardId && r.denied[entry.dashboardId]) { return { open: false, why: 'Private: a public link cannot open this station\'s dashboard, which is not shared with the public users.' }; }
-  return { open: true, why: 'Public: a public link shows this station' + (entry.dashboardId ? ' and opens its dashboard.' : '.') };
+  if (!onHome(entry)) { return { open: false, why: 'Not on the project dashboard, so its public link does not show this station.' }; }
+  if (r.denied[entry.station.id]) { return { open: false, why: 'Private: on the project dashboard, but in no public group of its owner, so the public link shows it empty.' }; }
+  return { open: true, why: 'Public: the project dashboard\'s public link shows this station.' };
 }
 
 function publicIcon(pub) {
@@ -606,7 +622,7 @@ function stationRow(entry) {
   if (pub) { side.appendChild(publicIcon(pub)); }
   if (entry.service.silencedUntil && !retired) { side.appendChild(ui.stateChip('silenced', entry.service.silencedUntil)); }
   if (!entry.devices.length && !retired) { side.appendChild(ui.stateChip('nodevice')); }
-  if (state.canEdit && !retired && isPublic(state.entity.id) && !isPublic(entry.station.id)) { side.appendChild(ui.stateChip('private')); }
+  if (state.canEdit && !retired && linkOn() && onHome(entry) && !isPublic(entry.station.id)) { side.appendChild(ui.stateChip('private')); }
   side.appendChild(chip(entry.status));
   // The row opens the station view; without one, its charts.
   var view = opts.projectDashboardId ? [opts.projectDashboardId, 'station'] : entry.dashboardId ? [entry.dashboardId, 'station'] : null;
@@ -648,11 +664,16 @@ function stationRow(entry) {
     }
   }
   if (state.canEdit) {
-    side.appendChild(ui.rowMenu(life.stationItems({
+    var items = life.stationItems({
       station: entry.station, attrs: entry.attrs, project: state.entity, owner: state.owner, isPublic: isPublic(entry.station.id),
-      projectPublic: isPublic(state.entity.id),
+      projectPublic: linkOn(),
       nameEl: el.querySelector('.ts-proj-st-name'), changed: refreshAll, deleted: refreshAll
-    }), { title: 'Station actions' }));
+    });
+    if (state.home && !onHome(entry) && !retired && state.canCreateDashboards) {
+      var at = items.map(function (i) { return i && i.a; }).indexOf(isPublic(entry.station.id) ? 'private' : 'public') + 1;
+      items.splice(at, 0, { a: 'add-home', label: 'Add to project dashboard…', run: function () { openAddHome(entry); } });
+    }
+    side.appendChild(ui.rowMenu(items, { title: 'Station actions' }));
   }
   el.addEventListener('mouseenter', function () { highlight(entry.station.id, true); });
   el.addEventListener('mouseleave', function () { highlight(entry.station.id, false); });
@@ -661,33 +682,77 @@ function stationRow(entry) {
 
 /** The project's row menu, in the header. */
 function projectItems() {
-  var e = state.entity, on = isPublic(e.id);
+  var e = state.entity, on = linkOn();
   return [
     { a: 'rename', label: 'Rename', run: function () { life.rename(e, cardEl.querySelector('.ts-proj-pname'), renderHeader); } },
-    state.pub && { a: on ? 'link-off' : 'link-on', label: on ? 'Public link off' : 'Public link on', run: function () { setPublicLink(!on); } },
-    on && opts.projectDashboardId && { a: 'copy-link', label: 'Copy link', run: copyLink },
+    state.canCreateDashboards && { a: 'create-home', label: 'Create project dashboard…', run: function () { openCreateHome(); } },
+    state.pub && state.pubDash && { a: on ? 'link-off' : 'link-on', label: on ? 'Public link off' : 'Public link on', run: function () { setPublicLink(!on); } },
+    on && { a: 'copy-link', label: 'Copy link', run: copyLink },
     !active().length && { a: 'delete', label: 'Delete\u2026', danger: true, run: function () {
       life.remove(e, retiredOnes().map(function (s) { return s.station; }), function () { openDashboard(opts.projectDashboardId); });
     } }
   ];
 }
 
-/** *Public link* on puts the project and every station in service in the
- * owner's public group; off takes the project out, each station keeping its choice. */
+function names(stations) { return stations.map(function (s) { return '<b>' + esc(s.name) + '</b>'; }).join(', '); }
+
+/** The project dashboard `id`, the project and `stations` into the owner's public groups. */
+function publishHome(id, stations) {
+  var work = tb.setPublic(dashRef(id), state.owner, true).then(function () { return tb.setPublic(state.entity, state.owner, true); });
+  stations.filter(function (s) { return !isPublic(s.id); }).forEach(function (s) {
+    work = work.then(function () { return tb.setPublic(s, state.owner, true); });
+  });
+  return work;
+}
+
+/** *Create project dashboard*; `then` follows the creation instead of opening the new dashboard. */
+function openCreateHome(intro, then) {
+  var was = state.home, wasPublic = linkOn();
+  templates.openCreateHome({ project: state.entity, owner: state.owner, entries: active(), names: state.names, kinds: state.kinds,
+    replaces: was && was.title, intro: intro,
+    done: function (id, picks) {
+      // A replaced dashboard hands its public link over to the new one.
+      var work = wasPublic ? tb.setPublic(dashRef(was.id), state.owner, false).then(function () {
+        return publishHome(id, picks.map(function (p) { return p.station; }));
+      }) : Promise.resolve();
+      work.then(refreshAll).then(function () { if (then) { then(); } else { openDashboard(id); } })
+        .catch(function (err) { ui.toast('Public link not moved: ' + errText(err), 'error'); });
+    } });
+}
+
+function openAddHome(entry) {
+  var exposes = linkOn() && !isPublic(entry.station.id);
+  templates.openAddToHome({ station: entry.station, attrs: entry.attrs, names: state.names, kinds: state.kinds, homeId: state.home.id,
+    note: linkOn() ? 'The project\'s public link shows it from then on.' : '',
+    done: function () {
+      (exposes ? tb.setPublic(entry.station, state.owner, true) : Promise.resolve()).then(refreshAll)
+        .catch(function (err) { ui.toast('Not made public: ' + errText(err), 'error'); });
+    } });
+}
+
+/** *Public link* on makes the project dashboard, the project and every station
+ * on the dashboard public; off takes the dashboard and the project out, each
+ * station keeping its choice. With no project dashboard, on creates one first. */
 function setPublicLink(on) {
-  var e = state.entity, stations = active().map(function (s) { return s.station; });
+  var e = state.entity, home = state.home;
+  if (on && !home) {
+    if (!state.canCreateDashboards) { ui.toast('A public link opens the project dashboard, and this project has none yet.', 'error'); return; }
+    openCreateHome('A public link opens the project dashboard, and this project has none yet. Create it, then confirm the public link.',
+      function () { setPublicLink(true); });
+    return;
+  }
+  var shown = active().filter(onHome).map(function (s) { return s.station; });
+  var left = active().filter(function (s) { return !onHome(s); }).map(function (s) { return s.station; });
   var html = on
-    ? 'Turn the public link of <b>' + esc(e.name) + '</b> on? Anyone with the link sees the project' +
-      (stations.length ? ' and ' + (stations.length === 1 ? 'its station ' : 'its ' + stations.length + ' stations ') +
-        stations.map(function (s) { return '<b>' + esc(s.name) + '</b>'; }).join(', ') + ': readings, states and dashboards' : '') +
-      '. Make a station private from its row menu.'
-    : 'Turn the public link of <b>' + esc(e.name) + '</b> off? The link stops opening the project; each station keeps its public or private choice.';
+    ? 'Turn the public link of <b>' + esc(e.name) + '</b> on? Anyone with the link opens its project dashboard <b>' + esc(home.title) + '</b>' +
+      (shown.length ? ' and sees ' + (shown.length === 1 ? 'its station ' : 'its ' + shown.length + ' stations ') + names(shown) +
+        ': readings, states and alarms' : '') + '.' +
+      (left.length ? ' Not on the dashboard, so not shown: ' + names(left) + '.' : '')
+    : 'Turn the public link of <b>' + esc(e.name) + '</b> off? The link stops opening its project dashboard; each station keeps its public or private choice.';
   ui.confirm(html, on ? 'Turn on' : 'Turn off').then(function (ok) {
     if (!ok) { return null; }
-    var work = tb.setPublic(e, state.owner, on);
-    (on ? stations.filter(function (s) { return !isPublic(s.id); }) : []).forEach(function (s) {
-      work = work.then(function () { return tb.setPublic(s, state.owner, true); });
-    });
+    var work = on ? publishHome(home.id, shown)
+      : tb.setPublic(dashRef(home.id), state.owner, false).then(function () { return tb.setPublic(e, state.owner, false); });
     return work.then(function () {
       ui.toast(on ? 'Public link on' : 'Public link off');
       return refreshAll();
@@ -696,14 +761,14 @@ function setPublicLink(on) {
 }
 
 function copyLink() {
-  var group = state.pub.groups.filter(function (g) { return g.members[state.entity.id]; })[0];
-  var link = tb.publicLink(opts.projectDashboardId, group.additionalInfo.publicCustomerId, 'project', state.entity);
+  var group = state.pubDash.groups.filter(function (g) { return g.members[state.home.id]; })[0];
+  var link = tb.publicLink(state.home.id, group.additionalInfo.publicCustomerId);
   navigator.clipboard.writeText(link).then(function () { ui.toast('Public link copied'); },
     function (err) { ui.toast('Not copied: ' + errText(err), 'error'); });
 }
 
-/** One header icon for the whole project: public when a public link shows
- * everything, private otherwise, with what it cannot show. */
+/** One header icon for the whole project: public when the project dashboard's
+ * public link shows every station on it, private otherwise, with what it cannot show. */
 function renderPublic() {
   var r = state.publicReport;
   publicEl.hidden = !state.canEdit || !r;
@@ -712,17 +777,14 @@ function renderPublic() {
   if (!r.token) {
     lines.push(r.reason);
   } else {
-    if (r.denied[state.entity.id]) { lines.push('this project is in no public group'); }
-    var sts = state.stations.filter(function (s) { return r.denied[s.station.id]; });
-    if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station is' : ' stations are') + ' in no public group'); }
-    var dash = state.stations.filter(function (s) { return s.dashboardId && r.denied[s.dashboardId]; });
-    if (dash.length) { lines.push(dash.length + (dash.length === 1 ? ' station dashboard is' : ' station dashboards are') + ' not shared with the public users'); }
-    if (opts.projectDashboardId && r.denied[opts.projectDashboardId]) { lines.push('the Project dashboard is not shared with the public users'); }
+    if (r.denied[state.home.id]) { lines.push('the project dashboard is in no public group'); }
+    var sts = state.stations.filter(function (s) { return onHome(s) && r.denied[s.station.id]; });
+    if (sts.length) { lines.push(sts.length + (sts.length === 1 ? ' station on it is' : ' stations on it are') + ' in no public group'); }
   }
   var open = !!r.token && !lines.length;
   publicEl.className = 'ts-proj-access ts-proj-public' + (open ? ' open' : '');
   publicEl.innerHTML = (open ? ICON_GLOBE : ICON_LOCK) + '<span>' + (open ? 'Public' : 'Private') + '</span>';
-  publicEl.setAttribute('data-tip', open ? 'A public link shows this project, its stations and their dashboards.'
+  publicEl.setAttribute('data-tip', open ? 'The public link opens ' + state.home.title + ' and shows every station on it.'
     : !r.token ? lines[0] : 'Private to signed-in users: ' + lines.join('; ') + '.');
 }
 
@@ -735,10 +797,11 @@ function render() {
 
 // -- public access -----------------------------------------------------------------------
 
-/** Sign in as the owner's public customer and try every read a public link needs
- * (FRONTEND.md *Public links*). `denied` maps an entity id to true. */
+/** Sign in as the owner's public customer and try every read the project
+ * dashboard's public link needs (FRONTEND.md *Public links*). `denied` maps an entity id to true. */
 function checkPublic() {
-  var owner = state.owner;
+  var owner = state.owner, home = state.home;
+  if (!home) { return Promise.resolve({ token: null, reason: 'No public link: the project has no project dashboard yet.' }); }
   return tb.get('/api/user/customers', { pageSize: '1000', page: '0' }).then(function (page) {
     var pub = ((page && page.data) || []).filter(function (c) {
       var isPub = (c.additionalInfo || {}).isPublic;
@@ -749,10 +812,7 @@ function checkPublic() {
     return fetch('/api/auth/login/public', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publicId: pub.id.id }) }).then(function (r) { return r.json(); }).then(function (auth) {
       var headers = { 'X-Authorization': 'Bearer ' + auth.token };
-      var checks = [['asset', state.entity.id]]
-        .concat(state.stations.map(function (s) { return ['asset', s.station.id]; }))
-        .concat(state.stations.filter(function (s) { return s.dashboardId; }).map(function (s) { return ['dashboard', s.dashboardId]; }));
-      if (opts.projectDashboardId) { checks.push(['dashboard', opts.projectDashboardId]); }
+      var checks = [['dashboard', home.id]].concat(state.stations.filter(onHome).map(function (s) { return ['asset', s.station.id]; }));
       var denied = {};
       return Promise.all(checks.map(function (c) {
         return fetch('/api/' + c[0] + '/' + c[1], { headers: headers }).then(function (r) { if (!r.ok) { denied[c[1]] = true; } });

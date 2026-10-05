@@ -91,7 +91,7 @@ root.TerrySenseLifecycle = function (ui, tb) {
     var text = !on ? 'Make <b>' + esc(entity.name) + '</b> private? The public link no longer shows it.'
       : projectPublic === false ? 'Make <b>' + esc(entity.name) + '</b> public? Its project has no public link yet, so no link shows it ' +
         'until <i>Public link on</i> in the project’s menu.'
-      : 'Make <b>' + esc(entity.name) + '</b> public? The project’s public link then shows it and its readings.';
+      : 'Make <b>' + esc(entity.name) + '</b> public? The project’s public link then shows it and its readings, where the project dashboard does.';
     ui.confirm(text, on ? 'Make public' : 'Make private')
       .then(function (ok) {
         if (!ok) { return null; }

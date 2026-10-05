@@ -2,8 +2,9 @@
  * Station dashboards drawn from a station's channels — `window.TerrySenseTemplates(ui, tb)`.
  * Each channel is drawn with its name's default chart (vocabulary.md §5),
  * copied from the tenant's "Chart models" dashboard; a template binds channel
- * names, so every station with the same names can take it.
- * logr-product-docs/cloud/FRONTEND.md *Station dashboards*.
+ * names, so every station with the same names can take it. A project dashboard
+ * draws picked stations the same way, each bound to its own station.
+ * logr-product-docs/cloud/FRONTEND.md *Station dashboards*, *Project home dashboards*.
  *
  * Loads after shared/resolver.js, ui.js and tb_io.js.
  */
@@ -19,6 +20,10 @@ root.TerrySenseTemplates = function (ui, tb) {
   var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
   var CHARTS = { line: 'Line', 'bars:1h': 'Hourly sums', 'bars:1d': 'Daily sums', state: 'State timeline', value: 'Value only' };
   var BY_ALARM = { numeric: 'line', boolean: 'state', state: 'state' };
+  var ALARMS_FQN = 'system.alarm_widgets.alarms_table';
+  var MAP_FQN = 'system.map';
+  var HOME_GROUP = 'Project home dashboards';
+  var HOME_KEY = 'config.homeDashboard';
 
   function uuid() {
     if (root.crypto && root.crypto.randomUUID) { return root.crypto.randomUUID(); }
@@ -70,6 +75,7 @@ root.TerrySenseTemplates = function (ui, tb) {
     Object.keys(conf.widgets).forEach(function (id) {
       var title = (conf.widgets[id].config || {}).title;
       if (CHARTS[title]) { out.ids[title] = id; }
+      if (conf.widgets[id].typeFullFqn === ALARMS_FQN) { out.alarms = id; }
     });
     out.alias = stationAlias(conf);
     return out;
@@ -105,12 +111,19 @@ root.TerrySenseTemplates = function (ui, tb) {
     return st.layouts.main.widgets;
   }
 
+  function bottomRow(layout) {
+    return Object.keys(layout).reduce(function (m, id) { return Math.max(m, layout[id].row + layout[id].sizeY); }, 0);
+  }
+
   /** Append a value card and the chart of each channel below the station view's widgets. */
   function appendBands(conf, models, channels) {
-    var widgets = conf.widgets, layout = stationLayout(conf);
+    var layout = stationLayout(conf);
+    placeBands(conf.widgets, layout, models, channels, stationAlias(conf), bottomRow(layout));
+  }
+
+  /** A value card and the chart of each channel, bound to `alias`, from `row` down. Returns the row below them. */
+  function placeBands(widgets, layout, models, channels, alias, row) {
     var mlayout = models.dashboard.configuration.states.station.layouts.main.widgets;
-    var alias = stationAlias(conf);
-    var row = Object.keys(layout).reduce(function (m, id) { return Math.max(m, layout[id].row + layout[id].sizeY); }, 0);
     var card = mlayout[models.ids.value];
     channels.forEach(function (c) {
       var band = card.sizeY;
@@ -126,6 +139,7 @@ root.TerrySenseTemplates = function (ui, tb) {
       }
       row += band;
     });
+    return row;
   }
 
   /** The template group of `owner`, else the user's own — the tenant's for a tenant admin. */
@@ -223,6 +237,193 @@ root.TerrySenseTemplates = function (ui, tb) {
           go.disabled = false;
           ui.toast('Template not created: ' + ((err && err.message) || err), 'error');
         });
+      });
+    });
+  }
+
+  // -- project dashboards (FRONTEND.md *Project home dashboards*) ---------------------------
+
+  /** The owner's group of project dashboards, never shared, so each one is public only through its own public link. */
+  function homeGroup(owner) {
+    return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(HOME_GROUP))
+      .catch(function () { return tb.post('/api/entityGroup', { type: 'DASHBOARD', name: HOME_GROUP, ownerId: owner }); });
+  }
+
+  /** The stations a project dashboard shows: every asset its aliases name but the project. */
+  function homeStations(dashboard, projectId) {
+    var ids = {};
+    Object.keys(dashboard.configuration.entityAliases || {}).forEach(function (k) {
+      var f = dashboard.configuration.entityAliases[k].filter || {};
+      if (f.type === 'singleEntity' && f.singleEntity && f.singleEntity.entityType === 'ASSET') { ids[f.singleEntity.id] = true; }
+      if (f.type === 'entityList' && f.entityType === 'ASSET') { (f.entityList || []).forEach(function (id) { ids[id] = true; }); }
+    });
+    delete ids[projectId];
+    return ids;
+  }
+
+  function stationAliasOf(conf, station) {
+    var id = uuid();
+    conf.entityAliases[id] = { id: id, alias: station.name,
+      filter: { type: 'singleEntity', resolveMultiple: false, singleEntity: { entityType: 'ASSET', id: station.id } } };
+    return id;
+  }
+
+  /** The stock map, one marker per station of alias `alias` at its `latitude` / `longitude`. */
+  function mapWidget(stock, alias, title) {
+    var conf = JSON.parse(stock.descriptor.defaultConfig);
+    var marker = Object.assign(conf.settings.markers[0], {
+      dsType: 'entity', dsLabel: '', dsEntityAliasId: alias, dsDeviceId: null, dsFilterId: null, additionalDataKeys: [],
+      xKey: { name: 'latitude', label: 'latitude', type: 'attribute', settings: {}, color: '#2196f3' },
+      yKey: { name: 'longitude', label: 'longitude', type: 'attribute', settings: {}, color: '#2196f3' },
+      label: { show: true, type: 'pattern', pattern: '${entityName}' },
+      click: { type: 'doNothing' }, markerType: 'shape'
+    });
+    marker.tooltip = Object.assign(marker.tooltip || {}, { show: false });
+    marker.markerShape = Object.assign(marker.markerShape || {}, { color: { type: 'constant', color: '#0277b7' } });
+    conf.settings.markers = [marker];
+    conf.datasources = [];
+    conf.title = title;
+    return { id: uuid(), typeFullFqn: MAP_FQN, type: stock.descriptor.type, sizeX: 24, sizeY: 10, config: conf };
+  }
+
+  /** One station from `row` down: its active alarms titled by its name, then each picked channel. Returns the row below. */
+  function stationBand(conf, layout, models, pick, row) {
+    var alias = stationAliasOf(conf, pick.station);
+    if (models.alarms) {
+      var at = models.dashboard.configuration.states.station.layouts.main.widgets[models.alarms];
+      var w = copyModel(models, models.alarms, { key: '', label: pick.station.name, unit: '' }, alias);
+      conf.widgets[w.id] = w;
+      layout[w.id] = { sizeX: at.sizeX, sizeY: at.sizeY, row: row, col: 0 };
+      row += at.sizeY;
+    }
+    return placeBands(conf.widgets, layout, models, pick.channels, alias, row);
+  }
+
+  function rootLayout(conf) {
+    var id = Object.keys(conf.states).filter(function (k) { return conf.states[k].root; })[0] || Object.keys(conf.states)[0];
+    return conf.states[id].layouts.main.widgets;
+  }
+
+  /** A dashboard titled `title` in the owner's project dashboards: the map of the
+   * picked stations, then a band per station. `picks`: [{station, channels}].
+   * Linked from the project's `config.homeDashboard`; resolves to its id. */
+  function createHome(project, owner, picks, title) {
+    return Promise.all([loadModels(), tb.get('/api/widgetType', { fqn: MAP_FQN }), homeGroup(owner)]).then(function (got) {
+      var models = modelsOf(got[0]), mconf = got[0].configuration;
+      models.dashboard = got[0];
+      var grid = (mconf.states.station.layouts.main || {}).gridSettings;
+      var conf = { widgets: {}, entityAliases: {}, filters: {}, timewindow: mconf.timewindow, settings: mconf.settings,
+        states: { 'default': { name: title, root: true, layouts: { main: { widgets: {}, gridSettings: grid } } } } };
+      var layout = conf.states['default'].layouts.main.widgets;
+      var listId = uuid();
+      conf.entityAliases[listId] = { id: listId, alias: 'Stations', filter: { type: 'entityList', resolveMultiple: true,
+        entityType: 'ASSET', entityList: picks.map(function (p) { return p.station.id; }) } };
+      var map = mapWidget(got[1], listId, title);
+      conf.widgets[map.id] = map;
+      layout[map.id] = { sizeX: map.sizeX, sizeY: map.sizeY, row: 0, col: 0 };
+      picks.reduce(function (row, p) { return stationBand(conf, layout, models, p, row); }, map.sizeY);
+      return tb.post('/api/dashboard?entityGroupId=' + got[2].id.id, { title: title, configuration: conf });
+    }).then(function (saved) {
+      var write = {};
+      write[HOME_KEY] = saved.id.id;
+      return tb.saveAttrs(project, write).then(function () { return saved.id.id; });
+    });
+  }
+
+  /** `pick` appended to project dashboard `homeId`: on its map and in a band below everything else. */
+  function addToHome(homeId, pick) {
+    return Promise.all([tb.get('/api/dashboard/' + homeId), loadModels()]).then(function (got) {
+      var dash = got[0], conf = dash.configuration, models = modelsOf(got[1]);
+      models.dashboard = got[1];
+      Object.keys(conf.entityAliases).forEach(function (k) {
+        var f = conf.entityAliases[k].filter;
+        if (f.type === 'entityList' && f.entityType === 'ASSET') { f.entityList.push(pick.station.id); }
+      });
+      var layout = rootLayout(conf);
+      stationBand(conf, layout, models, pick, bottomRow(layout));
+      return tb.post('/api/dashboard', dash);
+    });
+  }
+
+  /** A checkbox per channel, ticked, with its chart. Returns a function giving the ticked ones. */
+  function channelChecks(box, channels) {
+    channels.forEach(function (c) {
+      var r = box.appendChild(h('<label class="ts-switch"><input type="checkbox" checked><span></span><span class="ts-chip"></span></label>'));
+      r.setAttribute('data-channel', c.key);
+      r.querySelector('span').textContent = c.label + (c.unit ? ' (' + c.unit + ')' : '');
+      r.querySelector('.ts-chip').textContent = CHARTS[c.chart] || c.chart;
+    });
+    if (!channels.length) { box.appendChild(h('<div class="ts-row-meta">On the map with its alarms; no measurement to draw yet.</div>')); }
+    return function () {
+      var boxes = box.querySelectorAll('input');
+      return channels.filter(function (c, i) { return boxes[i].checked; });
+    };
+  }
+
+  /** *Create project dashboard*: its name, the stations on it and what each
+   * shows. `o`: project, owner, entries ([{station, attrs}]), names, kinds,
+   * replaces (the current dashboard's title, optional), intro (optional),
+   * done(dashboardId, picks). */
+  function openCreateHome(o) {
+    var dr = ui.openDrawer('Create project dashboard', esc(o.project.name));
+    if (o.intro) { dr.body.appendChild(h('<p class="ts-field-hint"></p>')).textContent = o.intro; }
+    var form = dr.body.appendChild(h('<div><div class="ts-field"><label class="ts-field-label">Name</label><input class="ts-input wide" data-f="title"></div>' +
+      '<div class="ts-section-head">Stations, and what each shows</div><div class="ts-home-stations"></div></div>'));
+    var input = form.querySelector('input'), list = form.querySelector('.ts-home-stations');
+    input.value = o.project.name;
+    var rows = o.entries.map(function (e) {
+      var box = list.appendChild(h('<div class="ts-home-st"><label class="ts-switch ts-home-st-name"><input type="checkbox" data-f="station" checked>' +
+        '<span></span></label><div class="ts-home-chans"></div></div>'));
+      box.setAttribute('data-station', e.station.name);
+      box.querySelector('span').textContent = e.station.name;
+      var chans = box.querySelector('.ts-home-chans'), on = box.querySelector('[data-f=station]');
+      var picked = channelChecks(chans, channelsOf(e.attrs, o.names, o.kinds));
+      on.addEventListener('change', function () { chans.hidden = !on.checked; check(); });
+      return { station: e.station, on: on, picked: picked };
+    });
+    if (!rows.length) { list.appendChild(h('<div class="ts-empty">The project has no station in service yet.</div>')); }
+    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'Its public link shows exactly what is ticked here. ' +
+      'It opens in ThingsBoard afterwards, to arrange as you like.' +
+      (o.replaces ? ' It replaces ' + o.replaces + ' as the project dashboard; that one stays in ThingsBoard, without a public link.' : '');
+    var go = ui.drawerActions(dr, 'Create');
+    function picks() {
+      return rows.filter(function (r) { return r.on.checked; }).map(function (r) { return { station: r.station, channels: r.picked() }; });
+    }
+    function check() { go.disabled = !input.value.trim() || !picks().length; }
+    input.addEventListener('input', check);
+    check();
+    go.addEventListener('click', function () {
+      var title = input.value.trim(), chosen = picks();
+      go.disabled = true;
+      createHome(o.project, o.owner, chosen, title).then(function (id) {
+        ui.closeDrawer();
+        ui.toast(title + ' created');
+        o.done(id, chosen);
+      }).catch(function (err) {
+        check();
+        ui.toast('Project dashboard not created: ' + errText(err), 'error');
+      });
+    });
+  }
+
+  /** *Add to project dashboard*: the station's channels to show. `o`: station,
+   * attrs, names, kinds, homeId, note (what else it changes, optional), done(). */
+  function openAddToHome(o) {
+    var dr = ui.openDrawer('Add to project dashboard', esc(o.station.name));
+    dr.body.appendChild(h('<div class="ts-section-head">What it shows</div>'));
+    var picked = channelChecks(dr.body.appendChild(h('<div class="ts-home-chans"></div>')), channelsOf(o.attrs, o.names, o.kinds));
+    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'On the map, then below the other stations, with its alarms. ' +
+      (o.note || '');
+    var go = ui.drawerActions(dr, 'Add');
+    go.addEventListener('click', function () {
+      go.disabled = true;
+      addToHome(o.homeId, { station: o.station, channels: picked() }).then(function () {
+        ui.closeDrawer();
+        ui.toast(o.station.name + ' added to the project dashboard');
+        o.done();
+      }).catch(function (err) {
+        go.disabled = false;
+        ui.toast('Not added: ' + errText(err), 'error');
       });
     });
   }
@@ -518,7 +719,8 @@ root.TerrySenseTemplates = function (ui, tb) {
   }
 
   return { CHARTS: CHARTS, chartOf: chartOf, channelsOf: channelsOf, create: create, addChannels: addChannels,
-           missingFrom: missingFrom, openCreate: openCreate, openPanel: openPanel };
+           missingFrom: missingFrom, openCreate: openCreate, openPanel: openPanel,
+           homeStations: homeStations, openCreateHome: openCreateHome, openAddToHome: openAddToHome };
 };
 
 })(typeof self !== 'undefined' ? self : this);

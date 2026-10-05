@@ -338,16 +338,16 @@ root.TerrySenseTbIo = function (ctx) {
   }
 
   /** The URL a public link opens: view `stateId` of `dashboardId` on `entity`,
-   * signed in as public customer `publicId`. */
+   * else its landing view, signed in as public customer `publicId`. */
   function publicLink(dashboardId, publicId, stateId, entity) {
     return window.location.origin + '/dashboard/' + dashboardId + '?publicId=' + publicId +
-      '&state=' + encodeURIComponent(encodeState(viewStates(stateId, entity)));
+      (stateId ? '&state=' + encodeURIComponent(encodeState(viewStates(stateId, entity))) : '');
   }
 
   // -- lifecycle of a project, station or device (FRONTEND.md *Interface conventions*) --
 
   var PUBLIC_GROUP = 'Public';
-  var GROUP_PATH = { ASSET: 'assets', DEVICE: 'devices' };
+  var GROUP_PATH = { ASSET: 'assets', DEVICE: 'devices', DASHBOARD: 'dashboards' };
 
   function entityPath(entity) { return entity.entityType === 'DEVICE' ? 'device' : 'asset'; }
 
@@ -362,7 +362,7 @@ root.TerrySenseTbIo = function (ctx) {
       .then(function () { entity.name = name; });
   }
 
-  /** The owner's groups of `type` (ASSET or DEVICE) made public, each with
+  /** The owner's groups of `type` (ASSET, DEVICE or DASHBOARD) made public, each with
    * `members` ({id: true}), and `ids`, every entity in one of them. Never another owner's. */
   function publicMembers(owner, type) {
     type = type || 'ASSET';
@@ -392,7 +392,7 @@ root.TerrySenseTbIo = function (ctx) {
 
   /** Put `entity` in its owner's public group, or take it out of every one (FRONTEND.md *Public links*). */
   function setPublic(entity, owner, on) {
-    var type = entity.entityType === 'DEVICE' ? 'DEVICE' : 'ASSET';
+    var type = entity.entityType === 'DEVICE' || entity.entityType === 'DASHBOARD' ? entity.entityType : 'ASSET';
     return publicMembers(owner, type).then(function (pub) {
       if (!on) {
         return Promise.all(pub.groups.filter(function (g) { return g.members[entity.id]; }).map(function (g) {
