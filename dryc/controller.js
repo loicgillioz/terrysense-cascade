@@ -106,17 +106,18 @@ function records(set) {
   return out;
 }
 
-/** A rule's condition in the inputs' own wording, as its alarm reads it: "Pump = Fault AND Float = High". */
-function conditionText(set, r) {
+/** A rule's condition in the inputs' own wording, as its alarm reads it: "Pump = Fault, Float = High";
+ * `inactive` words each input at its other state, as the cleared alarm reads it. */
+function conditionText(set, r, inactive) {
   var parts = [];
   for (var i = 0; i < INPUTS; i++) {
     if (!(r.condition.mask & (1 << i))) { continue; }
-    var x = set.inputs[i] || {}, on = !!(r.condition.state & (1 << i));
+    var x = set.inputs[i] || {}, on = !!(r.condition.state & (1 << i)) !== !!inactive;
     var label = (x.label || '').trim() || 'Input ' + (i + 1);
     var word = ((on ? x.whenOn : x.whenOff) || '').trim() || (on ? 'On' : 'Off');
     parts.push(label + ' = ' + word);
   }
-  return parts.join(' AND ');
+  return parts.join(', ');
 }
 
 function nextId(set) {
@@ -275,8 +276,7 @@ function stationWrites(set, stationAttrs) {
     channels[key] = 'drycRule.' + r.id;
     write['channel.' + key + '.label'] = r.name;
     write['channel.' + key + '.textWhenTrue'] = r.whenActive || conditionText(set, r);
-    if (r.whenInactive) { write['channel.' + key + '.textWhenFalse'] = r.whenInactive; }
-    else if (('channel.' + key + '.textWhenFalse') in stationAttrs) { remove.push('channel.' + key + '.textWhenFalse'); }
+    write['channel.' + key + '.textWhenFalse'] = r.whenInactive || conditionText(set, r, true);
     SEVERITY_IDS.forEach(function (sev) {
       var attr = 'channel.' + key + '.alarm.' + sev + '.state';
       if (sev === r.notify.severity) { write[attr] = 'true'; } else if (attr in stationAttrs) { remove.push(attr); }
@@ -619,8 +619,8 @@ function ruleDrawer(idx) {
   body.appendChild(acts);
   var wording = h('<div class="ts-field ts-dryc-wording"><div class="ts-field-label"><span>Alarm wording</span></div>' +
     '<div class="ts-ctl"><span class="ts-row-meta">When active</span><input class="ts-input wide" data-f="whenActive" maxlength="80"></div>' +
-    '<div class="ts-ctl"><span class="ts-row-meta">When inactive</span><input class="ts-input wide" data-f="whenInactive" maxlength="80" placeholder="OFF"></div>' +
-    '<div class="ts-field-hint">The value the alarm and its message show. Left empty, an active rule reads as its condition.</div></div>');
+    '<div class="ts-ctl"><span class="ts-row-meta">When inactive</span><input class="ts-input wide" data-f="whenInactive" maxlength="80"></div>' +
+    '<div class="ts-field-hint">The value the alarm and its message show. Left empty, it reads as the condition, each input at its other state when inactive.</div></div>');
   var activeIn = wording.querySelector('[data-f=whenActive]'), inactiveIn = wording.querySelector('[data-f=whenInactive]');
   activeIn.value = r.whenActive || '';
   inactiveIn.value = r.whenInactive || '';
@@ -655,6 +655,7 @@ function ruleDrawer(idx) {
     countEl.textContent = 'The device holds ' + MAX_RECORDS + ' records: one per relay switched and one per alarm. These rules use ' + nrec + '.';
     countEl.classList.toggle('ts-error', nrec > MAX_RECORDS);
     activeIn.placeholder = conditionText(state.rules, read()) || 'the rule’s condition';
+    inactiveIn.placeholder = conditionText(state.rules, read(), true) || 'the rule’s condition, inverted';
   }
   count();
   var primary = ui.drawerActions(dr, creating ? 'Add rule' : 'Save');
