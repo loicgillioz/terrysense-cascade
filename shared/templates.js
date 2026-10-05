@@ -3,7 +3,8 @@
  * Each channel is drawn with its name's default chart (vocabulary.md §5),
  * copied from the tenant's "Chart models" dashboard; a template binds channel
  * names, so every station with the same names can take it. A project dashboard
- * draws picked stations the same way, each bound to its own station.
+ * draws charts planned across its stations from the same models, each line
+ * bound to its own station.
  * logr-product-docs/cloud/FRONTEND.md *Station dashboards*, *Project home dashboards*.
  *
  * Loads after shared/resolver.js, ui.js and tb_io.js.
@@ -22,6 +23,7 @@ root.TerrySenseTemplates = function (ui, tb) {
   var BY_ALARM = { numeric: 'line', boolean: 'state', state: 'state' };
   var ALARMS_FQN = 'system.alarm_widgets.alarms_table';
   var MAP_FQN = 'system.map';
+  var TABLE_FQN = 'system.cards.entities_table';
   var HOME_GROUP = 'Project home dashboards';
   var HOME_KEY = 'config.homeDashboard';
 
@@ -76,6 +78,7 @@ root.TerrySenseTemplates = function (ui, tb) {
       var title = (conf.widgets[id].config || {}).title;
       if (CHARTS[title]) { out.ids[title] = id; }
       if (conf.widgets[id].typeFullFqn === ALARMS_FQN) { out.alarms = id; }
+      if (conf.widgets[id].typeFullFqn === TABLE_FQN) { out.table = id; }
     });
     out.alias = stationAlias(conf);
     return out;
@@ -86,13 +89,17 @@ root.TerrySenseTemplates = function (ui, tb) {
     return Object.keys(aliases).filter(function (k) { return (aliases[k].filter || {}).type === 'stateEntity'; })[0];
   }
 
+  /** `obj` from a model with the placeholders of channel `c` filled in; `from`/`to` swaps an alias id too. */
+  function fill(obj, c, from, to) {
+    var text = JSON.stringify(obj).split(PLACEHOLDER.channel).join(jsonText(c.key))
+      .split(PLACEHOLDER.label).join(jsonText(c.label)).split(PLACEHOLDER.unit).join(jsonText(c.unit));
+    if (from && to) { text = text.split(from).join(to); }
+    return JSON.parse(text);
+  }
+
   /** One model widget filled in for channel `c`, bound to `alias`. */
   function copyModel(models, modelId, c, alias) {
-    var w = models.dashboard.configuration.widgets[modelId];
-    var text = JSON.stringify(w).split(PLACEHOLDER.channel).join(jsonText(c.key))
-      .split(PLACEHOLDER.label).join(jsonText(c.label)).split(PLACEHOLDER.unit).join(jsonText(c.unit));
-    if (models.alias && alias) { text = text.split(models.alias).join(alias); }
-    var copy = JSON.parse(text);
+    var copy = fill(models.dashboard.configuration.widgets[modelId], c, models.alias, alias);
     copy.id = uuid();
     copy.config.title = c.label;
     if (copy.typeFullFqn === 'system.state_chart') {
@@ -243,6 +250,11 @@ root.TerrySenseTemplates = function (ui, tb) {
 
   // -- project dashboards (FRONTEND.md *Project home dashboards*) ---------------------------
 
+  var PALETTE = ['#2196f3', '#ef6c00', '#43a047', '#8e24aa', '#e53935', '#00897b', '#6d4c41', '#3949ab'];
+  var CHART_FQNS = ['system.time_series_chart', 'system.bar_chart_with_labels', 'system.state_chart'];
+  var ICON_UP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+  var ICON_DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
+
   /** The owner's group of project dashboards, never shared, so each one is public only through its own public link. */
   function homeGroup(owner) {
     return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(HOME_GROUP))
@@ -286,43 +298,167 @@ root.TerrySenseTemplates = function (ui, tb) {
     return { id: uuid(), typeFullFqn: MAP_FQN, type: stock.descriptor.type, sizeX: 24, sizeY: 10, config: conf };
   }
 
-  /** One station from `row` down: its active alarms titled by its name, then each picked channel. Returns the row below. */
-  function stationBand(conf, layout, models, pick, row) {
-    var alias = stationAliasOf(conf, pick.station);
-    if (models.alarms) {
-      var at = models.dashboard.configuration.states.station.layouts.main.widgets[models.alarms];
-      var w = copyModel(models, models.alarms, { key: '', label: pick.station.name, unit: '' }, alias);
-      conf.widgets[w.id] = w;
-      layout[w.id] = { sizeX: at.sizeX, sizeY: at.sizeY, row: row, col: 0 };
-      row += at.sizeY;
-    }
-    return placeBands(conf.widgets, layout, models, pick.channels, alias, row);
-  }
-
   function rootLayout(conf) {
     var id = Object.keys(conf.states).filter(function (k) { return conf.states[k].root; })[0] || Object.keys(conf.states)[0];
     return conf.states[id].layouts.main.widgets;
   }
 
-  /** A dashboard titled `title` in the owner's project dashboards: the map of the
-   * picked stations, then a band per station. `picks`: [{station, channels}].
-   * Linked from the project's `config.homeDashboard`; resolves to its id. */
-  function createHome(project, owner, picks, title) {
+  /** Every channel of the stations, by key: label, unit, chart, and the station channels behind it in `at`. `entries`: [{station, attrs}]. */
+  function catalogOf(entries, names, kinds) {
+    var cat = { keys: [], by: {} };
+    entries.forEach(function (e) {
+      channelsOf(e.attrs, names, kinds).forEach(function (c) {
+        var it = cat.by[c.key];
+        if (!it) {
+          var vocab = names[resolver.splitChannelKey(c.key).name] || {};
+          it = cat.by[c.key] = { key: c.key, label: vocab.label || c.label, unit: c.unit, chart: c.chart, at: {} };
+          cat.keys.push(c.key);
+        }
+        it.at[e.station.id] = c;
+      });
+    });
+    return cat;
+  }
+
+  function chartable(c) { return c.chart !== 'value'; }
+
+  function unitsOf(cat, keys) {
+    var units = [];
+    keys.forEach(function (k) { var u = cat.by[k].unit || ''; if (units.indexOf(u) < 0) { units.push(u); } });
+    return units;
+  }
+
+  /** Why channel `key` cannot join chart `ch`, '' when it can: one chart kind per chart,
+   * at most two units on a line chart (one axis each), one on bars, one channel on a state timeline. */
+  function joinBlock(cat, ch, key) {
+    var c = cat.by[key];
+    if (c.chart !== ch.chart) { return CHARTS[c.chart].toLowerCase() + ', not ' + CHARTS[ch.chart].toLowerCase(); }
+    if (ch.chart === 'state') { return 'a state timeline shows one channel'; }
+    var units = unitsOf(cat, ch.channels.concat([key]));
+    if (ch.chart === 'line' && units.length > 2) { return 'a third unit'; }
+    if (ch.chart !== 'line' && units.length > 1) { return 'another unit'; }
+    return '';
+  }
+
+  /** One chart per channel, every station measuring it on it. */
+  function starterPlan(cat, stationIds) {
+    return cat.keys.filter(function (k) { return chartable(cat.by[k]); }).map(function (k) { return newChart(cat, k, stationIds); });
+  }
+
+  /** A chart of `key` with every station of `stationIds` measuring it, titled by
+   * the stations' own label when they agree on one, else by the vocabulary's. */
+  function newChart(cat, key, stationIds) {
+    var ids = stationIds.filter(function (id) { return cat.by[key].at[id]; });
+    var labels = ids.map(function (id) { return cat.by[key].at[id].label; });
+    var own = labels.length && labels.every(function (l) { return l === labels[0]; }) ? labels[0] : cat.by[key].label;
+    return { title: own, channels: [key], chart: cat.by[key].chart, together: true, stations: ids };
+  }
+
+  /** The chart `ch` from its model: a line per station and channel, labelled by station when several share it;
+   * a second unit on a right-hand axis; alarm bands only with a single station, whose limits they are. */
+  function chartWidget(models, cat, ch, stations, aliasOf, title) {
+    var modelId = models.ids[ch.chart], model = models.dashboard.configuration.widgets[modelId];
+    var series = [];
+    stations.forEach(function (st) {
+      ch.channels.forEach(function (k) { if (cat.by[k].at[st.id]) { series.push({ st: st, c: cat.by[k].at[st.id] }); } });
+    });
+    var w = copyModel(models, modelId, series[0].c, aliasOf(series[0].st.id));
+    var mds = model.config.datasources[0], ms = model.config.settings || {}, s = w.config.settings;
+    var multi = stations.length > 1, units = unitsOf(cat, ch.channels);
+    function axis(key) { return units.indexOf(cat.by[key].unit || '') === 1 ? 'right' : 'default'; }
+    if (units.length > 1 && s.yAxes && s.yAxes['default']) {
+      Object.assign(s.yAxes['default'], { units: units[0], label: units[0] });
+      s.yAxes.right = Object.assign(JSON.parse(JSON.stringify(s.yAxes['default'])), { id: 'right', position: 'right', order: 1, units: units[1], label: units[1] });
+      w.config.units = '';
+    }
+    var n = 0;
+    w.config.datasources = stations.map(function (st) {
+      var mine = series.filter(function (x) { return x.st === st; });
+      if (!mine.length) { return null; }
+      return { type: 'entity', name: '', entityAliasId: aliasOf(st.id),
+        dataKeys: mine.map(function (x) {
+          var key = fill(mds.dataKeys[0], x.c);
+          key.label = multi ? st.name + ' · ' + x.c.label : x.c.label;
+          key.color = PALETTE[n++ % PALETTE.length];
+          if (units.length > 1) { key.settings = Object.assign(key.settings || {}, { yAxisId: axis(x.c.key) }); }
+          return key;
+        }),
+        latestDataKeys: multi ? [] : [].concat.apply([], mine.map(function (x) {
+          return (mds.latestDataKeys || []).map(function (k) { return fill(k, x.c); });
+        }))
+      };
+    }).filter(Boolean);
+    if (s.thresholds) {
+      s.thresholds = multi ? [] : [].concat.apply([], series.map(function (x) {
+        return (ms.thresholds || []).map(function (t) { var y = fill(t, x.c); y.yAxisId = axis(x.c.key); return y; });
+      }));
+    }
+    w.config.title = title;
+    return w;
+  }
+
+  /** The latest value of each of `keys`, one row per station of alias `alias`. */
+  function tableWidget(models, cat, keys, alias) {
+    var w = JSON.parse(JSON.stringify(models.dashboard.configuration.widgets[models.table]));
+    var ds = w.config.datasources[0];
+    w.id = uuid();
+    delete ds.filterId;
+    ds.entityAliasId = alias;
+    ds.dataKeys = [ds.dataKeys[0]].concat(keys.map(function (k) { return tableKey(cat.by[k]); }));
+    w.config.actions = {};
+    w.config.title = 'Latest values';
+    Object.assign(w.config.settings, { entitiesTitle: 'Latest values', displayEntityLabel: false, displayEntityType: false });
+    return w;
+  }
+
+  function tableKey(c) {
+    return { name: c.key, type: 'timeseries', label: c.label + (c.unit ? ' (' + c.unit + ')' : ''), units: c.unit, decimals: 2, settings: {} };
+  }
+
+  /** The stations of `plan` chart `ch` draws: those still picked that measure one of its channels. */
+  function chartStations(plan, ch) {
+    return plan.stations.filter(function (st) {
+      return ch.stations.indexOf(st.id) >= 0 && ch.channels.some(function (k) { return plan.cat.by[k].at[st.id]; });
+    });
+  }
+
+  /** A dashboard titled `plan.title` in the owner's project dashboards: the map
+   * and the active alarms of `plan.stations`, their latest values, then each
+   * chart of `plan.charts`, together or once per station. Linked from the
+   * project's `config.homeDashboard`; resolves to its id. */
+  function createHome(project, owner, plan) {
     return Promise.all([loadModels(), tb.get('/api/widgetType', { fqn: MAP_FQN }), homeGroup(owner)]).then(function (got) {
       var models = modelsOf(got[0]), mconf = got[0].configuration;
       models.dashboard = got[0];
-      var grid = (mconf.states.station.layouts.main || {}).gridSettings;
+      var mlayout = mconf.states.station.layouts.main;
       var conf = { widgets: {}, entityAliases: {}, filters: {}, timewindow: mconf.timewindow, settings: mconf.settings,
-        states: { 'default': { name: title, root: true, layouts: { main: { widgets: {}, gridSettings: grid } } } } };
+        states: { 'default': { name: plan.title, root: true, layouts: { main: { widgets: {}, gridSettings: mlayout.gridSettings } } } } };
       var layout = conf.states['default'].layouts.main.widgets;
-      var listId = uuid();
+      function place(w, sizeX, sizeY, row, col) { conf.widgets[w.id] = w; layout[w.id] = { sizeX: sizeX, sizeY: sizeY, row: row, col: col }; }
+      var listId = uuid(), aliases = {};
       conf.entityAliases[listId] = { id: listId, alias: 'Stations', filter: { type: 'entityList', resolveMultiple: true,
-        entityType: 'ASSET', entityList: picks.map(function (p) { return p.station.id; }) } };
-      var map = mapWidget(got[1], listId, title);
-      conf.widgets[map.id] = map;
-      layout[map.id] = { sizeX: map.sizeX, sizeY: map.sizeY, row: 0, col: 0 };
-      picks.reduce(function (row, p) { return stationBand(conf, layout, models, p, row); }, map.sizeY);
-      return tb.post('/api/dashboard?entityGroupId=' + got[2].id.id, { title: title, configuration: conf });
+        entityType: 'ASSET', entityList: plan.stations.map(function (st) { return st.id; }) } };
+      plan.stations.forEach(function (st) { aliases[st.id] = stationAliasOf(conf, st); });
+      function aliasOf(id) { return aliases[id]; }
+
+      place(mapWidget(got[1], listId, plan.title), models.alarms ? 14 : 24, 10, 0, 0);
+      if (models.alarms) { place(copyModel(models, models.alarms, { key: '', label: 'Active alarms', unit: '' }, listId), 10, 10, 0, 14); }
+      var row = 10;
+      var listed = plan.cat.keys.filter(function (k) { return plan.stations.some(function (st) { return plan.cat.by[k].at[st.id]; }); });
+      if (models.table && listed.length) {
+        var tall = Math.min(3 + plan.stations.length, 10);
+        place(tableWidget(models, plan.cat, listed, listId), 24, tall, row, 0);
+        row += tall;
+      }
+      plan.charts.forEach(function (ch) {
+        var sts = chartStations(plan, ch);
+        var high = mlayout.widgets[models.ids[ch.chart]].sizeY;
+        (ch.together ? [sts] : sts.map(function (st) { return [st]; })).forEach(function (g) {
+          place(chartWidget(models, plan.cat, ch, g, aliasOf, ch.together || sts.length < 2 ? ch.title : g[0].name + ' · ' + ch.title), 24, high, row, 0);
+          row += high;
+        });
+      });
+      return tb.post('/api/dashboard?entityGroupId=' + got[2].id.id, { title: plan.title, configuration: conf });
     }).then(function (saved) {
       var write = {};
       write[HOME_KEY] = saved.id.id;
@@ -330,75 +466,254 @@ root.TerrySenseTemplates = function (ui, tb) {
     });
   }
 
-  /** `pick` appended to project dashboard `homeId`: on its map and in a band below everything else. */
-  function addToHome(homeId, pick) {
+  /** The charts of a project dashboard drawing one of `keys`: `{id, title, keys, stations}`, `stations` the station count. */
+  function homeCharts(dashboard, keys) {
+    var widgets = dashboard.configuration.widgets;
+    return Object.keys(widgets).filter(function (id) { return CHART_FQNS.indexOf(widgets[id].typeFullFqn) >= 0; }).map(function (id) {
+      var ds = widgets[id].config.datasources || [], drawn = [];
+      ds.forEach(function (d) { (d.dataKeys || []).forEach(function (k) { if (drawn.indexOf(k.name) < 0) { drawn.push(k.name); } }); });
+      return { id: id, title: widgets[id].config.title, keys: drawn.filter(function (k) { return keys.indexOf(k) >= 0; }), stations: ds.length };
+    }).filter(function (c) { return c.keys.length; });
+  }
+
+  /** Station `o.station` onto project dashboard `homeId`: on the lists every
+   * list-bound widget reads (map, alarms, latest values), its lines on charts
+   * `o.join`, and a chart of its own per channel of `o.own`. */
+  function addToHome(homeId, o) {
     return Promise.all([tb.get('/api/dashboard/' + homeId), loadModels()]).then(function (got) {
-      var dash = got[0], conf = dash.configuration, models = modelsOf(got[1]);
+      var dash = got[0], conf = dash.configuration, models = modelsOf(got[1]), cat = o.cat, st = o.station;
       models.dashboard = got[1];
-      Object.keys(conf.entityAliases).forEach(function (k) {
+      var lists = Object.keys(conf.entityAliases).filter(function (k) {
         var f = conf.entityAliases[k].filter;
-        if (f.type === 'entityList' && f.entityType === 'ASSET') { f.entityList.push(pick.station.id); }
+        return f.type === 'entityList' && f.entityType === 'ASSET';
       });
-      var layout = rootLayout(conf);
-      stationBand(conf, layout, models, pick, bottomRow(layout));
+      lists.forEach(function (k) { conf.entityAliases[k].filter.entityList.push(st.id); });
+      var alias = stationAliasOf(conf, st), layout = rootLayout(conf);
+
+      Object.keys(conf.widgets).forEach(function (id) {
+        var w = conf.widgets[id], ds = (w.config.datasources || [])[0];
+        if (w.typeFullFqn !== TABLE_FQN || !ds || lists.indexOf(ds.entityAliasId) < 0) { return; }
+        cat.keys.forEach(function (k) {
+          if (!ds.dataKeys.some(function (x) { return x.name === k; })) { ds.dataKeys.push(tableKey(cat.by[k])); }
+        });
+      });
+
+      o.join.forEach(function (id) {
+        var w = conf.widgets[id], all = w.config.datasources, n = 0;
+        all.forEach(function (d) { n += d.dataKeys.length; });
+        // A chart that gains a second station names each line by its station and leaves the alarm bands out.
+        if (all.length === 1) {
+          var first = (conf.entityAliases[all[0].entityAliasId] || {}).alias;
+          all[0].dataKeys.forEach(function (k) { k.label = first + ' · ' + k.label; });
+          all[0].latestDataKeys = [];
+          if (w.config.settings.thresholds) { w.config.settings.thresholds = []; }
+        }
+        var keys = [];
+        all.forEach(function (d) { d.dataKeys.forEach(function (k) { if (cat.by[k.name] && !keys.some(function (x) { return x.name === k.name; })) { keys.push(k); } }); });
+        all.push({ type: 'entity', name: '', entityAliasId: alias, latestDataKeys: [], dataKeys: keys.map(function (k) {
+          var key = JSON.parse(JSON.stringify(k));
+          key.label = st.name + ' · ' + cat.by[k.name].at[st.id].label;
+          key.color = PALETTE[n++ % PALETTE.length];
+          return key;
+        }) });
+      });
+
+      var row = bottomRow(layout), mlayout = models.dashboard.configuration.states.station.layouts.main.widgets;
+      o.own.forEach(function (k) {
+        var ch = { channels: [k], chart: cat.by[k].chart, stations: [st.id] };
+        var w = chartWidget(models, cat, ch, [st], function () { return alias; }, st.name + ' · ' + cat.by[k].label);
+        var high = mlayout[models.ids[ch.chart]].sizeY;
+        conf.widgets[w.id] = w;
+        layout[w.id] = { sizeX: 24, sizeY: high, row: row, col: 0 };
+        row += high;
+      });
       return tb.post('/api/dashboard', dash);
     });
   }
 
-  /** A checkbox per channel, ticked, with its chart. Returns a function giving the ticked ones. */
-  function channelChecks(box, channels) {
-    channels.forEach(function (c) {
-      var r = box.appendChild(h('<label class="ts-switch"><input type="checkbox" checked><span></span><span class="ts-chip"></span></label>'));
-      r.setAttribute('data-channel', c.key);
-      r.querySelector('span').textContent = c.label + (c.unit ? ' (' + c.unit + ')' : '');
-      r.querySelector('.ts-chip').textContent = CHARTS[c.chart] || c.chart;
-    });
-    if (!channels.length) { box.appendChild(h('<div class="ts-row-meta">On the map with its alarms; no measurement to draw yet.</div>')); }
-    return function () {
-      var boxes = box.querySelectorAll('input');
-      return channels.filter(function (c, i) { return boxes[i].checked; });
-    };
+  function chip(text, title) {
+    var el = h('<span class="ts-chip ts-home-chip"><span></span><button type="button" class="ts-home-x" data-a="remove">' + ui.ICON.close + '</button></span>');
+    el.firstChild.textContent = text;
+    el.lastChild.title = title;
+    return el;
   }
 
-  /** *Create project dashboard*: its name, the stations on it and what each
-   * shows. `o`: project, owner, entries ([{station, attrs}]), names, kinds,
+  function picker(placeholder, options, pick) {
+    var sel = h('<select class="ts-select ts-home-pick"></select>');
+    sel.appendChild(h('<option value=""></option>')).textContent = placeholder;
+    options.forEach(function (o) {
+      var opt = sel.appendChild(h('<option></option>'));
+      opt.value = o.value;
+      opt.textContent = o.text;
+      opt.disabled = !!o.disabled;
+    });
+    sel.hidden = !options.length;
+    sel.addEventListener('change', function () { if (sel.value) { pick(sel.value); } });
+    return sel;
+  }
+
+  /** *Create project dashboard*: its name, its stations, then its charts — each
+   * with its channels and stations, the stations together on one chart or one
+   * chart each. `o`: project, owner, entries ([{station, attrs}]), names, kinds,
    * replaces (the current dashboard's title, optional), intro (optional),
-   * done(dashboardId, picks). */
+   * done(dashboardId, stations). */
   function openCreateHome(o) {
     var dr = ui.openDrawer('Create project dashboard', esc(o.project.name));
-    if (o.intro) { dr.body.appendChild(h('<p class="ts-field-hint"></p>')).textContent = o.intro; }
-    var form = dr.body.appendChild(h('<div><div class="ts-field"><label class="ts-field-label">Name</label><input class="ts-input wide" data-f="title"></div>' +
-      '<div class="ts-section-head">Stations, and what each shows</div><div class="ts-home-stations"></div></div>'));
-    var input = form.querySelector('input'), list = form.querySelector('.ts-home-stations');
+    var cat = catalogOf(o.entries, o.names, o.kinds);
+    var all = o.entries.map(function (e) { return e.station; }), ticked = {};
+    all.forEach(function (st) { ticked[st.id] = true; });
+    var charts = starterPlan(cat, all.map(function (st) { return st.id; }));
+
+    if (o.intro) { dr.body.appendChild(h('<p class="ts-field-hint ts-home-intro"></p>')).textContent = o.intro; }
+    var input = dr.body.appendChild(h('<div class="ts-field"><label class="ts-field-label">Name</label><input class="ts-input wide" data-f="title"></div>'))
+      .querySelector('input');
     input.value = o.project.name;
-    var rows = o.entries.map(function (e) {
-      var box = list.appendChild(h('<div class="ts-home-st"><label class="ts-switch ts-home-st-name"><input type="checkbox" data-f="station" checked>' +
-        '<span></span></label><div class="ts-home-chans"></div></div>'));
-      box.setAttribute('data-station', e.station.name);
-      box.querySelector('span').textContent = e.station.name;
-      var chans = box.querySelector('.ts-home-chans'), on = box.querySelector('[data-f=station]');
-      var picked = channelChecks(chans, channelsOf(e.attrs, o.names, o.kinds));
-      on.addEventListener('change', function () { chans.hidden = !on.checked; check(); });
-      return { station: e.station, on: on, picked: picked };
-    });
-    if (!rows.length) { list.appendChild(h('<div class="ts-empty">The project has no station in service yet.</div>')); }
-    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'Its public link shows exactly what is ticked here. ' +
+    var stationsEl = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Stations</div><div class="ts-home-stations"></div>' +
+      '<div class="ts-field-hint">On the map, with their active alarms and a table of their latest values.</div></div>')).querySelector('.ts-home-stations');
+    var chartsSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Charts</div><div class="ts-home-charts"></div></div>'));
+    var cardsEl = chartsSec.querySelector('.ts-home-charts');
+    var addEl = chartsSec.appendChild(h('<div class="ts-home-addchart"></div>'));
+    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'Its public link shows exactly this. ' +
       'It opens in ThingsBoard afterwards, to arrange as you like.' +
       (o.replaces ? ' It replaces ' + o.replaces + ' as the project dashboard; that one stays in ThingsBoard, without a public link.' : '');
     var go = ui.drawerActions(dr, 'Create');
-    function picks() {
-      return rows.filter(function (r) { return r.on.checked; }).map(function (r) { return { station: r.station, channels: r.picked() }; });
+
+    function picked() { return all.filter(function (st) { return ticked[st.id]; }); }
+    function shownOn(ch) { return chartStations({ stations: picked(), cat: cat }, ch); }
+    function carried(k) { return picked().some(function (st) { return cat.by[k].at[st.id]; }); }
+    function label(k) { var c = cat.by[k]; return c.label + (c.unit ? ' (' + c.unit + ')' : ''); }
+    function retitle(ch) { if (!ch.titled) { ch.title = ch.channels.map(function (k) { return cat.by[k].label; }).join(' and '); } }
+
+    function renderStations() {
+      stationsEl.innerHTML = '';
+      all.forEach(function (st) {
+        var row = stationsEl.appendChild(h('<label class="ts-switch ts-home-st"><input type="checkbox" data-f="station"><span></span>' +
+          '<span class="ts-row-meta"></span></label>'));
+        row.setAttribute('data-station', st.name);
+        var n = cat.keys.filter(function (k) { return cat.by[k].at[st.id]; }).length;
+        row.querySelector('span').textContent = st.name;
+        row.querySelector('.ts-row-meta').textContent = n ? n + (n === 1 ? ' channel' : ' channels') : 'no channel yet';
+        var box = row.querySelector('input');
+        box.checked = !!ticked[st.id];
+        box.addEventListener('change', function () {
+          ticked[st.id] = box.checked;
+          // A station picked again joins the shared charts of its channels.
+          if (box.checked) {
+            charts.forEach(function (ch) {
+              if (ch.together && ch.stations.indexOf(st.id) < 0 && ch.channels.some(function (k) { return cat.by[k].at[st.id]; })) { ch.stations.push(st.id); }
+            });
+          }
+          render();
+        });
+      });
     }
-    function check() { go.disabled = !input.value.trim() || !picks().length; }
+
+    function card(ch, i) {
+      var sts = shownOn(ch);
+      var el = h('<div class="ts-home-chart"><div class="ts-home-chart-head"><input class="ts-input ts-home-chart-title" data-f="chart-title">' +
+        '<button type="button" class="ts-icon-btn" data-a="up" title="Move up">' + ICON_UP + '</button>' +
+        '<button type="button" class="ts-icon-btn" data-a="down" title="Move down">' + ICON_DOWN + '</button>' +
+        '<button type="button" class="ts-icon-btn" data-a="remove-chart" title="Remove this chart">' + ICON_TRASH + '</button></div>' +
+        '<div class="ts-home-row"><span class="ts-home-row-label">Channels</span><span class="ts-home-chips" data-list="channels"></span></div>' +
+        '<div class="ts-home-row"><span class="ts-home-row-label">Stations</span><span class="ts-home-chips" data-list="stations"></span></div>' +
+        '<div class="ts-home-row ts-home-mode"><span class="ts-home-row-label">Show</span></div>' +
+        '<div class="ts-row-meta ts-home-sum"></div></div>');
+      el.setAttribute('data-chart', ch.channels.join('+'));
+      var title = el.querySelector('[data-f=chart-title]');
+      title.value = ch.title;
+      title.addEventListener('input', function () { ch.title = title.value; ch.titled = true; });
+      el.querySelector('[data-a=up]').disabled = i === 0;
+      el.querySelector('[data-a=down]').disabled = i === charts.length - 1;
+      el.querySelector('[data-a=up]').addEventListener('click', function () { charts.splice(i - 1, 0, charts.splice(i, 1)[0]); render(); });
+      el.querySelector('[data-a=down]').addEventListener('click', function () { charts.splice(i + 1, 0, charts.splice(i, 1)[0]); render(); });
+      el.querySelector('[data-a=remove-chart]').addEventListener('click', function () { charts.splice(i, 1); render(); });
+
+      var chans = el.querySelector('[data-list=channels]');
+      ch.channels.forEach(function (k, j) {
+        chans.appendChild(chip(label(k), 'Take ' + cat.by[k].label + ' off this chart')).setAttribute('data-channel', k);
+        chans.lastChild.querySelector('button').addEventListener('click', function () {
+          ch.channels.splice(j, 1);
+          if (!ch.channels.length) { charts.splice(i, 1); } else { retitle(ch); }
+          render();
+        });
+      });
+      chans.appendChild(picker('Add a channel…', cat.keys.filter(function (k) { return ch.channels.indexOf(k) < 0 && chartable(cat.by[k]) && carried(k); })
+        .map(function (k) { var why = joinBlock(cat, ch, k); return { value: k, text: label(k) + (why ? ' — ' + why : ''), disabled: !!why }; }),
+        function (k) {
+          ch.channels.push(k);
+          picked().forEach(function (st) { if (ch.together && cat.by[k].at[st.id] && ch.stations.indexOf(st.id) < 0) { ch.stations.push(st.id); } });
+          retitle(ch);
+          render();
+        })).setAttribute('data-a', 'add-channel');
+
+      var stList = el.querySelector('[data-list=stations]');
+      sts.forEach(function (st) {
+        stList.appendChild(chip(st.name, 'Take ' + st.name + ' off this chart')).setAttribute('data-station', st.name);
+        stList.lastChild.querySelector('button').addEventListener('click', function () {
+          ch.stations.splice(ch.stations.indexOf(st.id), 1);
+          render();
+        });
+      });
+      if (!sts.length) { stList.appendChild(h('<span class="ts-home-none">None: this chart is left out</span>')); }
+      stList.appendChild(picker('Add a station…', picked().filter(function (st) {
+        return sts.indexOf(st) < 0 && ch.channels.some(function (k) { return cat.by[k].at[st.id]; });
+      }).map(function (st) { return { value: st.id, text: st.name }; }), function (id) { ch.stations.push(id); render(); })).setAttribute('data-a', 'add-station');
+
+      var mode = el.querySelector('.ts-home-mode');
+      if (sts.length > 1) {
+        [['together', 'Together, one chart'], ['apart', 'One chart per station']].forEach(function (m) {
+          var r = mode.appendChild(h('<label class="ts-switch"><input type="radio"><span></span></label>'));
+          var radio = r.querySelector('input');
+          radio.name = 'ts-home-mode-' + i;
+          radio.value = m[0];
+          radio.checked = ch.together === (m[0] === 'together');
+          r.querySelector('span').textContent = m[1];
+          radio.addEventListener('change', function () { ch.together = m[0] === 'together'; render(); });
+        });
+      } else {
+        mode.hidden = true;
+      }
+
+      var lines = 0;
+      sts.forEach(function (st) { ch.channels.forEach(function (k) { if (cat.by[k].at[st.id]) { lines++; } }); });
+      var units = unitsOf(cat, ch.channels).filter(Boolean);
+      var single = sts.length === 1 || !ch.together;
+      el.querySelector('.ts-home-sum').textContent = [
+        CHARTS[ch.chart],
+        ch.together || sts.length < 2 ? lines + (lines === 1 ? ' line' : ' lines') : sts.length + ' charts',
+        units.length > 1 ? 'two axes: ' + units.join(', ') : '',
+        sts.length && single && ch.chart === 'line' ? 'alarm bands' : ''
+      ].filter(Boolean).join(' · ');
+      return el;
+    }
+
+    function render() {
+      renderStations();
+      cardsEl.innerHTML = '';
+      charts.forEach(function (ch, i) { cardsEl.appendChild(card(ch, i)); });
+      if (!charts.length) { cardsEl.appendChild(h('<div class="ts-empty">No chart. The latest values still show in the table.</div>')); }
+      addEl.innerHTML = '';
+      addEl.appendChild(picker('+ Add a chart for…', cat.keys.filter(function (k) { return chartable(cat.by[k]) && carried(k); })
+        .map(function (k) { return { value: k, text: label(k) }; }), function (k) {
+          charts.push(newChart(cat, k, picked().map(function (st) { return st.id; })));
+          render();
+        })).setAttribute('data-a', 'add-chart');
+      check();
+    }
+
+    function check() { go.disabled = !input.value.trim() || !picked().length; }
     input.addEventListener('input', check);
-    check();
+    render();
+
     go.addEventListener('click', function () {
-      var title = input.value.trim(), chosen = picks();
+      var stations = picked();
+      var plan = { title: input.value.trim(), stations: stations, cat: cat,
+        charts: charts.filter(function (ch) { return chartStations({ stations: stations, cat: cat }, ch).length; }) };
       go.disabled = true;
-      createHome(o.project, o.owner, chosen, title).then(function (id) {
+      createHome(o.project, o.owner, plan).then(function (id) {
         ui.closeDrawer();
-        ui.toast(title + ' created');
-        o.done(id, chosen);
+        ui.toast(plan.title + ' created');
+        o.done(id, stations);
       }).catch(function (err) {
         check();
         ui.toast('Project dashboard not created: ' + errText(err), 'error');
@@ -406,25 +721,68 @@ root.TerrySenseTemplates = function (ui, tb) {
     });
   }
 
-  /** *Add to project dashboard*: the station's channels to show. `o`: station,
-   * attrs, names, kinds, homeId, note (what else it changes, optional), done(). */
+  /** *Add to project dashboard*: the charts that take the station's lines, and
+   * the charts of its own. `o`: station, attrs, names, kinds, homeId, note
+   * (what else it changes, optional), done(). */
   function openAddToHome(o) {
     var dr = ui.openDrawer('Add to project dashboard', esc(o.station.name));
-    dr.body.appendChild(h('<div class="ts-section-head">What it shows</div>'));
-    var picked = channelChecks(dr.body.appendChild(h('<div class="ts-home-chans"></div>')), channelsOf(o.attrs, o.names, o.kinds));
-    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'On the map, then below the other stations, with its alarms. ' +
-      (o.note || '');
-    var go = ui.drawerActions(dr, 'Add');
-    go.addEventListener('click', function () {
-      go.disabled = true;
-      addToHome(o.homeId, { station: o.station, channels: picked() }).then(function () {
-        ui.closeDrawer();
-        ui.toast(o.station.name + ' added to the project dashboard');
-        o.done();
-      }).catch(function (err) {
-        go.disabled = false;
-        ui.toast('Not added: ' + errText(err), 'error');
+    var cat = catalogOf([{ station: o.station, attrs: o.attrs }], o.names, o.kinds);
+    dr.body.appendChild(h('<div class="ts-loading">Loading the project dashboard…</div>'));
+    tb.get('/api/dashboard/' + o.homeId).then(function (dash) {
+      dr.body.innerHTML = '';
+      dr.body.appendChild(h('<p class="ts-field-hint"></p>')).textContent = 'It joins the map, the active alarms and the latest values. ' + (o.note || '');
+      var found = homeCharts(dash, cat.keys);
+      var joinSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Add its lines to</div></div>'));
+      var joins = found.map(function (c) {
+        var r = joinSec.appendChild(h('<label class="ts-switch ts-home-join"><input type="checkbox"><span></span><span class="ts-row-meta"></span></label>'));
+        r.setAttribute('data-chart', c.title);
+        r.querySelector('span').textContent = c.title;
+        r.querySelector('.ts-row-meta').textContent = (c.stations === 1 ? '1 station' : c.stations + ' stations') + ' · ' +
+          c.keys.map(function (k) { return cat.by[k].label; }).join(', ');
+        r.querySelector('input').checked = c.stations > 1;
+        return { c: c, box: r.querySelector('input') };
       });
+      if (!found.length) { joinSec.appendChild(h('<div class="ts-row-meta">No chart shows its channels yet.</div>')); }
+      var ownSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Charts of its own</div></div>'));
+      var own = cat.keys.filter(function (k) { return chartable(cat.by[k]); }).map(function (k) {
+        var r = ownSec.appendChild(h('<label class="ts-switch ts-home-own"><input type="checkbox"><span></span><span class="ts-chip"></span></label>'));
+        r.setAttribute('data-channel', k);
+        r.querySelector('span').textContent = cat.by[k].label + (cat.by[k].unit ? ' (' + cat.by[k].unit + ')' : '');
+        r.querySelector('.ts-chip').textContent = CHARTS[cat.by[k].chart];
+        return { key: k, row: r, box: r.querySelector('input') };
+      });
+      if (!own.length) { ownSec.appendChild(h('<div class="ts-row-meta">No measurement to draw yet.</div>')); }
+      // A channel already drawn on a ticked chart needs no chart of its own.
+      function sync() {
+        var covered = [];
+        joins.forEach(function (j) { if (j.box.checked) { covered = covered.concat(j.c.keys); } });
+        own.forEach(function (x) {
+          var on = covered.indexOf(x.key) >= 0;
+          x.row.classList.toggle('off', on);
+          x.box.disabled = on;
+          if (on) { x.box.checked = false; } else if (!x.touched) { x.box.checked = true; }
+        });
+      }
+      joins.forEach(function (j) { j.box.addEventListener('change', sync); });
+      own.forEach(function (x) { x.box.addEventListener('change', function () { x.touched = true; }); });
+      sync();
+      var go = ui.drawerActions(dr, 'Add');
+      go.addEventListener('click', function () {
+        go.disabled = true;
+        addToHome(o.homeId, { station: o.station, cat: cat,
+          join: joins.filter(function (j) { return j.box.checked; }).map(function (j) { return j.c.id; }),
+          own: own.filter(function (x) { return x.box.checked; }).map(function (x) { return x.key; }) }).then(function () {
+          ui.closeDrawer();
+          ui.toast(o.station.name + ' added to the project dashboard');
+          o.done();
+        }).catch(function (err) {
+          go.disabled = false;
+          ui.toast('Not added: ' + errText(err), 'error');
+        });
+      });
+    }).catch(function (err) {
+      dr.body.innerHTML = '';
+      dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent = 'Could not load the project dashboard: ' + errText(err);
     });
   }
 

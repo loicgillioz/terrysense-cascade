@@ -710,10 +710,10 @@ function openCreateHome(intro, then) {
   var was = state.home, wasPublic = linkOn();
   templates.openCreateHome({ project: state.entity, owner: state.owner, entries: active(), names: state.names, kinds: state.kinds,
     replaces: was && was.title, intro: intro,
-    done: function (id, picks) {
+    done: function (id, stations) {
       // A replaced dashboard hands its public link over to the new one.
       var work = wasPublic ? tb.setPublic(dashRef(was.id), state.owner, false).then(function () {
-        return publishHome(id, picks.map(function (p) { return p.station; }));
+        return publishHome(id, stations);
       }) : Promise.resolve();
       work.then(refreshAll).then(function () { if (then) { then(); } else { openDashboard(id); } })
         .catch(function (err) { ui.toast('Public link not moved: ' + errText(err), 'error'); });
