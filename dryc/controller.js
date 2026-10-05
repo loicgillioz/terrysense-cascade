@@ -14,7 +14,8 @@
  * display and history. A device may feed several stations; when more than one
  * holds rules for its dry contact interface, the widget warns that the device
  * runs whichever set was sent last. Send writes one `cmd.request` DRYC_RULES,
- * which `dl_dispatch` sends through the LOGR2 integration.
+ * which `dl_dispatch` sends through the LOGR2 integration. The view refreshes
+ * itself when the device reports or answers.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -31,6 +32,7 @@ var ui = window.TerrySenseUi(root);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info;
 
 var INPUTS = 8, RELAYS = 2, MAX_RECORDS = 16, DAY_MS = 86400000;
+var POLL_MS = opts.pollMs || 15000;
 var RULE_CHANNEL = 'drycRule';
 var SEVERITY_IDS = ['critical', 'major', 'minor', 'warning', 'indeterminate'];
 // The device stores them under the DRYC prefix (`dryc.drycInput1`); state.live drops it.
@@ -130,10 +132,9 @@ function syncState() {
   var want = JSON.stringify(records(normalise(parseJson(state.saved))));
   var n = JSON.parse(want).length;
   if (!state.device) { return { s: 'nodevice', short: 'No device', text: 'No dry contact interface feeds this station. The rules are kept here and sent once one is connected.' }; }
-  var pendingKeys = Object.keys(state.server).filter(function (key) { return /^cmd\.seq\.\d+$/.test(key); });
-  var pending = pendingKeys.map(function (key) { return parseJson(state.server[key]) || {}; }).filter(function (m) {
-    return (m.commands || [])[0] && m.commands[0].op === 'DRYC_RULES';
-  }).sort(function (a, b) { return (b.issuedAt || 0) - (a.issuedAt || 0); })[0];
+  var queued = parseJson(state.server['cmd.pending']);
+  var pending = queued && (queued.commands || []).some(function (c) { return c.op === 'DRYC_RULES'; })
+    ? { issuedAt: queued.updatedAt || queued.issuedAt } : null;
   var last = parseJson(state.server['cmd.lastResult']);
   var lastRules = last && (last.commands || [])[0] && last.commands[0].op === 'DRYC_RULES' ? last : null;
   var count = state.live.drycRuleCount ? Number(state.live.drycRuleCount.value) : null;
@@ -658,6 +659,22 @@ function refresh() {
   return load().then(render).catch(function (err) { ui.toast('Refresh failed: ' + errText(err), 'error'); });
 }
 
+/** What changes when the device reports or answers a send. */
+function deviceMark(server) {
+  return [server.lastActivityTime, JSON.stringify(server['cmd.pending'] || null), JSON.stringify(server['cmd.lastResult'] || null)].join('|');
+}
+
+// One attribute read per tick; the full reload only when the device moved, and
+// never under an open drawer or confirmation, whose edit it would replace.
+var timer = null;
+function poll() {
+  if (!root.isConnected) { clearInterval(timer); return; }
+  if (document.hidden || !state.device || cardEl.querySelector('.ts-drawer, .ts-confirm')) { return; }
+  tb.attrsMap(deviceEntity(), 'SERVER_SCOPE').then(function (server) {
+    if (Object.keys(server).length && deviceMark(server) !== deviceMark(state.server)) { return refresh(); }
+  });
+}
+
 tb.boundDatasource().then(function (ds) {
   if (!ds || ds.entityType !== 'ASSET') { fail('Open the dry contact interface from its station.'); return; }
   return tb.loadEntity(ds).then(function (station) {
@@ -672,6 +689,7 @@ tb.boundDatasource().then(function (ds) {
     return Promise.all([load(), state.device ? tb.canWrite(deviceEntity()) : false]).then(function (all) {
       state.writeDevice = all[1];
       render();
+      timer = setInterval(poll, POLL_MS);
     });
   });
 }).catch(function (err) { fail('Could not load: ' + errText(err)); });
