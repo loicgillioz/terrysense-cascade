@@ -9,7 +9,8 @@
  * over; the device keeps only what was sent to it (`cmd.lastResult`,
  * `drycRuleCount`). Saving also gives each notifying rule its station channel
  * `drycRule-<n>`, mapped to `drycRule.<id>` with a boolean alarm at the rule's
- * severity; `station_project` fills that value on every DRYC status. The
+ * severity, its value worded as the rule's condition unless the rule words it;
+ * `station_project` fills that value on every DRYC status. The
  * labelled inputs, the outputs and the voltage go onto the station too, for
  * display and history. A device may feed several stations; when more than one
  * holds rules for its dry contact interface, the widget warns that the device
@@ -81,7 +82,8 @@ function normalise(set) {
   out.rules = (set.rules || []).map(function (r) {
     return { id: r.id, name: r.name || '', condition: { mask: (r.condition || {}).mask & 0xFF, state: (r.condition || {}).state & 0xFF },
              relays: { relay1: !!(r.relays || {}).relay1, relay2: !!(r.relays || {}).relay2 },
-             notify: r.notify ? { severity: r.notify.severity || 'major' } : null };
+             notify: r.notify ? { severity: r.notify.severity || 'major' } : null,
+             whenActive: r.whenActive || '', whenInactive: r.whenInactive || '' };
   });
   (set.inputs || []).slice(0, INPUTS).forEach(function (x, i) { out.inputs[i] = { label: x.label || '', whenOn: x.whenOn || '', whenOff: x.whenOff || '' }; });
   (set.relays || []).slice(0, RELAYS).forEach(function (x, i) { out.relays[i] = { label: x.label || '' }; });
@@ -102,6 +104,19 @@ function records(set) {
     if (r.relays.relay2) { out.push([2, st, mask]); }
   });
   return out;
+}
+
+/** A rule's condition in the inputs' own wording, as its alarm reads it: "Pump = Fault AND Float = High". */
+function conditionText(set, r) {
+  var parts = [];
+  for (var i = 0; i < INPUTS; i++) {
+    if (!(r.condition.mask & (1 << i))) { continue; }
+    var x = set.inputs[i] || {}, on = !!(r.condition.state & (1 << i));
+    var label = (x.label || '').trim() || 'Input ' + (i + 1);
+    var word = ((on ? x.whenOn : x.whenOff) || '').trim() || (on ? 'On' : 'Off');
+    parts.push(label + ' = ' + word);
+  }
+  return parts.join(' AND ');
 }
 
 function nextId(set) {
@@ -259,6 +274,9 @@ function stationWrites(set, stationAttrs) {
     keep[key] = true;
     channels[key] = 'drycRule.' + r.id;
     write['channel.' + key + '.label'] = r.name;
+    write['channel.' + key + '.textWhenTrue'] = r.whenActive || conditionText(set, r);
+    if (r.whenInactive) { write['channel.' + key + '.textWhenFalse'] = r.whenInactive; }
+    else if (('channel.' + key + '.textWhenFalse') in stationAttrs) { remove.push('channel.' + key + '.textWhenFalse'); }
     SEVERITY_IDS.forEach(function (sev) {
       var attr = 'channel.' + key + '.alarm.' + sev + '.state';
       if (sev === r.notify.severity) { write[attr] = 'true'; } else if (attr in stationAttrs) { remove.push(attr); }
@@ -302,6 +320,8 @@ function save(set) {
     var out = { id: r.id, name: r.name, condition: { mask: r.condition.mask, state: r.condition.state & r.condition.mask } };
     if (r.relays.relay1 || r.relays.relay2) { out.relays = r.relays; }
     if (r.notify) { out.notify = r.notify; }
+    if (r.whenActive) { out.whenActive = r.whenActive; }
+    if (r.whenInactive) { out.whenInactive = r.whenInactive; }
     return out;
   });
   return tb.attrsMap(state.station).then(function (attrs) {
@@ -539,7 +559,8 @@ function commit(set, message) {
 function ruleDrawer(idx) {
   var creating = idx === null;
   var r = creating
-    ? { id: nextId(state.rules), name: '', condition: { mask: 0, state: 0 }, relays: { relay1: false, relay2: false }, notify: { severity: 'major' } }
+    ? { id: nextId(state.rules), name: '', condition: { mask: 0, state: 0 }, relays: { relay1: false, relay2: false }, notify: { severity: 'major' },
+        whenActive: '', whenInactive: '' }
     : clone(state.rules.rules[idx]);
   var dr = ui.openDrawer(creating ? 'New rule' : 'Rule ' + (idx + 1), 'Saved on this station; the device runs it once the rules are sent ' + info('drycSync'));
   var body = dr.body;
@@ -589,8 +610,22 @@ function ruleDrawer(idx) {
   acts.querySelector('[data-f=notify]').checked = !!r.notify;
   sevSel.value = r.notify ? r.notify.severity : 'major';
   sevSel.disabled = !r.notify;
-  acts.addEventListener('change', function () { sevSel.disabled = !acts.querySelector('[data-f=notify]').checked; count(); });
+  acts.addEventListener('change', function () {
+    var notify = acts.querySelector('[data-f=notify]').checked;
+    sevSel.disabled = !notify;
+    wording.hidden = !notify;
+    count();
+  });
   body.appendChild(acts);
+  var wording = h('<div class="ts-field ts-dryc-wording"><div class="ts-field-label"><span>Alarm wording</span></div>' +
+    '<div class="ts-ctl"><span class="ts-row-meta">When active</span><input class="ts-input wide" data-f="whenActive" maxlength="80"></div>' +
+    '<div class="ts-ctl"><span class="ts-row-meta">When inactive</span><input class="ts-input wide" data-f="whenInactive" maxlength="80" placeholder="OFF"></div>' +
+    '<div class="ts-field-hint">The value the alarm and its message show. Left empty, an active rule reads as its condition.</div></div>');
+  var activeIn = wording.querySelector('[data-f=whenActive]'), inactiveIn = wording.querySelector('[data-f=whenInactive]');
+  activeIn.value = r.whenActive || '';
+  inactiveIn.value = r.whenInactive || '';
+  wording.hidden = !r.notify;
+  body.appendChild(wording);
   var countEl = h('<div class="ts-field-hint ts-reccount"></div>');
   body.appendChild(countEl);
 
@@ -606,6 +641,8 @@ function ruleDrawer(idx) {
     });
     out.relays = { relay1: acts.querySelector('[data-f=relay1]').checked, relay2: acts.querySelector('[data-f=relay2]').checked };
     out.notify = acts.querySelector('[data-f=notify]').checked ? { severity: sevSel.value } : null;
+    out.whenActive = out.notify ? activeIn.value.trim() : '';
+    out.whenInactive = out.notify ? inactiveIn.value.trim() : '';
     return out;
   }
   function draftSet() {
@@ -617,6 +654,7 @@ function ruleDrawer(idx) {
     var nrec = records(draftSet()).length;
     countEl.textContent = 'The device holds ' + MAX_RECORDS + ' records: one per relay switched and one per alarm. These rules use ' + nrec + '.';
     countEl.classList.toggle('ts-error', nrec > MAX_RECORDS);
+    activeIn.placeholder = conditionText(state.rules, read()) || 'the rule’s condition';
   }
   count();
   var primary = ui.drawerActions(dr, creating ? 'Add rule' : 'Save');
