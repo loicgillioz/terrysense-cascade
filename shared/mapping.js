@@ -3,8 +3,8 @@
  * What a device measures, the channel names each measurement may be stored
  * under on a station, and the station's `config.channelMap` after a change,
  * under the map rules of logr-product-docs/cloud/CHANNEL_MAP.md. Shared by the
- * device view's *Channels* editor and the station view's data flow, so both
- * apply the same rules.
+ * device view's *Channels* and per-measurement editors and the station view's
+ * data flow, so all apply the same rules.
  *
  * A device model `m`: `bus` (a LOGR3 or LOGR4), `device` (ThingsBoard's
  * device), `client` (its client attributes), `latest` (`{key: {ts, value}}`),
@@ -282,6 +282,21 @@ function withDevice(entries, deviceId, channels) {
   return { next: next, takenOver: takenOver };
 }
 
+/** The station's entries once measurement `key` of the device is stored under
+ * `target` instead of channel `from` (null when not stored yet), or leaves the
+ * station when `target` is null. A channel another device feeds moves to this
+ * measurement; one this device feeds from another measurement cannot.
+ * `{next, takenOver}`, `takenOver` the entry it replaces, or `{own: true}`. */
+function storeOne(entries, deviceId, key, from, target) {
+  var next = Object.assign({}, entries);
+  if (from) { delete next[from]; }
+  if (!target) { return { next: next, takenOver: null }; }
+  var held = next[target];
+  if (held && held.device === deviceId) { return { own: true }; }
+  next[target] = { device: deviceId, key: key };
+  return { next: next, takenOver: held || null };
+}
+
 root.TerrySenseMapping = {
   SOURCE_KEY_RE: SOURCE_KEY_RE, NOT_READINGS: NOT_READINGS, RULE_SOURCE: RULE_SOURCE, DRYC_KEY: DRYC_KEY,
   LOGR2_SENSORS: LOGR2_SENSORS, NETWORK_KEYS: NETWORK_KEYS,
@@ -289,7 +304,7 @@ root.TerrySenseMapping = {
   sourceLabel: sourceLabel, unitOf: unitOf, readings: readings, nameOf: nameOf, entryOf: entryOf, labelOf: labelOf,
   readingUnit: readingUnit, logr2Parts: logr2Parts, mineOf: mineOf, othersOf: othersOf, mappedNames: mappedNames,
   namesForKind: namesForKind, namesForReading: namesForReading, mappable: mappable, channelLabel: channelLabel,
-  nextInstance: nextInstance, nameOptions: nameOptions, channelsFor: channelsFor, withDevice: withDevice
+  nextInstance: nextInstance, nameOptions: nameOptions, channelsFor: channelsFor, withDevice: withDevice, storeOne: storeOne
 };
 
 })(typeof self !== 'undefined' ? self : this);

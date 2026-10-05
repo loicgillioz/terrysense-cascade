@@ -2,7 +2,7 @@
  * Device — one device of any type: is it live, what it measures and which
  * station channel each measurement feeds (TC-1 to TC-7); for a user who may
  * write it, connecting it to a station, a new one included, and choosing the
- * channels (CA-1), and on a LOGR3 or LOGR4 the commands that reconfigure it
+ * channels (CA-1), per station or per measurement, and on a LOGR3 or LOGR4 the commands that reconfigure it
  * (CA-4, TC-8/9). Read-only for anyone else.
  *
  * In its header, for the same user, *Silence* (CA-19) and the device's row
@@ -641,6 +641,113 @@ function disconnect(b) {
   });
 }
 
+/** The measurements the stations can take, by key; filled on each render for a writer. */
+var storable = {};
+
+/** One measurement on every station the device feeds: whether each stores it and
+ * under which channel, the *Channels* editor read across instead of down. Every
+ * other channel of the station counts as taken, this device's own included, so a
+ * second source of a repeatable name gets its next instance. */
+function storeDrawer(r) {
+  var me = state.device.id.id;
+  var dr = ui.openDrawer('Store ' + esc(r.label), esc(state.device.label || state.device.name) + ' · ' + esc(r.key));
+  dr.el.classList.add('wide');
+  var list = dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Stations ' + info('channelName') + '</span></div>' +
+    '<div class="ts-field-hint">Tick the stations that store this measurement. On the right, the channel it is stored under.</div><div class="ts-binds"></div></div>'));
+  var boxes = list.querySelector('.ts-binds');
+  var rows = state.bindings.map(function (b) {
+    var mine = mineOf(b.entries);
+    var from = Object.keys(mine).filter(function (c) { return mine[c] === r.key; })[0] || null;
+    var rest = Object.assign({}, b.entries);
+    if (from) { delete rest[from]; }
+    var o = M.nameOptions(model(), r, rest, from, null);
+    var row = boxes.appendChild(h('<div class="ts-bindrow"><label class="ts-bind-src"><input type="checkbox"><span class="ts-grow"><span class="ts-bind-name"></span>' +
+      '<span class="ts-mono"></span></span></label><span class="ts-dev-arrow">→</span><div class="ts-bind-dst"><select class="ts-select"></select>' +
+      '<span class="ts-bind-key"></span></div></div>'));
+    row.dataset.station = b.station.name;
+    row.querySelector('.ts-bind-name').textContent = b.station.name;
+    row.querySelector('.ts-mono').textContent = b.writable ? '' : 'read-only for you';
+    var box = row.querySelector('input'), sel = row.querySelector('select');
+    o.options.forEach(function (n) {
+      var opt = sel.appendChild(document.createElement('option')); opt.value = n; opt.textContent = channelLabel(n) + ' (' + n + ')';
+    });
+    sel.value = o.value;
+    box.checked = !!from;
+    box.disabled = !b.writable;
+    return { b: b, from: from, row: row, box: box, sel: sel };
+  });
+  if (!rows.length) { boxes.appendChild(h('<div class="ts-empty">This device feeds no station yet.</div>')); }
+  var go = ui.drawerActions(dr, 'Save');
+  var connect = h('<button type="button" class="ts-btn ghost" data-a="connect-more">' + ICON.plus + 'Connect or create a station</button>');
+  dr.foot.insertBefore(connect, dr.foot.firstChild);
+  connect.addEventListener('click', function () { bindDrawer(null); });
+
+  /** What the row changes: null for nothing, else `{next, note}` or `{error}`. */
+  function plan(x) {
+    var target = x.box.checked ? x.sel.value : null;
+    if (target === x.from) { return null; }
+    var p = M.storeOne(x.b.entries, me, r.key, x.from, target);
+    if (p.own) { return { error: channelLabel(target) + ' (' + target + ') already stores another measurement of this device: change that one first.' }; }
+    var note = !target ? 'leaves the station, which keeps its history'
+      : x.from ? 'stored as ' + target + '; the readings so far stay under ' + x.from : 'stored as ' + target;
+    if (p.takenOver) { note += '; ' + target + ' moves from ' + (p.takenOver.device ? 'another device' : 'no device') + ' to this measurement, its history kept'; }
+    return { next: p.next, note: note };
+  }
+  function update() {
+    var error = false;
+    rows.forEach(function (x) {
+      var p = plan(x);
+      x.row.classList.toggle('off', !x.box.checked);
+      x.sel.disabled = !x.box.checked || !x.b.writable;
+      var key = x.row.querySelector('.ts-bind-key');
+      key.classList.toggle('ts-error', !!(p && p.error));
+      key.textContent = p ? p.error || p.note : x.from ? 'stored as ' + x.from : 'not stored';
+      error = error || !!(p && p.error);
+    });
+    go.disabled = error;
+  }
+  boxes.addEventListener('change', update);
+  update();
+
+  go.addEventListener('click', function () {
+    var changes = rows.map(function (x) { return { x: x, p: plan(x) }; }).filter(function (c) { return c.p; });
+    if (!changes.length) { ui.closeDrawer(); return; }
+    ui.confirm('<b>' + esc(r.label) + '</b> of <b>' + esc(state.device.label || state.device.name) + '</b>:<ul>' + changes.map(function (c) {
+      return '<li>' + esc(c.x.b.station.name) + ': ' + esc(c.p.note) + '</li>';
+    }).join('') + '</ul>', 'Save').then(function (ok) {
+      if (!ok) { return; }
+      return Promise.all(changes.map(function (c) {
+        return tb.saveAttrs(c.x.b.station, { 'config.channelMap': resolver.buildMap(c.p.next) }).then(function () {
+          return relateToMap(c.x.b.station.id, c.p.next);
+        });
+      })).then(function () {
+        return tb.resolveStations(changes.map(function (c) { return c.x.b.station; }));
+      }).then(function () {
+        ui.toast('Saved');
+        ui.closeDrawer();
+        return refresh();
+      }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+    });
+  });
+}
+
+/** The wiring line under a measurement: the station channels it feeds, and for a
+ * writer the way to change them. Empty for a diagnostic stored nowhere. */
+function wireLine(key, feeds, unwired, describe) {
+  var r = state.writable && storable[key];
+  if (!feeds.length && !unwired && !r) { return null; }
+  var wire = h('<div class="ts-wire"></div>');
+  if (feeds.length || unwired) {
+    wire.dataset.wired = feeds.length ? '1' : '0';
+    wire.textContent = feeds.length ? feeds.map(describe).join('   ') : unwired;
+  }
+  if (r) {
+    wire.appendChild(h('<button type="button" class="ts-btn ghost sm" data-a="store">' + (feeds.length ? ICON.edit + 'Stations' : ICON.plus + 'Store') + '</button>'))
+      .addEventListener('click', function () { storeDrawer(r); });
+  }
+  return wire;
+}
+
 /** Every stored key of a LOGR2 sensor, its bookkeeping and the dry contact interface's
  * rule matches included. */
 function sensorKeys(part) {
@@ -1133,6 +1240,8 @@ function render() {
   chip.textContent = d.type || '';
 
   bodyEl.innerHTML = '';
+  storable = {};
+  if (state.writable) { mappable().forEach(function (r) { storable[r.key] = r; }); }
   renderService();
   var follow = followUpCard();
   if (follow) { bodyEl.appendChild(follow); }
@@ -1401,12 +1510,8 @@ function readingRow(key, diagnostic) {
   row.querySelector('.ts-mono').textContent = key + (entryOf(key) ? '' : ' · not in the dictionary');
   row.querySelector('b').textContent = fmtValue(v.value) + (readingUnit(key) ? ' ' + readingUnit(key) : '');
   row.querySelector('.ts-tsrc-value .ts-row-meta').textContent = ago(v.ts);
-  var feeds = state.wiring[key] || [];
-  if (feeds.length || !diagnostic) {
-    var wire = row.appendChild(h('<div class="ts-wire"></div>'));
-    wire.dataset.wired = feeds.length ? '1' : '0';
-    wire.textContent = feeds.length ? feeds.map(wireText(key)).join('   ') : 'on no station';
-  }
+  var wire = wireLine(key, state.wiring[key] || [], diagnostic ? null : 'on no station', wireText(key));
+  if (wire) { row.appendChild(wire); }
   return row;
 }
 
@@ -1581,14 +1686,10 @@ function sourceRow(s, node) {
   if (state.faults[s.sourceKey]) { stateEl.appendChild(h('<span class="ts-chip fault" title="Active peripheralFault alarm">' + ICON.bell + '</span>')); }
   if (queuedFor(s)) { stateEl.insertBefore(h('<span class="ts-chip warn" data-queued="1" title="A change waits for the next uplink">change queued</span>'), stateEl.firstChild); }
   if (state.writable) { meta.appendChild(sourceControls(s)); } else { sourceFacts(s, meta); }
-  var feeds = state.wiring[s.sourceKey] || [];
-  if (feeds.length || s.position !== 0) {
-    var wire = row.appendChild(h('<div class="ts-wire"></div>'));
-    wire.dataset.wired = feeds.length ? '1' : '0';
-    wire.textContent = feeds.length
-      ? feeds.map(function (f) { return '→ ' + f.station + ' · ' + (f.label ? f.label + ' (' + f.channel + ')' : f.channel); }).join('   ')
-      : 'not wired to any station';
-  }
+  var wire = wireLine(s.sourceKey, state.wiring[s.sourceKey] || [], s.position !== 0 ? 'not wired to any station' : null, function (f) {
+    return '→ ' + f.station + ' · ' + (f.label ? f.label + ' (' + f.channel + ')' : f.channel);
+  });
+  if (wire) { row.appendChild(wire); }
   return row;
 }
 

@@ -809,20 +809,18 @@ function mapDrawer(d, r, c) {
 
 /** What storing `r` under `target` changes: `{next, notes, takenOver, error}`. */
 function plan(d, r, c, target) {
-  var next = Object.assign({}, state.entries), notes = [];
-  if (c) { delete next[c.name]; }
-  var held = next[target];
-  if (held && held.device === d.id) {
+  var p = M.storeOne(state.entries, d.id, r.key, c ? c.name : null, target), notes = [];
+  if (p.own) {
     return { error: M.channelLabel(state.names, target) + ' (' + target + ') already stores another measurement of this device: change that one first.' };
   }
+  var held = p.takenOver;
   if (held) {
     var other = state.devices.filter(function (x) { return !x.hidden && x.id === held.device; })[0];
     notes.push(target + ' is fed by ' + (other ? deviceName(other) : held.device ? 'another device' : 'no device') +
       ' now; it moves to this measurement, its history kept.');
   }
   if (c && c.name !== target) { notes.push('The readings so far stay under ' + c.name + '; new readings go to ' + target + '.'); }
-  next[target] = { device: d.id, key: r.key };
-  return { next: next, notes: notes, takenOver: held ? [target] : [] };
+  return { next: p.next, notes: notes, takenOver: held ? [target] : [] };
 }
 
 function saveMapping(d, r, c, target, labelText) {
