@@ -145,7 +145,7 @@ root.TerrySenseTemplates = function (ui, tb) {
     return Object.keys(layout).reduce(function (m, id) { return Math.max(m, layout[id].row + layout[id].sizeY); }, 0);
   }
 
-  /** Append a value card and the chart of each channel below the station view's widgets. */
+  /** Append a value card and the chart of each channel below the widgets of the template's station view. */
   function appendBands(conf, models, channels) {
     var layout = stationLayout(conf);
     placeBands(conf.widgets, layout, models, channels, stationAlias(conf), bottomRow(layout));
@@ -1036,8 +1036,8 @@ root.TerrySenseTemplates = function (ui, tb) {
           var names = stations.slice(0, 5).map(function (st) { return '<b>' + esc(st.name) + '</b>'; });
           var list = { list: calc.listText(names) + (stations.length > 5 ? ' ' + root.TerrySenseT('templates.delete.more', 'and {n} more', { n: stations.length - 5 }) : '') };
           var who = !stations.length ? root.TerrySenseT('templates.delete.noStation', 'No station opens it.')
-            : stations.length === 1 ? root.TerrySenseT('templates.delete.stationOne', '1 station opens it: {list}. They go back to their station view.', list)
-            : root.TerrySenseT('templates.delete.stationMany', '{n} stations open it: {list}. They go back to their station view.', { n: stations.length, list: list.list });
+            : stations.length === 1 ? root.TerrySenseT('templates.delete.stationOne', '1 station opens it: {list}. It goes back to its Installation view.', list)
+            : root.TerrySenseT('templates.delete.stationMany', '{n} stations open it: {list}. They go back to their Installation view.', { n: stations.length, list: list.list });
           return ui.confirm(root.TerrySenseT('templates.delete.confirm', 'Delete the template <b>{title}</b>? {who} This cannot be undone.', { title: esc(t.title), who: who }),
             root.TerrySenseT('common.delete', 'Delete')).then(function (ok) {
             if (!ok) { return null; }
@@ -1089,7 +1089,7 @@ root.TerrySenseTemplates = function (ui, tb) {
         var own = t && t.fit && mayEdit(t);
         if (!t) {
           title.firstChild.textContent = root.TerrySenseT('templates.linked.gone', 'A dashboard that no longer exists or that you cannot read');
-          line(root.TerrySenseT('templates.linked.goneHint', 'The station opens its station view instead. Link a template below, or unlink it.'), true);
+          line(root.TerrySenseT('templates.linked.goneHint', 'The station opens its Installation view instead. Link a template below, or unlink it.'), true);
         } else {
           title.firstChild.textContent = t.title;
           if (t.fit) {

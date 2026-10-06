@@ -3,7 +3,7 @@
  * What a device measures, the channel names each measurement may be stored
  * under on a station, and the station's `config.channelMap` after a change,
  * under the map rules of logr-product-docs/cloud/CHANNEL_MAP.md. Shared by the
- * device view's *Channels* and per-measurement editors and the station view's
+ * device view's *Channels* and per-measurement editors and the station Installation view's
  * data flow, so all apply the same rules.
  *
  * A device model `m`: `bus` (a LOGR3 or LOGR4), `device` (ThingsBoard's

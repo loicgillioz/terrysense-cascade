@@ -4,7 +4,7 @@
  * project, public or private, retire, delete, silence; a device out of service
  * and its reassignment to another owner. Each flow confirms
  * with its consequences first and calls `done` after its writes. Shared by
- * the project widget and the station view, and by any widget whose row menu
+ * the project widget and the station Installation view, and by any widget whose row menu
  * holds these actions. Spec: logr-product-docs/cloud/FRONTEND.md *Interface
  * conventions*, *Projects dashboard*, *Station Installation view*.
  *

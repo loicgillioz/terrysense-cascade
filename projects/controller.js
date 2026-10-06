@@ -428,7 +428,7 @@ function render() {
 // -- new project (CA-6) ------------------------------------------------------------------
 
 /** A name, and for the tenant the owner under *Tenant only*; then the project
- * opens in its Project view with the map in edit mode. */
+ * opens in its Installation view with the map in edit mode. */
 function openNew() {
   var tenant = state.me.authority === 'TENANT_ADMIN';
   var dr = ui.openDrawer(t('projects.new', 'New project'), tenant ? '' : t('projects.ownedByYou', 'Owned by your organisation'));

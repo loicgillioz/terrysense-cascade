@@ -111,7 +111,7 @@ function latLngOf(attrs) {
   return attrs.latitude != null && attrs.longitude != null && isFinite(lat) && isFinite(lng) ? [lat, lng] : null;
 }
 
-// A deleted or unshared dashboard leaves the station on its station view.
+// A deleted or unshared dashboard leaves the station on its Installation view.
 var readableIds = {};
 function readable(id) {
   if (!id) { return Promise.resolve(null); }

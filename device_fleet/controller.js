@@ -17,8 +17,8 @@
  * cell (a device never heard from, on no station) sorts last either way. A row opens a pane
  * summing the device up, with buttons to its device view, its stations and its projects.
  *
- * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose Station
- * and Project views those buttons open.
+ * `opts`, set by build_device_dashboard.py: `projectDashboardId`, whose station
+ * and project Installation views those buttons open.
  * Widget: logr-product-docs/cloud/DEVICE_VIEW.md §1.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js, tb_io.js and lifecycle.js.
