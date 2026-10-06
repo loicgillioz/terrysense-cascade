@@ -152,8 +152,7 @@ root.TerrySenseTemplates = function (ui, tb) {
   /** The template group of `owner`, else the user's own — the tenant's for a tenant admin. */
   function templateGroup(owner, me) {
     owner = owner || (me.authority === 'TENANT_ADMIN' ? { entityType: 'TENANT', id: me.tenantId.id } : { entityType: 'CUSTOMER', id: me.customerId.id });
-    return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(TEMPLATE_GROUP))
-      .catch(function () { return tb.post('/api/entityGroup', { type: 'DASHBOARD', name: TEMPLATE_GROUP, ownerId: owner }); });
+    return tb.namedGroup(owner, 'DASHBOARD', TEMPLATE_GROUP);
   }
 
   /** A template named "Station · <use>" drawing `channels`, in the group of
@@ -256,10 +255,7 @@ root.TerrySenseTemplates = function (ui, tb) {
   var ICON_DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
 
   /** The owner's group of project dashboards, never shared, so each one is public only through its own public link. */
-  function homeGroup(owner) {
-    return tb.get('/api/entityGroup/' + owner.entityType + '/' + owner.id + '/DASHBOARD/' + encodeURIComponent(HOME_GROUP))
-      .catch(function () { return tb.post('/api/entityGroup', { type: 'DASHBOARD', name: HOME_GROUP, ownerId: owner }); });
-  }
+  function homeGroup(owner) { return tb.namedGroup(owner, 'DASHBOARD', HOME_GROUP); }
 
   /** The stations a project dashboard shows: every asset its aliases name but the project. */
   function homeStations(dashboard, projectId) {
@@ -431,8 +427,10 @@ root.TerrySenseTemplates = function (ui, tb) {
       var models = modelsOf(got[0]), mconf = got[0].configuration;
       models.dashboard = got[0];
       var mlayout = mconf.states.station.layouts.main;
+      // Charts stack below each other, so the layout scrolls instead of squeezing them into the screen height.
+      var grid = Object.assign({}, mlayout.gridSettings, { autoFillHeight: false });
       var conf = { widgets: {}, entityAliases: {}, filters: {}, timewindow: mconf.timewindow, settings: mconf.settings,
-        states: { 'default': { name: plan.title, root: true, layouts: { main: { widgets: {}, gridSettings: mlayout.gridSettings } } } } };
+        states: { 'default': { name: plan.title, root: true, layouts: { main: { widgets: {}, gridSettings: grid } } } } };
       var layout = conf.states['default'].layouts.main.widgets;
       function place(w, sizeX, sizeY, row, col) { conf.widgets[w.id] = w; layout[w.id] = { sizeX: sizeX, sizeY: sizeY, row: row, col: col }; }
       var listId = uuid(), aliases = {};

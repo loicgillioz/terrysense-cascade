@@ -382,6 +382,15 @@ root.TerrySenseTbIo = function (ctx) {
     });
   }
 
+  /** The owner's group of `type` named `name`, created when it has none. Found in
+   * the owner's list, since asking for a missing group by name raises ThingsBoard's error popup. */
+  function namedGroup(owner, type, name) {
+    return get('/api/entityGroups/' + owner.entityType + '/' + owner.id + '/' + type).then(function (all) {
+      return (all || []).filter(function (g) { return g.name === name; })[0] ||
+        post('/api/entityGroup', { type: type, name: name, ownerId: owner });
+    });
+  }
+
   /** The owner's public group, made public from its "Public" group or created when it has none. */
   function ensurePublicGroup(owner, type, pub) {
     if (pub.groups.length) { return Promise.resolve(pub.groups[0]); }
@@ -598,7 +607,7 @@ root.TerrySenseTbIo = function (ctx) {
     channelFreshness: channelFreshness,
     isComplexDevice: isComplexDevice,
     ancestors: ancestors, openDashboard: openDashboard, readableDashboard: readableDashboard, isPublicView: isPublicView,
-    publicLink: publicLink, ownerOf: ownerOf, renameEntity: renameEntity, publicMembers: publicMembers, setPublic: setPublic,
+    publicLink: publicLink, ownerOf: ownerOf, renameEntity: renameEntity, publicMembers: publicMembers, setPublic: setPublic, namedGroup: namedGroup,
     relate: relate, unrelate: unrelate, createStation: createStation, ownerProjects: ownerProjects,
     settingChanges: settingChanges, moveStation: moveStation, deleteHistory: deleteHistory, deleteEntity: deleteEntity,
     serviceOf: serviceOf, setServiceState: setServiceState, silence: silence, endSilence: endSilence,
