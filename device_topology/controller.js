@@ -984,7 +984,8 @@ function replaceDrawer() {
     var picks = Array.prototype.slice.call(table.querySelectorAll('select[data-station]'));
     var dropped = picks.filter(function (p) { return !p.value; }).map(function (p) { return p.dataset.channel; });
     var carried = rows.filter(function (r) { return dr.body.querySelector('[data-carry=' + r.id + ']').checked; });
-    ui.confirm((bound.length ? t('device.confirmMoveTo', 'Move {n} channel(s) to {device}?', { n: picks.length - dropped.length, device: '<b>' + esc(d.name) + '</b>' })
+    ui.confirm((bound.length ? (picks.length - dropped.length === 1 ? t('device.confirmMoveToOne', 'Move 1 channel to {device}?', { device: '<b>' + esc(d.name) + '</b>' })
+      : t('device.confirmMoveToMany', 'Move {n} channels to {device}?', { n: picks.length - dropped.length, device: '<b>' + esc(d.name) + '</b>' }))
       : t('device.confirmReplaceBy', 'Replace by {device}?', { device: '<b>' + esc(d.name) + '</b>' })) +
       (dropped.length ? t('device.droppedChannels', ' These leave their station, which keeps their history: {list}.', { list: '<b>' + dropped.map(esc).join(', ') + '</b>' }) : '') +
       (carried.length ? t('device.takesOver', ' It takes over: {list}.', { list: carried.map(function (r) { return esc(r.text); }).join('; ') }) : ''), t('device.replace', 'Replace'))

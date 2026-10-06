@@ -390,7 +390,8 @@ function render() {
   inGroup.forEach(function (d) { counts[liveness(d)]++; });
   var alarmed = inGroup.filter(function (d) { return d.alarms.length; }).length;
   cardEl.querySelector('.ts-subtitle').textContent = (inGroup.length === 1 ? t('fleet.devicesOne', '1 device') : t('fleet.devicesMany', '{n} devices', { n: inGroup.length })) + ' · ' +
-    t('fleet.liveCount', '{n} live', { n: counts.live }) + ' · ' + t('fleet.inactiveCount', '{n} inactive', { n: counts.inactive }) +
+    (counts.live === 1 ? t('fleet.liveOne', '1 live') : t('fleet.liveMany', '{n} live', { n: counts.live })) + ' · ' +
+    (counts.inactive === 1 ? t('fleet.inactiveOne', '1 inactive') : t('fleet.inactiveMany', '{n} inactive', { n: counts.inactive })) +
     (counts.never ? ' · ' + t('fleet.neverCount', '{n} never heard from', { n: counts.never }) : '') +
     (alarmed ? ' · ' + t('fleet.alarmedCount', '{n} with alarms', { n: alarmed }) : '');
   cardEl.querySelector('.ts-fleet-updated').textContent = t('common.readAt', 'Read {time}', { time: new Date(state.loadedAt).toLocaleTimeString(t.locale()) });

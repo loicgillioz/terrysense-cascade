@@ -1227,7 +1227,7 @@ function conditionEditor(ch, dr, isBool) {
       var row = h('<div class="ts-thr ts-thr-state inherited' + (sh ? ' shadowed' : '') + '"><span class="ts-thr-static">' + esc(t('settings.is', 'Is')) + '</span><span class="ts-thr-static"></span>' +
         '<span class="ts-sev-select">' + sevDot(s.id) + esc(s.label) + '</span><span></span><span class="ts-thr-from"></span></div>');
       row.querySelectorAll('.ts-thr-static')[1].textContent = label(hit.value);
-      row.querySelector('.ts-thr-from').textContent = sh ? t('settings.replacedHere', 'replaced here') : t('settings.inheritedFrom', 'inherited from {level}', { level: levelLabel(hit.from) });
+      row.querySelector('.ts-thr-from').textContent = sh ? t('settings.conditionReplacedHere', 'replaced here') : t('settings.conditionInheritedFrom', 'inherited from {level}', { level: levelLabel(hit.from) });
       list.appendChild(row);
     });
     if (!draft.conds.length && !any) { list.appendChild(h('<div class="ts-empty">' + esc(t('settings.noCondition', 'No condition: this measurement never raises an alarm.')) + '</div>')); }
