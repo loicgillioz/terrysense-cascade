@@ -33,6 +33,10 @@ var ui = window.TerrySenseUi(root);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON, info = ui.info;
 
 var INPUTS = 8, RELAYS = 2, MAX_RECORDS = 16, DAY_MS = 86400000;
+// The firmware the rules checksum and supply-voltage conditions need (DRYC.md §5);
+// an older logger or DRYC keeps today's behaviour and the view says what to update.
+var LOGGER_FW_MIN = '0.44.0', DRYC_FW_MIN = '1.3.0';
+var VOLT_OPS = { below: 1, above: 2 };
 var POLL_MS = opts.pollMs || 15000;
 var RULE_CHANNEL = 'drycRule';
 var SEVERITY_IDS = ['critical', 'major', 'minor', 'warning', 'indeterminate'];
@@ -61,9 +65,28 @@ function plural(n, one) { return n + ' ' + one + (n === 1 ? '' : 's'); }
 // -- model ------------------------------------------------------------------------------
 
 var state = {
-  station: null, device: null, others: [], rules: null, saved: '', live: {}, server: {},
+  station: null, device: null, others: [], rules: null, saved: '', live: {}, server: {}, client: {},
   writeDevice: false, writeStation: false, me: null
 };
+
+/** `v` at or past `min`, on major.minor.patch; a pre-release counts as its release. */
+function versionAtLeast(v, min) {
+  var a = String(v || '').split(/[-+]/)[0].split('.').map(Number), b = min.split('.').map(Number);
+  if (a.length < 3 || a.some(isNaN)) { return false; }
+  for (var i = 0; i < 3; i++) { if (a[i] !== b[i]) { return a[i] > b[i]; } }
+  return true;
+}
+
+/** What the device's firmware can do with the rules: the logger and DRYC
+ * versions it reports, and whether it checks the rules by checksum and runs
+ * supply-voltage conditions. Both need the two minimum versions. */
+function capability() {
+  var logger = state.client['deviceInfo.fwVersion'] || null, dryc = state.client['deviceInfo.drycFwVersion'] || null;
+  var loggerOk = versionAtLeast(logger, LOGGER_FW_MIN), drycOk = loggerOk && versionAtLeast(dryc, DRYC_FW_MIN);
+  return { logger: logger, dryc: dryc, loggerOk: loggerOk, drycOk: drycOk, voltage: drycOk, crc: drycOk };
+}
+
+function hasVoltage(r) { return !!(r.condition && r.condition.voltage); }
 
 /** Rules are edited on the station and sent from the device. */
 function canEdit() { return state.writeStation; }
@@ -80,7 +103,10 @@ function normalise(set) {
   var out = emptySet();
   if (!set) { return out; }
   out.rules = (set.rules || []).map(function (r) {
-    return { id: r.id, name: r.name || '', condition: { mask: (r.condition || {}).mask & 0xFF, state: (r.condition || {}).state & 0xFF },
+    var c = r.condition || {}, v = c.voltage;
+    var condition = { mask: c.mask & 0xFF, state: c.state & 0xFF };
+    if (v && VOLT_OPS[v.op] && Number(v.volts) > 0) { condition.voltage = { op: v.op, volts: Number(v.volts) }; }
+    return { id: r.id, name: r.name || '', condition: condition,
              relays: { relay1: !!(r.relays || {}).relay1, relay2: !!(r.relays || {}).relay2 },
              notify: r.notify ? { severity: r.notify.severity || 'major' } : null,
              whenActive: r.whenActive || '', whenInactive: r.whenInactive || '' };
@@ -94,16 +120,38 @@ function inputLabel(i) { return state.rules.inputs[i].label || 'Input ' + (i + 1
 function inputText(i, on) { var x = state.rules.inputs[i]; return on ? (x.whenOn || 'On') : (x.whenOff || 'Off'); }
 function relayLabel(i) { return state.rules.relays[i].label || 'Relay ' + (i + 1); }
 
-/** The device's records, in rule order: a wake record per notifying rule, one per relay (DRYC.md §2). */
+/** The device's records, in rule order: a wake record per notifying rule, one per relay (DRYC.md §2);
+ * a supply-voltage condition adds its operator and threshold in mV to each record. */
 function records(set) {
   var out = [];
   set.rules.forEach(function (r) {
-    var mask = r.condition.mask & 0xFF, st = r.condition.state & mask;
-    if (r.notify) { out.push([0, st, mask]); }
-    if (r.relays.relay1) { out.push([1, st, mask]); }
-    if (r.relays.relay2) { out.push([2, st, mask]); }
+    var mask = r.condition.mask & 0xFF, st = r.condition.state & mask, v = r.condition.voltage;
+    function rec(output) { return v ? [output, st, mask, VOLT_OPS[v.op], Math.round(v.volts * 1000)] : [output, st, mask]; }
+    if (r.notify) { out.push(rec(0)); }
+    if (r.relays.relay1) { out.push(rec(1)); }
+    if (r.relays.relay2) { out.push(rec(2)); }
   });
   return out;
+}
+
+/** CRC-16/CCITT-FALSE of the records as the device hashes them (TRX_NANO.md §10.4). */
+function recordsCrc(recs) {
+  var bytes = [recs.length];
+  recs.forEach(function (x) {
+    bytes.push(x[0] | ((x[3] || 0) << 2), x[1], x[2]);
+    if (x[3]) { bytes.push((x[4] >> 8) & 0xFF, x[4] & 0xFF); }
+  });
+  var crc = 0xFFFF;
+  bytes.forEach(function (b) {
+    crc ^= b << 8;
+    for (var i = 0; i < 8; i++) { crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF; }
+  });
+  return crc;
+}
+
+function voltageText(v, inverse) {
+  var below = (v.op === 'below') !== !!inverse;
+  return 'Supply ' + (below ? (inverse ? '≤ ' : '< ') : (inverse ? '≥ ' : '> ')) + v.volts.toFixed(1) + ' V';
 }
 
 /** A rule's condition in the inputs' own wording, as its alarm reads it: "Pump = Fault, Float = High";
@@ -117,6 +165,7 @@ function conditionText(set, r, inactive) {
     var word = ((on ? x.whenOn : x.whenOff) || '').trim() || (on ? 'On' : 'Off');
     parts.push(label + ' = ' + word);
   }
+  if (r.condition.voltage) { parts.push(voltageText(r.condition.voltage, inactive)); }
   return parts.join(', ');
 }
 
@@ -136,10 +185,16 @@ function levels() {
   return seen ? bits : null;
 }
 
-/** Whether a rule matches the last status: true, false, or null with no status. */
+/** Whether a rule matches the last status: true, false, or null with no status.
+ * A voltage condition compares the last supply reading, without the device's hold time and hysteresis. */
 function matching(r) {
   var lv = levels();
-  return lv === null ? null : (lv & r.condition.mask) === (r.condition.state & r.condition.mask);
+  if (lv === null) { return null; }
+  var inputs = (lv & r.condition.mask) === (r.condition.state & r.condition.mask), v = r.condition.voltage;
+  if (!v) { return inputs; }
+  if (!state.live.drycVoltage) { return null; }
+  var supply = Number(state.live.drycVoltage.value);
+  return inputs && (v.op === 'below' ? supply < v.volts : supply > v.volts);
 }
 
 /** Where the device stands against the saved rules: `s` is the state, `short`
@@ -166,6 +221,11 @@ function syncState() {
   if (lastRules && JSON.stringify(lastRules.commands[0].records) !== want) {
     return { s: 'changed', short: 'Send needed', sent: lastRules.issuedAt, confirmed: lastRules.ackedAt,
              text: 'The rules changed since they were sent. The device still runs the previous ones.' };
+  }
+  // With the checksum the device's own rules are compared; without it, only their number.
+  var cap = capability(), crc = state.client['status.drycRulesCrc16'];
+  if (cap.crc && crc !== undefined && Number(crc) !== recordsCrc(JSON.parse(want))) {
+    return { s: 'drift', short: 'Send needed', text: 'The device holds other rules than these. Send them.' };
   }
   if (count !== null && count !== n) {
     return { s: 'drift', short: 'Send needed', text: 'The device holds ' + plural(count, 'record') + ', these rules need ' + n + '. Send them.' };
@@ -220,8 +280,10 @@ function load() {
     }) : [],
     dev ? tb.attrsMap(dev, 'SERVER_SCOPE') : {},
     dev ? tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.map(function (key) { return LIVE_PREFIX + key; }).join(',') })
-      .catch(function () { return {}; }) : {}
+      .catch(function () { return {}; }) : {},
+    dev ? tb.attrsMap(dev, 'CLIENT_SCOPE').catch(function () { return {}; }) : {}
   ]).then(function (got) {
+    state.client = got[4] || {};
     var raw = parseJson(got[0]['dryc.rules']);
     state.saved = JSON.stringify(raw || null);
     state.rules = normalise(raw);
@@ -318,6 +380,7 @@ function save(set) {
   var body = clone(set);
   body.rules = body.rules.map(function (r) {
     var out = { id: r.id, name: r.name, condition: { mask: r.condition.mask, state: r.condition.state & r.condition.mask } };
+    if (r.condition.voltage) { out.condition.voltage = r.condition.voltage; }
     if (r.relays.relay1 || r.relays.relay2) { out.relays = r.relays; }
     if (r.notify) { out.notify = r.notify; }
     if (r.whenActive) { out.whenActive = r.whenActive; }
@@ -332,6 +395,7 @@ function save(set) {
 }
 
 function sendRules() {
+  if (!capability().voltage && state.rules.rules.some(hasVoltage)) { return; }
   var recs = records(state.rules);
   ui.confirm('Send ' + plural(recs.length, 'record') + ' to the dry contact interface of <b>' +
     esc(state.device.label || state.device.name) + '</b>? They replace the rules it runs now, after the logger’s next uplink.', 'Send').then(function (ok) {
@@ -400,11 +464,37 @@ function render() {
       '</b>. The device runs whichever set was sent last: keep them on one station.';
     bodyEl.appendChild(warn);
   }
+  firmwareBanners().forEach(function (b) { bodyEl.appendChild(b); });
   bodyEl.appendChild(wiringStep());
   bodyEl.appendChild(rulesStep());
   bodyEl.appendChild(deviceStep(sync));
   var last = state.live.drycInput1;
   summaryEl.textContent = d ? 'Last status ' + (last ? ago(last.ts) : 'never received') : 'No device';
+}
+
+/** What the device's firmware keeps from the rules, and what to update to get it. */
+function firmwareBanners() {
+  if (!state.device) { return []; }
+  var cap = capability(), out = [];
+  function banner(kind, key, html) {
+    var b = h('<div class="ts-banner ' + kind + '" data-warn="' + key + '">' + ICON.info + '<span></span></div>');
+    b.querySelector('span').innerHTML = html;
+    out.push(b);
+  }
+  var blocked = state.rules.rules.filter(hasVoltage).length;
+  if (blocked && !cap.voltage) {
+    banner('warn', 'voltage-blocked', plural(blocked, 'rule') + ' here use the supply voltage, which this device cannot check. ' +
+      'Update its firmware as below, or remove the voltage condition, before sending.');
+  }
+  if (!cap.loggerOk) {
+    banner('warn', 'logger-fw', 'Logger firmware ' + (cap.logger ? '<b>' + esc(cap.logger) + '</b>' : 'not reported yet') +
+      '. Update it to ' + LOGGER_FW_MIN + ' or later to confirm the rules the device holds and to use supply-voltage conditions. ' +
+      'Until then the view compares only the number of rules.');
+  } else if (!cap.drycOk) {
+    banner('warn', 'dryc-fw', 'Dry contact interface firmware ' + (cap.dryc ? '<b>' + esc(cap.dryc) + '</b>' : 'not reported yet') +
+      '. Update it to ' + DRYC_FW_MIN + ' or later to confirm the rules it holds and to use supply-voltage conditions.');
+  }
+  return out;
 }
 
 function wiringStep() {
@@ -449,6 +539,7 @@ function conditionChips(r) {
     var on = !!(r.condition.state & (1 << i));
     chips.push('<span class="ts-cond">' + esc(inputLabel(i)) + ' = <b>' + esc(inputText(i, on)) + '</b></span>');
   }
+  if (r.condition.voltage) { chips.push('<span class="ts-cond"><b>' + esc(voltageText(r.condition.voltage)) + '</b></span>'); }
   return chips.join('<span class="ts-and">and</span>') || '<span class="ts-cond">no input</span>';
 }
 
@@ -542,6 +633,11 @@ function deviceStep(sync) {
   if (canSend() && sync.s !== 'waiting') {
     var needed = sync.s === 'changed' || sync.s === 'drift';
     var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '" data-a="send">Send rules to the device</button>');
+    // A LOGR2 before 0.44.0 retries a rule its DRYC refuses without end: no voltage record reaches it.
+    if (!capability().voltage && state.rules.rules.some(hasVoltage)) {
+      send.disabled = true;
+      send.title = 'A rule uses the supply voltage, which this device cannot check';
+    }
     send.addEventListener('click', sendRules);
     strip.appendChild(send);
   }
@@ -593,6 +689,41 @@ function ruleDrawer(idx) {
     count();
   });
   body.appendChild(cond);
+  // Offered only where the device runs it; a rule that already has one keeps it in
+  // view on any device, so it can be removed.
+  var cap = capability(), curV = r.condition.voltage || null;
+  var volt = h('<div class="ts-field ts-dryc-volt"><div class="ts-field-label"><span>And the supply voltage</span></div>' +
+    '<div class="ts-ctl"><div class="ts-seg" data-f="vop"></div>' +
+    '<input class="ts-input" type="number" data-f="volts" min="0.1" max="60" step="0.1" placeholder="11.5"><span class="ts-row-meta">V</span></div>' +
+    '<div class="ts-field-hint"></div></div>');
+  var vseg = volt.querySelector('[data-f=vop]'), voltsIn = volt.querySelector('[data-f=volts]');
+  [['any', 'Ignored'], ['below', 'Below'], ['above', 'Above']].forEach(function (o) {
+    var b = h('<button type="button"></button>');
+    b.dataset.v = o[0];
+    b.textContent = o[1];
+    b.setAttribute('aria-pressed', String(o[0] === (curV ? curV.op : 'any')));
+    b.disabled = !cap.voltage && o[0] !== 'any';
+    vseg.appendChild(b);
+  });
+  voltsIn.value = curV ? curV.volts : '';
+  function vop() { return vseg.querySelector('[aria-pressed=true]').dataset.v; }
+  function voltState() { voltsIn.disabled = !cap.voltage || vop() === 'any'; }
+  voltState();
+  volt.querySelector('.ts-field-hint').textContent = cap.voltage
+    ? 'Checked by the device together with the inputs. It reacts once the voltage has stayed past the threshold for a few seconds.'
+    : !state.device ? 'Needs a device on this station that runs logger firmware ' + LOGGER_FW_MIN + ' and dry contact interface firmware ' + DRYC_FW_MIN + '.'
+    : 'Needs logger firmware ' + LOGGER_FW_MIN + ' and dry contact interface firmware ' + DRYC_FW_MIN + '. This device reports ' +
+      (cap.logger || 'no logger version') + ' and ' + (cap.dryc || 'no interface version') + '.';
+  volt.hidden = !cap.voltage && !curV;
+  vseg.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b || b.disabled) { return; }
+    vseg.querySelectorAll('button').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+    voltState();
+    count();
+  });
+  voltsIn.addEventListener('input', function () { count(); });
+  body.appendChild(volt);
   var acts = h('<div class="ts-field"><div class="ts-field-label"><span>Then</span></div>' +
     '<label class="ts-switch"><input type="checkbox" data-f="relay1"> <span></span></label>' +
     '<label class="ts-switch"><input type="checkbox" data-f="relay2"> <span></span></label>' +
@@ -639,7 +770,9 @@ function ruleDrawer(idx) {
       if (v !== 'any') { out.condition.mask |= 1 << i; }
       if (v === 'on') { out.condition.state |= 1 << i; }
     });
-    out.relays = { relay1: acts.querySelector('[data-f=relay1]').checked, relay2: acts.querySelector('[data-f=relay2]').checked };
+    var volts = Math.round(Number(voltsIn.value) * 10) / 10;
+    if (vop() !== 'any' && volts > 0) { out.condition.voltage = { op: vop(), volts: volts }; }
+    out.relays ={ relay1: acts.querySelector('[data-f=relay1]').checked, relay2: acts.querySelector('[data-f=relay2]').checked };
     out.notify = acts.querySelector('[data-f=notify]').checked ? { severity: sevSel.value } : null;
     out.whenActive = out.notify ? activeIn.value.trim() : '';
     out.whenInactive = out.notify ? inactiveIn.value.trim() : '';
@@ -660,9 +793,11 @@ function ruleDrawer(idx) {
   count();
   var primary = ui.drawerActions(dr, creating ? 'Add rule' : 'Save');
   primary.addEventListener('click', function () {
-    var x = read();
+    var x = read(), volts = Number(voltsIn.value);
     var problem = !x.name ? 'Give the rule a name.'
-      : !x.condition.mask ? 'Set at least one input.'
+      : vop() !== 'any' && !(volts >= 0.1 && volts <= 60) ? 'Give a supply voltage from 0.1 to 60 V.'
+      : x.condition.voltage && !cap.voltage ? 'This device cannot check the supply voltage: set it to Ignored.'
+      : !x.condition.mask && !x.condition.voltage ? 'Set at least one input or the supply voltage.'
       : !(x.relays.relay1 || x.relays.relay2 || x.notify) ? 'Pick what the rule does: a relay, an alarm or both.'
       : records(draftSet()).length > MAX_RECORDS ? 'That needs more than ' + MAX_RECORDS + ' records on the device.'
       : null;
