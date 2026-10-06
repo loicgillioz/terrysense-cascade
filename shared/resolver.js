@@ -91,12 +91,6 @@ var CONTACT_BOOK_KIND = 'ContactBook';
 var TEXT_CATALOGUE_KEY = 'alarmTextByLanguage';
 var DEFAULT_LANGUAGE = 'en';
 
-/** A name's label in `language`, else its English one (vocabulary.md §6). */
-function dictionaryLabel(spec, language) {
-  var text = ((spec.translations || {})[language] || {}).label;
-  return text ? { value: text, source: 'Channel dictionary · ' + language } : { value: spec.label, source: 'Channel dictionary' };
-}
-
 function isTextKey(name) { return /^(alarmText|emailText)\./.test(name); }
 
 // -- kind spelling ------------------------------------------------------
@@ -297,9 +291,9 @@ function resolveField(chain, channel, kind, field, io, cache) {
       return { value: hit.value, level: hit.level, source: levelDisplay(hit.level), overrideKey: hit.key };
     }
     if (field === 'label') {
-      return Promise.all([defaultsJson('channelNames', io, cache), firstSet(chain, CONFIG_PREFIX + 'language', io, cache)]).then(function (got) {
-        var label = dictionaryLabel(got[0][split.name] || {}, got[1] ? String(got[1].value) : DEFAULT_LANGUAGE);
-        return label.value ? { value: label.value, level: null, source: label.source, overrideKey: chanKey } : null;
+      return defaultsJson('channelNames', io, cache).then(function (names) {
+        var label = (names[split.name] || {}).label;
+        return label ? { value: label, level: null, source: 'Channel dictionary', overrideKey: chanKey } : null;
       });
     }
     return null;
