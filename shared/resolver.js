@@ -707,6 +707,28 @@ function deviceChannels(chain, io, cache) {
 
 // -- resolve a station --------------------------------------------------
 
+/** `effective.messageLabels`: the dictionary labels of the station's channels
+ * in its `effective.language`, for alarm messages only (ALARMING.md §4).
+ * `effective.<channel>.label` stays English, and a label a level sets is never
+ * translated. Mirrors `_resolve_message_labels` in config_resolver.py. */
+function messageLabels(scalarEntries, channelEntries, names) {
+  var lang = scalarEntries.filter(function (e) { return e.effectiveKey === EFFECTIVE_PREFIX + 'language'; })[0];
+  var language = lang ? String(lang.value) : null;
+  if (!language || language === DEFAULT_LANGUAGE) { return []; }
+  var labels = {}, any = false;
+  channelEntries.forEach(function (e) {
+    if (!/\.label$/.test(e.effectiveKey) || e.source !== 'Channel dictionary') { return; }
+    var channel = e.effectiveKey.slice(EFFECTIVE_PREFIX.length, -'.label'.length);
+    var split = splitChannelKey(channel);
+    var text = (((names[split.name] || {}).translations || {})[language] || {}).label;
+    if (text) { labels[channel] = split.instance ? text + ' ' + split.instance : text; any = true; }
+  });
+  return any ? [{
+    effectiveKey: EFFECTIVE_PREFIX + 'messageLabels', overrideKey: CONFIG_PREFIX + 'language',
+    value: labels, source: 'Channel dictionary · ' + language, level: null
+  }] : [];
+}
+
 /** Side-effect-free resolution of one STATION's full `effective.*` block — or
  * a DEVICE's: its own limits and retention, no notification key. */
 function resolveStation(station, io, cache) {
@@ -714,6 +736,7 @@ function resolveStation(station, io, cache) {
   var device = station.entityType === 'DEVICE';
   return buildChain(station, io).then(function (chain) {
     return Promise.all([attrsOf(chain[0], io, cache), channelNamesOf(io, cache)]).then(function (got) {
+      var names = got[1];
       return (device ? deviceChannels(chain, io, cache) : Promise.resolve(channelsFromAttrs(got[0], got[1]))).then(function (keys) {
         var channelEntries = [];
         var fields = channelFields();
@@ -738,7 +761,7 @@ function resolveStation(station, io, cache) {
           return Promise.all([device ? resolveDeviceScalars(chain, io, cache) : resolveScalars(chain, io, cache),
             device ? [] : unitFactors(keys, io, cache)]);
         }).then(function (got) {
-          var entries = got[0].concat(channelEntries, got[1]);
+          var entries = got[0].concat(channelEntries, messageLabels(got[0], channelEntries, names), got[1]);
           var effective = {};
           entries.forEach(function (e) { effective[e.effectiveKey] = e.value; });
           return { station: station, chain: chain, measuredKeys: keys, entries: entries, effective: effective };
