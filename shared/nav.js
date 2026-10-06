@@ -27,7 +27,7 @@
  * and `devicesDashboardId`, `projectDashboardId`. A link that does not apply to
  * the bound entity is left out.
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
+ * Loads after shared/i18n.js, resolver.js, glossary.js, ui.js and tb_io.js.
  */
 
 (function (root) {
@@ -46,7 +46,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
   opts = opts || {};
   var links = opts.links || [];
   if (!links.length) { return; }
-  var h = ui.h, ICON = ui.ICON;
+  var h = ui.h, ICON = ui.ICON, t = root.TerrySenseI18n(ctx);
   var bar = card.insertBefore(h('<nav class="ts-nav"></nav>'), card.firstChild);
 
   function button(id, icon, text, onClick) {
@@ -76,24 +76,24 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
   var stationsOfDevice = null;
   function deviceStations(e) { return stationsOfDevice || (stationsOfDevice = tb.deviceStations(e).catch(function () { return []; })); }
 
-  function openProject(p) { button('project', ICON_PROJECT, 'Project: ' + p.name, function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }); }
+  function openProject(p) { button('project', ICON_PROJECT, t('nav.projectOf', 'Project: {name}', { name: p.name }), function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }); }
   function openStation(s, text) { button('station', ICON_STATION, text, function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }); }
 
   var LINKS = {
-    fleet: function () { button('fleet', ICON.back, 'Fleet', function () { landing(opts.devicesDashboardId); }); },
+    fleet: function () { button('fleet', ICON.back, t('nav.fleet', 'Fleet'), function () { landing(opts.devicesDashboardId); }); },
     firmware: function () {
-      button('firmware', ICON_CHIP, 'Firmware', function () {
+      button('firmware', ICON_CHIP, t('nav.firmware', 'Firmware'), function () {
         var sc = ctx.stateController;
         if (onDashboard(opts.devicesDashboardId) && sc) { sc.openState('firmware', {}, false); } else { tb.openDashboard(opts.devicesDashboardId); }
       });
     },
     device: function (e) {
       if (e.entityType !== 'DEVICE') { return; }
-      button('device', ICON.gauge, 'Device: ' + e.name, function () { tb.openDashboard(opts.devicesDashboardId, 'device', e); });
+      button('device', ICON.gauge, t('nav.deviceOf', 'Device: {name}', { name: e.name }), function () { tb.openDashboard(opts.devicesDashboardId, 'device', e); });
     },
     relays: function (e) {
       if (e.kind !== 'Station') { return; }
-      var go = function () { button('relays', ICON_RELAY, 'Dry contact interface', function () { tb.openDashboard(opts.projectDashboardId, 'dryc', e); }); };
+      var go = function () { button('relays', ICON_RELAY, t('nav.relays', 'Dry contact interface'), function () { tb.openDashboard(opts.projectDashboardId, 'dryc', e); }); };
       return tb.attrsMap(e).then(function (attrs) {
         if (attrs['dryc.rules']) { go(); return null; }
         // A LOGR2 has a DRYC once it has reported a `dryc.` reading.
@@ -107,7 +107,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
         });
       });
     },
-    projects: function () { button('projects', ICON.back, 'Projects', function () { landing(opts.projectDashboardId); }); },
+    projects: function () { button('projects', ICON.back, t('nav.projects', 'Projects'), function () { landing(opts.projectDashboardId); }); },
     project: function (e) {
       if (e.entityType === 'DEVICE') {
         return deviceStations(e).then(function (stations) {
@@ -119,29 +119,29 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
       if (e.kind === 'Project') { openProject(e); return; }
       return tb.ancestors(e).then(function (chain) {
         var p = chain.filter(function (a) { return a.kind === 'Project'; })[0];
-        if (p) { openProject(p); } else { missing('project', 'On no project'); }
+        if (p) { openProject(p); } else { missing('project', t('nav.noProject', 'On no project')); }
       });
     },
     home: function (e) {
       if (e.kind !== 'Project') { return; }
       return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.homeDashboard']); }).then(function (id) {
-        if (id) { button('home', ICON_HOME, 'Project dashboard', function () { tb.openDashboard(id); }); }
+        if (id) { button('home', ICON_HOME, t('nav.home', 'Project dashboard'), function () { tb.openDashboard(id); }); }
       });
     },
     station: function (e) {
       if (e.entityType === 'DEVICE') {
         return deviceStations(e).then(function (stations) {
-          if (!stations.length) { missing('station', 'On no station'); }
-          stations.forEach(function (s) { openStation(s, 'Station: ' + s.name); });
+          if (!stations.length) { missing('station', t('nav.noStation', 'On no station')); }
+          stations.forEach(function (s) { openStation(s, t('nav.stationOf', 'Station: {name}', { name: s.name })); });
         });
       }
-      if (e.kind === 'Station') { openStation(e, 'Station'); }
+      if (e.kind === 'Station') { openStation(e, t('nav.station', 'Station')); }
     },
     charts: function (e) {
       if (e.kind !== 'Station') { return; }
       return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.stationDashboard']); }).then(function (id) {
-        if (!id) { missing('charts', 'No charts dashboard yet'); return; }
-        button('charts', ICON_CHART, 'Charts', function () { tb.openDashboard(id, 'station', e); });
+        if (!id) { missing('charts', t('nav.noCharts', 'No charts dashboard yet')); return; }
+        button('charts', ICON_CHART, t('nav.charts', 'Charts'), function () { tb.openDashboard(id, 'station', e); });
       });
     },
     customer: function () {
@@ -149,13 +149,13 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
       return tb.currentUser().then(function (me) {
         if (me.authority === 'TENANT_ADMIN' || !me.customerId) { return; }
         var c = { entityType: 'CUSTOMER', id: me.customerId.id };
-        button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(opts.projectDashboardId, 'settings', c); });
+        button('settings', ICON.gear, t('nav.settings', 'Settings'), function () { tb.openDashboard(opts.projectDashboardId, 'settings', c); });
       });
     },
     settings: function (e) {
       if (tb.isPublicView()) { return; }
       var dashboard = e.entityType === 'DEVICE' ? opts.devicesDashboardId : opts.projectDashboardId;
-      button('settings', ICON.gear, 'Settings', function () { tb.openDashboard(dashboard, 'settings', e); });
+      button('settings', ICON.gear, t('nav.settings', 'Settings'), function () { tb.openDashboard(dashboard, 'settings', e); });
     }
   };
 

@@ -125,7 +125,8 @@ root.TerrySenseUi = function (rootEl) {
   function confirm(html, okLabel) {
     return new Promise(function (resolve) {
       var el = h('<div class="ts-confirm"><div class="ts-confirm-box"><p></p><div class="ts-confirm-actions">' +
-        '<button type="button" class="ts-btn" data-a="no">Cancel</button><button type="button" class="ts-btn primary" data-a="yes"></button></div></div></div>');
+        '<button type="button" class="ts-btn" data-a="no"></button><button type="button" class="ts-btn primary" data-a="yes"></button></div></div></div>');
+      el.querySelector('[data-a=no]').textContent = root.TerrySenseT('common.cancel', 'Cancel');
       el.querySelector('p').innerHTML = html;
       el.querySelector('[data-a=yes]').textContent = okLabel;
       el.addEventListener('click', function (e) {
@@ -172,10 +173,11 @@ root.TerrySenseUi = function (rootEl) {
   /** Footer with Cancel + primary action; returns the primary button. */
   function drawerActions(drawer, label) {
     drawer.foot.hidden = false;
-    drawer.foot.innerHTML = '<span class="ts-spacer"></span><button type="button" class="ts-btn">Cancel</button><button type="button" class="ts-btn primary"></button>';
+    drawer.foot.innerHTML = '<span class="ts-spacer"></span><button type="button" class="ts-btn"></button><button type="button" class="ts-btn primary"></button>';
+    drawer.foot.querySelector('.ts-btn').textContent = root.TerrySenseT('common.cancel', 'Cancel');
     drawer.foot.querySelector('.ts-btn').addEventListener('click', closeDrawer);
     var primary = drawer.foot.querySelector('.primary');
-    primary.textContent = label || 'Save';
+    primary.textContent = label || root.TerrySenseT('common.save', 'Save');
     return primary;
   }
 
@@ -327,7 +329,7 @@ root.TerrySenseUi = function (rootEl) {
       list.filter(function (i) { return !i.tenantOnly; }).forEach(add);
       var tenant = opts.tenant ? list.filter(function (i) { return i.tenantOnly; }) : [];
       if (tenant.length) {
-        box.appendChild(h('<div class="ts-menu-head">Tenant only</div>'));
+        box.appendChild(h('<div class="ts-menu-head"></div>')).textContent = root.TerrySenseT('common.tenantOnly', 'Tenant only');
         tenant.forEach(add);
       }
       pop = popover(btn, box);
@@ -338,7 +340,8 @@ root.TerrySenseUi = function (rootEl) {
 
   /** A *Tenant only* block for a form or panel, holding `node`: add it only for the tenant. */
   function tenantSection(node) {
-    var el = h('<div class="ts-tenant-only"><div class="ts-section-head">Tenant only</div></div>');
+    var el = h('<div class="ts-tenant-only"><div class="ts-section-head"></div></div>');
+    el.firstChild.textContent = root.TerrySenseT('common.tenantOnly', 'Tenant only');
     el.appendChild(node);
     return el;
   }

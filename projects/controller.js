@@ -11,7 +11,7 @@
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
  *
- * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js; loads
+ * Loads after shared/i18n.js, resolver.js, glossary.js, ui.js and tb_io.js; loads
  * Leaflet and Leaflet.markercluster itself.
  */
 
@@ -19,6 +19,7 @@ window.TerrySenseProjects = function (ctx, container, opts) {
 
 opts = opts || {};
 var G = window.TerrySenseGlossary;
+var t = window.TerrySenseI18n(ctx);
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
@@ -30,8 +31,8 @@ var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var HOME_KEY = 'config.homeDashboard';
 var STATUS = {
-  ok: { id: 'ok', label: 'OK', color: 'var(--ts-ok)', rank: 1 },
-  none: { id: 'none', label: 'No station', color: 'var(--ts-nodata)', rank: 0 }
+  ok: { id: 'ok', label: t('projects.ok', 'OK'), color: 'var(--ts-ok)', rank: 1 },
+  none: { id: 'none', label: t('projects.noStation', 'No station'), color: 'var(--ts-nodata)', rank: 0 }
 };
 var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
@@ -144,7 +145,7 @@ function statusOf(entry) {
     });
   });
   if (!worst) { return STATUS.ok; }
-  return { id: 'alarm', label: G.severity(worst).label, color: 'var(--sev-' + worst + ')', rank: 10 + G.rank(worst) };
+  return { id: 'alarm', label: t.severity(worst, G.severity(worst).label), color: 'var(--sev-' + worst + ')', rank: 10 + G.rank(worst) };
 }
 
 function worstOf(entries) {
@@ -182,15 +183,15 @@ function visible() { return state.projects.filter(function (p) { return !state.o
 var cardEl = h(
   '<div class="ts-card ts-proj ts-projs">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
-  '    <div class="ts-head-text"><div class="ts-title">Projects</div><div class="ts-subtitle"></div></div>' +
+  '    <div class="ts-head-text"><div class="ts-title">' + esc(t('projects.title', 'Projects')) + '</div><div class="ts-subtitle"></div></div>' +
   '    <span class="ts-proj-worst"></span></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list">' +
-  '    <div class="ts-projs-bar"><div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="Search projects"></div>' +
-  '      <select class="ts-select ts-projs-owner" data-f="customer" title="Customer" hidden></select>' +
-  '      <button type="button" class="ts-btn" data-a="new-project" hidden>' + ICON.plus + ' New project</button></div>' +
-  '    <div class="ts-projs-rows"><div class="ts-loading">Loading…</div></div></div></div>' +
+  '    <div class="ts-projs-bar"><div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="' + esc(t('projects.search', 'Search projects')) + '"></div>' +
+  '      <select class="ts-select ts-projs-owner" data-f="customer" title="' + esc(t('projects.customer', 'Customer')) + '" hidden></select>' +
+  '      <button type="button" class="ts-btn" data-a="new-project" hidden>' + ICON.plus + ' ' + esc(t('projects.new', 'New project')) + '</button></div>' +
+  '    <div class="ts-projs-rows"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
-  '    <button type="button" class="ts-btn ts-proj-refresh">Refresh</button></div>' +
+  '    <button type="button" class="ts-btn ts-proj-refresh">' + esc(t('common.refresh', 'Refresh')) + '</button></div>' +
   '</div>');
 root.appendChild(cardEl);
 window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
@@ -235,7 +236,11 @@ function initMap() {
   var aerial = L.tileLayer(SWISSTOPO + 'swissimage/default/current/3857/{z}/{x}/{y}.jpeg',
     { maxZoom: 20, attribution: '&copy; swisstopo' });
   osm.addTo(map);
-  L.control.layers({ 'Map': osm, 'Swiss map': swiss, 'Aerial': aerial }, null, { position: 'topright' }).addTo(map);
+  var layers = {};
+  layers[t('map.map', 'Map')] = osm;
+  layers[t('map.swiss', 'Swiss map')] = swiss;
+  layers[t('map.aerial', 'Aerial')] = aerial;
+  L.control.layers(layers, null, { position: 'topright' }).addTo(map);
   areaLayer = L.layerGroup().addTo(map);
   clusterLayer = L.markerClusterGroup({
     showCoverageOnHover: false, maxClusterRadius: 40, zoomToBoundsOnClick: false,
@@ -296,12 +301,12 @@ function highlight(projectId, on) {
 
 function renderHeader() {
   var shown = visible(), n = shown.length;
-  cardEl.querySelector('.ts-subtitle').textContent = n + (n === 1 ? ' project' : ' projects') +
-    (state.owner && n ? ' of ' + shown[0].owner : '');
+  cardEl.querySelector('.ts-subtitle').textContent = (n === 1 ? t('projects.countOne', '1 project') : t('projects.countMany', '{n} projects', { n: n })) +
+    (state.owner && n ? t('projects.ofOwner', ' of {owner}', { owner: shown[0].owner }) : '');
   var worstEl = cardEl.querySelector('.ts-proj-worst');
   worstEl.innerHTML = '';
   if (n) { worstEl.appendChild(chip(worstOf(shown))); }
-  cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
+  cardEl.querySelector('.ts-proj-updated').textContent = t('common.updated', 'Updated {time}', { time: fmtTime(state.loadedAt) });
 }
 
 function matches(entry) {
@@ -312,18 +317,19 @@ function matches(entry) {
 function renderList() {
   listEl.innerHTML = '';
   if (!state.projects.length) {
-    fail('No project to show.');
+    fail(t('projects.none', 'No project to show.'));
     return;
   }
   var shown = visible().filter(function (p) { return (!state.filter || state.filter.indexOf(p.project.id) >= 0) && matches(p); });
   if (state.filter) {
-    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every project">' + ICON.close + '</button></div>');
-    bar.querySelector('span').textContent = shown.length === 1 ? 'Showing ' + shown[0].project.name : 'Showing ' + shown.length + ' projects';
+    var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="' + esc(t('projects.showAll', 'Show every project')) + '">' + ICON.close + '</button></div>');
+    bar.querySelector('span').textContent = shown.length === 1 ? t('projects.showingOne', 'Showing {name}', { name: shown[0].project.name })
+      : t('projects.showingMany', 'Showing {n} projects', { n: shown.length });
     bar.querySelector('button').addEventListener('click', function () { select(null); });
     listEl.appendChild(bar);
   }
   if (!shown.length) {
-    listEl.appendChild(h('<div class="ts-empty">No project matches.</div>'));
+    listEl.appendChild(h('<div class="ts-empty"></div>')).textContent = t('projects.noMatch', 'No project matches.');
     return;
   }
   if (manyOwners() && !state.owner) {
@@ -342,7 +348,7 @@ function renderList() {
   if (unplaced.length) {
     var card = listEl.appendChild(h('<div class="ts-proj-loc unplaced"></div>'));
     var head = card.appendChild(h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + ICON_UNPLACE + '</span>' +
-      '<span class="ts-proj-group-name">No position</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
+      '<span class="ts-proj-group-name">' + esc(t('projects.noPosition', 'No position')) + '</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
     head.querySelector('.ts-count').textContent = unplaced.length;
     head.appendChild(chip(worstOf(unplaced)));
     var ubody = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
@@ -369,10 +375,10 @@ function ownerGroup(o, mine) {
 
 function metaText(entry) {
   var n = inService(entry).length, gone = entry.stations.length - n, alarmed = inAlarm(entry);
-  var parts = entry.latLng ? [] : ['No position'];
-  parts.push(n === 1 ? '1 station' : n + ' stations');
-  if (gone) { parts.push(gone + ' retired'); }
-  if (alarmed) { parts.push(alarmed + ' in alarm'); }
+  var parts = entry.latLng ? [] : [t('projects.noPosition', 'No position')];
+  parts.push(n === 1 ? t('projects.stationOne', '1 station') : t('projects.stationMany', '{n} stations', { n: n }));
+  if (gone) { parts.push(t('projects.retired', '{n} retired', { n: gone })); }
+  if (alarmed) { parts.push(t('projects.inAlarm', '{n} in alarm', { n: alarmed })); }
   return parts.join(' · ');
 }
 
@@ -388,7 +394,7 @@ function projectRow(entry) {
   el.addEventListener('click', function (e) { if (!e.target.closest('button')) { open(); } });
   el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { open(); } });
   if (entry.homeId) {
-    var home = h('<button type="button" class="ts-btn" data-a="home">' + ICON_HOME + ' Project dashboard</button>');
+    var home = h('<button type="button" class="ts-btn" data-a="home">' + ICON_HOME + ' ' + esc(t('nav.home', 'Project dashboard')) + '</button>');
     home.addEventListener('click', function () { tb.openDashboard(entry.homeId); });
     side.appendChild(home);
   }
@@ -403,7 +409,7 @@ function renderOwners() {
   ownerEl.hidden = list.length < 2;
   if (list.every(function (o) { return o.key !== state.owner; })) { state.owner = ''; }
   ownerEl.innerHTML = '';
-  ownerEl.appendChild(h('<option value="">All customers</option>'));
+  ownerEl.appendChild(h('<option value=""></option>')).textContent = t('projects.allCustomers', 'All customers');
   list.forEach(function (o) {
     var opt = ownerEl.appendChild(h('<option></option>'));
     opt.value = o.key;
@@ -425,13 +431,13 @@ function render() {
  * opens in its Project view with the map in edit mode. */
 function openNew() {
   var tenant = state.me.authority === 'TENANT_ADMIN';
-  var dr = ui.openDrawer('New project', tenant ? '' : 'Owned by your organisation');
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label">Name</div><input class="ts-input wide" data-f="name"></div>'));
+  var dr = ui.openDrawer(t('projects.new', 'New project'), tenant ? '' : t('projects.ownedByYou', 'Owned by your organisation'));
+  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label">' + esc(t('common.name', 'Name')) + '</div><input class="ts-input wide" data-f="name"></div>'));
   var input = dr.body.querySelector('[data-f=name]');
   var owner = null;
   if (tenant) {
     owner = h('<select class="ts-select wide" data-f="owner"><option value="">in-terra</option></select>');
-    var field = h('<div class="ts-field"><div class="ts-field-label">Owner</div></div>');
+    var field = h('<div class="ts-field"><div class="ts-field-label">' + esc(t('common.owner', 'Owner')) + '</div></div>');
     field.appendChild(owner);
     dr.body.appendChild(ui.tenantSection(field));
     tb.getAll('/api/customers').then(function (list) {
@@ -441,9 +447,9 @@ function openNew() {
           o.value = c.id.id;
           o.textContent = c.title;
         });
-    }).catch(function (err) { ui.toast('Customers not loaded: ' + errText(err), 'error'); });
+    }).catch(function (err) { ui.toast(t('projects.customersFailed', 'Customers not loaded: {error}', { error: errText(err) }), 'error'); });
   }
-  var go = ui.drawerActions(dr, 'Create');
+  var go = ui.drawerActions(dr, t('common.create', 'Create'));
   go.disabled = true;
   input.addEventListener('input', function () { go.disabled = !input.value.trim(); });
   go.addEventListener('click', function () {
@@ -456,7 +462,7 @@ function openNew() {
       tb.openDashboard(opts.projectDashboardId, 'project', tb.assetLevel(created), { editMap: true });
     }).catch(function (err) {
       go.disabled = false;
-      ui.toast('Project not created: ' + errText(err), 'error');
+      ui.toast(t('projects.createFailed', 'Project not created: {error}', { error: errText(err) }), 'error');
     });
   });
   setTimeout(function () { input.focus(); }, 0);
@@ -469,7 +475,7 @@ function refresh() {
   if (!root.isConnected && timer) { clearInterval(timer); return Promise.resolve(); }
   refreshBtn.disabled = true;
   return load().then(render).catch(function (err) {
-    ui.toast('Refresh failed: ' + errText(err), 'error');
+    ui.toast(t('common.refreshFailed', 'Refresh failed: {error}', { error: errText(err) }), 'error');
   }).then(function () { refreshBtn.disabled = false; });
 }
 
@@ -491,13 +497,13 @@ tb.currentUser().then(function (me) {
   newBtn.hidden = !state.canCreateAssets;
   return Promise.all([
     loadMapLibraries().then(initMap).catch(function (err) {
-      mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = 'The map could not load: ' + errText(err);
+      mapEl.appendChild(h('<div class="ts-empty"></div>')).textContent = t('map.failed', 'The map could not load: {error}', { error: errText(err) });
     }),
     load()
   ]);
 }).then(function () {
   render();
   timer = setInterval(refresh, REFRESH_MS);
-}).catch(function (err) { fail('Could not load: ' + errText(err)); });
+}).catch(function (err) { fail(t('common.loadFailed', 'Could not load: {error}', { error: errText(err) })); });
 
 };
