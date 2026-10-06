@@ -103,7 +103,7 @@ var openDashboard = tb.openDashboard;
 var state = {
   entity: null, owner: null, names: {}, kinds: {}, calcAttributes: {}, projectAttrs: {}, stations: [], loadedAt: 0,
   canEdit: false, canCreateDashboards: false, editMap: false, filter: null, placing: null, adding: null,
-  publicReport: null, pub: null, pubDash: null, home: null, showRetired: false, followUps: {}, ghost: null
+  publicReport: null, pub: null, pubDash: null, home: null, homeLost: false, showRetired: false, followUps: {}, ghost: null
 };
 
 function loadNames() {
@@ -192,6 +192,8 @@ function load() {
   }).then(function (got) {
     state.stations = got[0].sort(function (a, b) { return a.station.name.localeCompare(b.station.name); });
     state.home = got[1];
+    // A link to a dashboard deleted since, or one the user cannot read.
+    state.homeLost = state.canEdit && !got[1] && !!state.projectAttrs[HOME_KEY];
     state.loadedAt = Date.now();
   });
 }
@@ -516,6 +518,7 @@ function renderList() {
     listEl.appendChild(h('<div class="ts-proj-tools"><button type="button" class="ts-btn" data-a="add-station">' + ICON.plus + ' Add station</button></div>'))
       .firstChild.addEventListener('click', openAdd);
   }
+  if (state.homeLost) { listEl.appendChild(lostHomeBanner()); }
   state.stations.forEach(function (entry) {
     var card = state.followUps[entry.station.id] && followUpCard(entry);
     if (card) { listEl.appendChild(card); }
@@ -705,19 +708,43 @@ function publishHome(id, stations) {
   return work;
 }
 
+/** A lost public link: the project still in its owner's public group, its dashboard gone. */
+function lostLink() { return state.homeLost && isPublic(state.entity.id); }
+
 /** *Create project dashboard*; `then` follows the creation instead of opening the new dashboard. */
 function openCreateHome(intro, then) {
-  var was = state.home, wasPublic = linkOn();
+  var was = state.home, wasPublic = linkOn() || lostLink();
   templates.openCreateHome({ project: state.entity, owner: state.owner, entries: active(), names: state.names, kinds: state.kinds,
     replaces: was && was.title, intro: intro,
     done: function (id, stations) {
-      // A replaced dashboard hands its public link over to the new one.
-      var work = wasPublic ? tb.setPublic(dashRef(was.id), state.owner, false).then(function () {
+      // A replaced or lost dashboard hands its public link over to the new one.
+      var work = wasPublic ? (was ? tb.setPublic(dashRef(was.id), state.owner, false) : Promise.resolve()).then(function () {
         return publishHome(id, stations);
       }) : Promise.resolve();
       work.then(refreshAll).then(function () { if (then) { then(); } else { openDashboard(id); } })
         .catch(function (err) { ui.toast('Public link not moved: ' + errText(err), 'error'); });
     } });
+}
+
+/** The project's `config.homeDashboard` names a dashboard deleted since, or one
+ * the user cannot read: *Create a new one* or *Unlink*, as the Charts dashboard panel offers. */
+function lostHomeBanner() {
+  var el = h('<div class="ts-banner warn ts-proj-lost">' + ICON.info + '<div class="ts-grow"><div></div>' +
+    '<div class="ts-proj-lost-acts"></div></div></div>');
+  el.querySelector('.ts-grow').firstChild.textContent = 'The project dashboard no longer exists, or you cannot read it.' +
+    (lostLink() ? ' Its public link opens nothing; a new one takes it over.' : '');
+  var acts = el.querySelector('.ts-proj-lost-acts');
+  if (state.canCreateDashboards) {
+    acts.appendChild(h('<button type="button" class="ts-btn" data-a="recreate-home">Create a new one</button>'))
+      .addEventListener('click', function () { openCreateHome(); });
+  }
+  acts.appendChild(h('<button type="button" class="ts-btn ghost" data-a="unlink-home">Unlink</button>')).addEventListener('click', function () {
+    tb.deleteAttrs(state.entity, [HOME_KEY]).then(function () {
+      ui.toast('Project dashboard unlinked from ' + state.entity.name);
+      return refreshAll();
+    }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+  });
+  return el;
 }
 
 function openAddHome(entry) {
