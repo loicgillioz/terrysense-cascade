@@ -15,12 +15,14 @@
 
 root.TerrySenseLifecycle = function (ui, tb) {
   var G = root.TerrySenseGlossary;
+  var t = root.TerrySenseT;
   var h = ui.h, esc = ui.esc;
   var EVENING_HOUR = 18;
 
   function errText(e) { return (e && e.error && e.error.message) || (e && e.message) || String(e); }
 
-  function fail(what) { return function (err) { ui.toast(what + ': ' + errText(err), 'error'); }; }
+  /** `what` is a message with an `{error}` placeholder. */
+  function fail(what) { return function (err) { ui.toast(what.split('{error}').join(errText(err)), 'error'); }; }
 
   function names(list) { return list.map(function (e) { return '<b>' + esc(e.name) + '</b>'; }).join(', '); }
 
@@ -28,16 +30,18 @@ root.TerrySenseLifecycle = function (ui, tb) {
   function rename(entity, target, done) {
     ui.inlineEdit(target, entity.name, function (name) {
       return tb.renameEntity(entity, name).then(function () {
-        ui.toast('Renamed to ' + name);
+        ui.toast(t('lifecycle.renamed', 'Renamed to {name}', { name: name }));
         done(name);
       });
     });
   }
 
   function valueText(key, v) {
-    if (v === undefined || v === null || v === '') { return 'none'; }
-    if (Array.isArray(v)) { return v.length + (v.length === 1 ? ' contact' : ' contacts'); }
-    if (/\.ttlDays$/.test(key)) { return v + ' days'; }
+    if (v === undefined || v === null || v === '') { return t('common.none', 'none'); }
+    if (Array.isArray(v)) {
+      return v.length === 1 ? t('common.contactOne', '1 contact') : t('common.contactMany', '{n} contacts', { n: v.length });
+    }
+    if (/\.ttlDays$/.test(key)) { return t('common.days', '{n} days', { n: v }); }
     var s = typeof v === 'object' ? JSON.stringify(v) : String(v);
     return s.length > 40 ? s.slice(0, 39) + '…' : s;
   }
@@ -54,12 +58,12 @@ root.TerrySenseLifecycle = function (ui, tb) {
   /** *Move to project…* (CA-11): the owner's other projects; the confirmation
    * lists the settings that change, resolved on the new chain; `done(project)`. */
   function moveStation(station, attrs, from, owner, done) {
-    var dr = ui.openDrawer('Move to project…', esc(station.name));
-    dr.body.appendChild(h('<div class="ts-loading">Loading the projects…</div>'));
+    var dr = ui.openDrawer(esc(t('lifecycle.move.title', 'Move to project…')), esc(station.name));
+    dr.body.appendChild(h('<div class="ts-loading"></div>')).textContent = t('lifecycle.move.loading', 'Loading the projects…');
     tb.ownerProjects(owner).then(function (projects) {
       dr.body.innerHTML = '';
       var others = projects.filter(function (p) { return p.id !== from.id; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
-      if (!others.length) { dr.body.appendChild(h('<div class="ts-empty">The owner has no other project.</div>')); }
+      if (!others.length) { dr.body.appendChild(h('<div class="ts-empty"></div>')).textContent = t('lifecycle.move.noOther', 'The owner has no other project.'); }
       others.forEach(function (p) {
         var o = dr.body.appendChild(h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div></div></div>'));
         o.setAttribute('data-project', p.name);
@@ -70,69 +74,76 @@ root.TerrySenseLifecycle = function (ui, tb) {
 
     function confirmMove(to) {
       tb.settingChanges(station, to).then(function (changes) {
-        return ui.confirm('Move <b>' + esc(station.name) + '</b> from <b>' + esc(from.name) + '</b> to <b>' + esc(to.name) + '</b>? ' +
-          'Its history, alarms, dashboard and channels stay. ' +
-          (changes.length ? (changes.length === 1 ? 'This setting changes:' : 'These ' + changes.length + ' settings change:') + changeList(changes, attrs)
-            : 'No setting changes.'), 'Move');
+        return ui.confirm(t('lifecycle.move.confirm', 'Move <b>{station}</b> from <b>{from}</b> to <b>{to}</b>? Its history, alarms, dashboard and channels stay.',
+          { station: esc(station.name), from: esc(from.name), to: esc(to.name) }) + ' ' +
+          (changes.length ? (changes.length === 1 ? t('lifecycle.move.changeOne', 'This setting changes:')
+            : t('lifecycle.move.changeMany', 'These {n} settings change:', { n: changes.length })) + changeList(changes, attrs)
+            : t('lifecycle.move.noChange', 'No setting changes.')), t('common.move', 'Move'));
       }).then(function (ok) {
         if (!ok) { return null; }
         return tb.moveStation(station, from, to).then(function () {
           ui.closeDrawer();
-          ui.toast(station.name + ' moved to ' + to.name);
+          ui.toast(t('lifecycle.move.done', '{station} moved to {to}', { station: station.name, to: to.name }));
           done(to);
         });
-      }).catch(fail('Not moved'));
+      }).catch(fail(t('common.notMoved', 'Not moved: {error}')));
     }
   }
 
   /** *Public* / *Private* (CA-12): in or out of the owner's public group.
    * `projectPublic` false: the project has no public link, so nothing shows the station yet. */
   function setPublic(entity, owner, on, done, projectPublic) {
-    var text = !on ? 'Make <b>' + esc(entity.name) + '</b> private? The public link no longer shows it.'
-      : projectPublic === false ? 'Make <b>' + esc(entity.name) + '</b> public? Its project has no public link yet, so no link shows it ' +
-        'until <i>Public link on</i> in the project’s menu.'
-      : 'Make <b>' + esc(entity.name) + '</b> public? The project’s public link then shows it and its readings, where the project dashboard does.';
-    ui.confirm(text, on ? 'Make public' : 'Make private')
+    var name = { name: esc(entity.name) };
+    var text = !on ? t('lifecycle.public.confirmPrivate', 'Make <b>{name}</b> private? The public link no longer shows it.', name)
+      : projectPublic === false ? t('lifecycle.public.confirmNoLink', 'Make <b>{name}</b> public? Its project has no public link yet, so no link shows it until <i>Public link on</i> in the project’s menu.', name)
+      : t('lifecycle.public.confirmPublic', 'Make <b>{name}</b> public? The project’s public link then shows it and its readings, where the project dashboard does.', name);
+    ui.confirm(text, on ? t('lifecycle.public.makePublic', 'Make public') : t('lifecycle.public.makePrivate', 'Make private'))
       .then(function (ok) {
         if (!ok) { return null; }
         return tb.setPublic(entity, owner, on).then(function () {
-          ui.toast(entity.name + (on ? ' is public' : ' is private'));
+          ui.toast(on ? t('lifecycle.public.isPublic', '{name} is public', { name: entity.name })
+            : t('lifecycle.public.isPrivate', '{name} is private', { name: entity.name }));
           done();
         });
-      }).catch(fail('Not changed'));
+      }).catch(fail(t('common.notChanged', 'Not changed: {error}')));
   }
 
   /** *Retire* (CA-17) and *Reactivate*: `service.state`. */
   function retire(station, done) {
-    ui.confirm('Retire <b>' + esc(station.name) + '</b>? It raises no alarm, notifies nobody and is never stale; its history and dashboards stay. ' +
-      'It folds into Retired at the end of the list and leaves the map.', 'Retire').then(function (ok) {
+    ui.confirm(t('lifecycle.retire.confirm', 'Retire <b>{name}</b>? It raises no alarm, notifies nobody and is never stale; its history and dashboards stay. It folds into Retired at the end of the list and leaves the map.', { name: esc(station.name) }), t('lifecycle.retire.ok', 'Retire')).then(function (ok) {
       if (!ok) { return null; }
-      return tb.setServiceState(station, 'retired').then(function () { ui.toast(station.name + ' retired'); done(); });
-    }).catch(fail('Not retired'));
+      return tb.setServiceState(station, 'retired').then(function () {
+        ui.toast(t('lifecycle.retire.done', '{name} retired', { name: station.name }));
+        done();
+      });
+    }).catch(fail(t('lifecycle.retire.failed', 'Not retired: {error}')));
   }
 
   function reactivate(station, done) {
-    ui.confirm('Reactivate <b>' + esc(station.name) + '</b>? It raises alarms and notifies its contacts again.', 'Reactivate').then(function (ok) {
+    ui.confirm(t('lifecycle.reactivate.confirm', 'Reactivate <b>{name}</b>? It raises alarms and notifies its contacts again.', { name: esc(station.name) }),
+      t('lifecycle.reactivate.ok', 'Reactivate')).then(function (ok) {
       if (!ok) { return null; }
-      return tb.setServiceState(station, null).then(function () { ui.toast(station.name + ' is in service'); done(); });
-    }).catch(fail('Not reactivated'));
+      return tb.setServiceState(station, null).then(function () { ui.toast(t('lifecycle.inService', '{name} is in service', { name: station.name })); done(); });
+    }).catch(fail(t('lifecycle.reactivate.failed', 'Not reactivated: {error}')));
   }
 
   /** *Delete* (CA-18): `target`, after the retired `stations` going with it,
    * confirmed by typing its name; their history only when ticked. */
   function remove(target, stations, done) {
     var html = target.kind === 'Project'
-      ? 'Delete the project <b>' + esc(target.name) + '</b>' + (stations.length ? ' and its retired stations ' + names(stations) : '') + '? '
-      : 'Delete the station <b>' + esc(target.name) + '</b>? ';
-    html += 'Relations and channel maps go with ' + (stations.length ? 'them' : 'it') + '; dashboards stay. This cannot be undone.';
-    ui.confirmTyped(html, target.name, 'Delete', 'Also delete the measurement history').then(function (answer) {
+      ? (stations.length ? t('lifecycle.delete.projectWithStations', 'Delete the project <b>{name}</b> and its retired stations {stations}?',
+        { name: esc(target.name), stations: names(stations) }) : t('lifecycle.delete.project', 'Delete the project <b>{name}</b>?', { name: esc(target.name) }))
+      : t('lifecycle.delete.station', 'Delete the station <b>{name}</b>?', { name: esc(target.name) });
+    html += ' ' + (stations.length ? t('lifecycle.delete.consequenceMany', 'Relations and channel maps go with them; dashboards stay. This cannot be undone.')
+      : t('lifecycle.delete.consequenceOne', 'Relations and channel maps go with it; dashboards stay. This cannot be undone.'));
+    ui.confirmTyped(html, target.name, t('common.delete', 'Delete'), t('lifecycle.delete.history', 'Also delete the measurement history')).then(function (answer) {
       if (!answer) { return null; }
       var work = Promise.resolve();
       stations.concat([target]).forEach(function (e) {
         work = work.then(function () { return answer.checked ? tb.deleteHistory(e) : null; }).then(function () { return tb.deleteEntity(e); });
       });
-      return work.then(function () { ui.toast(target.name + ' deleted'); done(); });
-    }).catch(fail('Not deleted'));
+      return work.then(function () { ui.toast(t('lifecycle.delete.done', '{name} deleted', { name: target.name })); done(); });
+    }).catch(fail(t('common.notDeleted', 'Not deleted: {error}')));
   }
 
   /** *Silence* (CA-19): 1 h, 4 h, until 18:00 or a chosen time. */
@@ -141,22 +152,25 @@ root.TerrySenseLifecycle = function (ui, tb) {
     evening.setHours(EVENING_HOUR, 0, 0, 0);
     var tomorrow = evening.getTime() <= now;
     if (tomorrow) { evening.setDate(evening.getDate() + 1); }
-    var box = h('<div class="ts-menu"><div class="ts-menu-note">Alarms are still raised and shown; nobody is notified.</div></div>');
+    var box = h('<div class="ts-menu"><div class="ts-menu-note"></div></div>');
+    box.firstChild.textContent = t('lifecycle.silence.note', 'Alarms are still raised and shown; nobody is notified.');
     var pop;
     function pick(until) {
       pop.close();
-      tb.silence(entity, until).then(function () { ui.toast(ui.silenceText(until)); done(); }).catch(fail('Not silenced'));
+      tb.silence(entity, until).then(function () { ui.toast(ui.silenceText(until)); done(); }).catch(fail(t('lifecycle.silence.failed', 'Not silenced: {error}')));
     }
-    [['1h', 'For 1 hour', now + 3600e3], ['4h', 'For 4 hours', now + 4 * 3600e3],
-     ['evening', (tomorrow ? 'Until tomorrow ' : 'Until ') + EVENING_HOUR + ':00', evening.getTime()]].forEach(function (o) {
+    var hour = { time: EVENING_HOUR + ':00' };
+    [['1h', t('lifecycle.silence.hour', 'For 1 hour'), now + 3600e3], ['4h', t('lifecycle.silence.hours', 'For 4 hours'), now + 4 * 3600e3],
+     ['evening', tomorrow ? t('lifecycle.silence.untilTomorrow', 'Until tomorrow {time}', hour) : t('lifecycle.silence.until', 'Until {time}', hour),
+      evening.getTime()]].forEach(function (o) {
       var b = box.appendChild(h('<button type="button" class="ts-menu-item"></button>'));
       b.setAttribute('data-a', o[0]);
       b.textContent = o[1];
       b.addEventListener('click', function () { pick(o[2]); });
     });
-    var custom = box.appendChild(h('<div class="ts-menu-custom"><input type="datetime-local" class="ts-input" data-f="until">' +
-      '<button type="button" class="ts-btn" data-a="custom" disabled>Set</button></div>'));
+    var custom = box.appendChild(h('<div class="ts-menu-custom"><input type="datetime-local" class="ts-input" data-f="until"><button type="button" class="ts-btn" data-a="custom" disabled></button></div>'));
     var input = custom.querySelector('input'), set = custom.querySelector('button');
+    set.textContent = t('lifecycle.silence.set', 'Set');
     input.addEventListener('input', function () { set.disabled = !(new Date(input.value).getTime() > Date.now()); });
     set.addEventListener('click', function () { pick(new Date(input.value).getTime()); });
     pop = ui.popover(anchor, box);
@@ -164,7 +178,8 @@ root.TerrySenseLifecycle = function (ui, tb) {
   }
 
   function endSilence(entity, done) {
-    tb.endSilence(entity).then(function () { ui.toast('Silence ended: notifications go out again'); done(); }).catch(fail('Not ended'));
+    tb.endSilence(entity).then(function () { ui.toast(t('lifecycle.silence.ended', 'Silence ended: notifications go out again')); done(); })
+      .catch(fail(t('lifecycle.silence.notEnded', 'Not ended: {error}')));
   }
 
   /** The row menu items of a station (FRONTEND.md *Project dashboard*, row menu).
@@ -172,59 +187,65 @@ root.TerrySenseLifecycle = function (ui, tb) {
   function stationItems(s) {
     var retired = tb.serviceOf(s.attrs).retired;
     return [
-      { a: 'rename', label: 'Rename', run: function () { rename(s.station, s.nameEl, s.changed); } },
-      s.project && { a: 'move', label: 'Move to project…', run: function () { moveStation(s.station, s.attrs, s.project, s.owner, s.changed); } },
-      { a: s.isPublic ? 'private' : 'public', label: s.isPublic ? 'Make private' : 'Make public',
+      { a: 'rename', label: t('common.rename', 'Rename'), run: function () { rename(s.station, s.nameEl, s.changed); } },
+      s.project && { a: 'move', label: t('lifecycle.move.title', 'Move to project…'), run: function () { moveStation(s.station, s.attrs, s.project, s.owner, s.changed); } },
+      { a: s.isPublic ? 'private' : 'public', label: s.isPublic ? t('lifecycle.public.makePrivate', 'Make private') : t('lifecycle.public.makePublic', 'Make public'),
         run: function () { setPublic(s.station, s.owner, !s.isPublic, s.changed, s.projectPublic); } },
-      retired ? { a: 'reactivate', label: 'Reactivate', run: function () { reactivate(s.station, s.changed); } }
-        : { a: 'retire', label: 'Retire', run: function () { retire(s.station, s.changed); } },
-      retired && { a: 'delete', label: 'Delete…', danger: true, run: function () { remove(s.station, [], s.deleted); } }
+      retired ? { a: 'reactivate', label: t('lifecycle.reactivate.ok', 'Reactivate'), run: function () { reactivate(s.station, s.changed); } }
+        : { a: 'retire', label: t('lifecycle.retire.ok', 'Retire'), run: function () { retire(s.station, s.changed); } },
+      retired && { a: 'delete', label: t('lifecycle.menu.delete', 'Delete…'), danger: true, run: function () { remove(s.station, [], s.deleted); } }
     ];
   }
 
   function deviceName(device) { return device.label || device.name; }
 
+  // A state name starts a sentence in the panel and continues one in the confirmation.
+  function lowerFirst(text) { return text.charAt(0).toLowerCase() + text.slice(1); }
+
   /** *Out of service* (CA-23): in repair, lost or retired, picked in a panel. */
   function outOfService(device, done) {
-    var dr = ui.openDrawer('Out of service', esc(deviceName(device)));
-    dr.body.appendChild(h('<div class="ts-field-hint">It raises no device alarm and leaves <i>Needs a look</i>; its history and stations stay. ' +
-      '<i>Back in service</i> undoes it.</div>'));
-    Object.keys(G.SERVICE_STATES).forEach(function (value) {
+    var states = G.SERVICE_STATES;
+    var dr = ui.openDrawer(esc(t('common.outOfService', 'Out of service')), esc(deviceName(device)));
+    dr.body.appendChild(h('<div class="ts-field-hint">' + t('lifecycle.service.outHint', 'It raises no device alarm and leaves <i>Needs a look</i>; its history and stations stay. <i>Back in service</i> undoes it.') + '</div>'));
+    Object.keys(states).forEach(function (value) {
       var o = dr.body.appendChild(h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div></div></div>'));
       o.setAttribute('data-state', value);
-      o.querySelector('.ts-opt-label').textContent = G.SERVICE_STATES[value];
+      o.querySelector('.ts-opt-label').textContent = states[value];
       o.addEventListener('click', function () {
-        ui.confirm('Mark <b>' + esc(deviceName(device)) + '</b> out of service, ' + esc(G.SERVICE_STATES[value].toLowerCase()) + '?', 'Out of service')
+        ui.confirm(t('lifecycle.service.outConfirm', 'Mark <b>{name}</b> out of service, {state}?', { name: esc(deviceName(device)), state: esc(lowerFirst(states[value])) }),
+          t('common.outOfService', 'Out of service'))
           .then(function (ok) {
             if (!ok) { return null; }
             return tb.setServiceState(device, value).then(function () {
               ui.closeDrawer();
-              ui.toast(deviceName(device) + ' is out of service');
+              ui.toast(t('lifecycle.service.isOut', '{name} is out of service', { name: deviceName(device) }));
               done();
             });
-          }).catch(fail('Not changed'));
+          }).catch(fail(t('common.notChanged', 'Not changed: {error}')));
       });
     });
   }
 
   function backInService(device, done) {
-    ui.confirm('Put <b>' + esc(deviceName(device)) + '</b> back in service? It raises device alarms again.', 'Back in service').then(function (ok) {
+    ui.confirm(t('lifecycle.service.backConfirm', 'Put <b>{name}</b> back in service? It raises device alarms again.', { name: esc(deviceName(device)) }),
+      t('lifecycle.service.back', 'Back in service')).then(function (ok) {
       if (!ok) { return null; }
-      return tb.setServiceState(device, null).then(function () { ui.toast(deviceName(device) + ' is in service'); done(); });
-    }).catch(fail('Not changed'));
+      return tb.setServiceState(device, null).then(function () { ui.toast(t('lifecycle.inService', '{name} is in service', { name: deviceName(device) })); done(); });
+    }).catch(fail(t('common.notChanged', 'Not changed: {error}')));
   }
 
   /** *Reassign…* (TA-6): the new owner, then a confirmation naming the stations
    * the device leaves; one save disconnects it and changes its owner. */
   function reassign(device, done) {
-    var dr = ui.openDrawer('Reassign…', esc(deviceName(device)));
-    dr.body.appendChild(h('<div class="ts-loading">Loading the owners…</div>'));
+    var dr = ui.openDrawer(esc(t('lifecycle.reassign.title', 'Reassign…')), esc(deviceName(device)));
+    dr.body.appendChild(h('<div class="ts-loading"></div>')).textContent = t('lifecycle.reassign.loading', 'Loading the owners…');
     Promise.all([tb.ownerOf(device), tb.currentUser(), tb.getAll('/api/customers', {})]).then(function (got) {
-      var current = got[0], owners = [{ entityType: 'TENANT', id: got[1].tenantId.id, name: 'Tenant, no customer' }].concat(
+      var current = got[0], owners = [{ entityType: 'TENANT', id: got[1].tenantId.id, name: t('lifecycle.reassign.tenant', 'Tenant, no customer') }].concat(
         got[2].map(function (c) { return { entityType: 'CUSTOMER', id: c.id.id, name: c.title }; })
           .sort(function (a, b) { return a.name.localeCompare(b.name); }));
       dr.body.innerHTML = '';
-      dr.body.appendChild(h('<div class="ts-field-hint">The device leaves every station first: a station takes readings only from devices of its own owner.</div>'));
+      dr.body.appendChild(h('<div class="ts-field-hint"></div>')).textContent =
+        t('lifecycle.reassign.hint', 'The device leaves every station first: a station takes readings only from devices of its own owner.');
       owners.filter(function (o) { return o.id !== current.id; }).forEach(function (o) {
         var row = dr.body.appendChild(h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div></div></div>'));
         row.setAttribute('data-owner', o.name);
@@ -235,18 +256,20 @@ root.TerrySenseLifecycle = function (ui, tb) {
 
     function confirmReassign(owner) {
       tb.deviceParents(device).then(function (parents) {
-        return ui.confirm('Reassign <b>' + esc(deviceName(device)) + '</b> to <b>' + esc(owner.name) + '</b>? ' +
-          (parents.length ? 'It leaves ' + names(parents) + (parents.length === 1 ? ', which keeps its history.' : ', which keep their history.')
-            : 'It feeds no station.'), 'Reassign')
+        var who = { name: esc(deviceName(device)), owner: esc(owner.name), stations: names(parents) };
+        return ui.confirm(!parents.length ? t('lifecycle.reassign.confirmNone', 'Reassign <b>{name}</b> to <b>{owner}</b>? It feeds no station.', who)
+          : parents.length === 1 ? t('lifecycle.reassign.confirmOne', 'Reassign <b>{name}</b> to <b>{owner}</b>? It leaves {stations}, which keeps its history.', who)
+          : t('lifecycle.reassign.confirmMany', 'Reassign <b>{name}</b> to <b>{owner}</b>? It leaves {stations}, which keep their history.', who),
+          t('lifecycle.reassign.ok', 'Reassign'))
           .then(function (ok) {
             if (!ok) { return null; }
             return tb.reassignDevice(device, owner, parents).then(function () {
               ui.closeDrawer();
-              ui.toast(deviceName(device) + ' reassigned to ' + owner.name);
+              ui.toast(t('lifecycle.reassign.done', '{name} reassigned to {owner}', { name: deviceName(device), owner: owner.name }));
               done();
             });
           });
-      }).catch(fail('Not reassigned'));
+      }).catch(fail(t('lifecycle.reassign.failed', 'Not reassigned: {error}')));
     }
   }
 
@@ -264,8 +287,8 @@ root.TerrySenseLifecycle = function (ui, tb) {
   /** The service item of a device's row menu: *Out of service…* or *Back in service*. */
   function serviceItem(device, attrs, done) {
     return tb.serviceOf(attrs).state
-      ? { a: 'back-in-service', label: 'Back in service', run: function () { backInService(device, done); } }
-      : { a: 'out-of-service', label: 'Out of service…', run: function () { outOfService(device, done); } };
+      ? { a: 'back-in-service', label: t('lifecycle.service.back', 'Back in service'), run: function () { backInService(device, done); } }
+      : { a: 'out-of-service', label: t('lifecycle.service.outMenu', 'Out of service…'), run: function () { outOfService(device, done); } };
   }
 
   return {

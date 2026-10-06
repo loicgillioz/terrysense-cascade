@@ -16,6 +16,7 @@
 window.TerrySenseConfigOverrides = function (ctx, container, opts) {
 
 opts = opts || {};
+var t = window.TerrySenseI18n(ctx);
 
 var resolver = window.TerrySenseResolver;
 var G = window.TerrySenseGlossary;
@@ -32,18 +33,22 @@ var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // The settings this widget edits outside the per-measurement ones.
 var SCALARS = [
-  { key: 'config.notify.contacts', label: 'Measurement alarm contacts', section: 'notifications', type: 'contacts', tip: 'contacts' },
-  { key: 'config.notify.deviceContacts', label: 'Device alarm contacts', section: 'notifications', type: 'contacts', tip: 'deviceContacts' },
-  { key: 'config.sms.enabled', label: 'SMS', section: 'notifications', type: 'bool', tip: 'channels' },
-  { key: 'config.email.enabled', label: 'E-mail', section: 'notifications', type: 'bool', tip: 'channels' },
-  { key: 'config.alarmText.created', label: 'Message when an alarm starts', section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
-  { key: 'config.emailText.created', label: 'E-mail when an alarm starts', section: 'notifications', type: 'text', nestedIn: 'config.alarmText.created' },
-  { key: 'config.alarmText.cleared', label: 'Message when an alarm ends', section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
-  { key: 'config.emailText.cleared', label: 'E-mail when an alarm ends', section: 'notifications', type: 'text', nestedIn: 'config.alarmText.cleared' },
-  { key: 'config.language', label: 'Message language', section: 'notifications', type: 'lang' },
-  { key: 'config.ttlDays', label: 'Keep data for', section: 'retention', type: 'days', tip: 'retention' }
+  { key: 'config.notify.contacts', label: t('glossary.setting.contacts', 'Measurement alarm contacts'), section: 'notifications', type: 'contacts', tip: 'contacts' },
+  { key: 'config.notify.deviceContacts', label: t('glossary.setting.deviceContacts', 'Device alarm contacts'), section: 'notifications', type: 'contacts', tip: 'deviceContacts' },
+  { key: 'config.sms.enabled', label: t('glossary.setting.smsEnabled', 'SMS'), section: 'notifications', type: 'bool', tip: 'channels' },
+  { key: 'config.email.enabled', label: t('glossary.setting.emailEnabled', 'E-mail'), section: 'notifications', type: 'bool', tip: 'channels' },
+  { key: 'config.alarmText.created', label: t('glossary.setting.alarmTextCreated', 'Message when an alarm starts'), section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
+  { key: 'config.emailText.created', label: t('glossary.setting.emailTextCreated', 'E-mail when an alarm starts'), section: 'notifications', type: 'text', nestedIn: 'config.alarmText.created' },
+  { key: 'config.alarmText.cleared', label: t('glossary.setting.alarmTextCleared', 'Message when an alarm ends'), section: 'notifications', type: 'text', tip: 'alarmText', sms: true },
+  { key: 'config.emailText.cleared', label: t('glossary.setting.emailTextCleared', 'E-mail when an alarm ends'), section: 'notifications', type: 'text', nestedIn: 'config.alarmText.cleared' },
+  { key: 'config.language', label: t('glossary.setting.language', 'Message language'), section: 'notifications', type: 'lang' },
+  { key: 'config.ttlDays', label: t('glossary.setting.ttlDays', 'Keep data for'), section: 'retention', type: 'days', tip: 'retention' }
 ];
-var ALL_SECTIONS = [['notifications', 'Notifications'], ['retention', 'Data retention']];
+// [id, title, the title inside a sentence]
+var ALL_SECTIONS = [
+  ['notifications', t('settings.notifications', 'Notifications'), t('settings.notificationsInline', 'notifications')],
+  ['retention', t('settings.retention', 'Data retention'), t('settings.retentionInline', 'data retention')]
+];
 var SECTIONS = ALL_SECTIONS;
 var LIST_KEYS = ['config.notify.contacts', 'config.notify.deviceContacts'];
 var BOOK = resolver.CONTACT_BOOK_KEY;
@@ -92,7 +97,28 @@ function inherited(key) {
   return text ? { value: text, from: defaults.level } : hit;
 }
 
-function levelLabel(level) { return resolver.levelDisplay(level); }
+// resolver.levelDisplay in the reader's language.
+function levelLabel(level) {
+  if (level.role === 'customer') { return t('settings.levelCustomer', 'Customer defaults · {name}', { name: level.name }); }
+  if (level.role === 'defaults') { return t('settings.levelDefaults', 'in-terra defaults'); }
+  if (level.role === 'deviceDefaults') { return t('settings.levelDeviceDefaults', 'Device defaults · {name}', { name: level.name }); }
+  if (level.role === 'device') { return t('settings.levelDevice', 'Device · {name}', { name: level.name }); }
+  return kindName(level.kind || 'Asset') + ' · ' + level.name;
+}
+
+/** An entity's kind as shown: the levels' own names translated, a device profile as named. */
+function kindName(kind) {
+  switch (kind) {
+    case 'Customer': return t('common.customer', 'Customer');
+    case 'Project': return t('common.project', 'Project');
+    case 'Location': return t('common.location', 'Location');
+    case 'Station': return t('common.station', 'Station');
+    case 'Defaults': return t('settings.kindDefaults', 'Defaults');
+    case 'DeviceDefaults': return t('settings.kindDeviceDefaults', 'DeviceDefaults');
+    case 'Asset': return t('settings.kindAsset', 'Asset');
+    default: return kind;
+  }
+}
 function ownVal(key) { return parseVal(state.own[key]); }
 function isOwn(key) { return state.own[key] !== undefined && state.own[key] !== null; }
 
@@ -108,12 +134,15 @@ function channelKind(ch) {
 function kindSpec(ch) { return resolver.kindSpec(channelKind(ch), state.kinds) || {}; }
 function alarmClass(ch) { return kindSpec(ch).alarm || 'numeric'; }
 function chLabel(ch) {
-  if (ch.indexOf('.') >= 0) { return entryOf(ch).label || ch; }
+  if (ch.indexOf('.') >= 0) { return entryOf(ch).label ? t.channel(nameOf(ch), entryOf(ch).label) : ch; }
   var split = resolver.splitChannelKey(ch);
   var label = entryOf(ch).label || split.name;
-  return split.instance ? label + ' ' + split.instance : label;
+  return t.label(ch, split.instance ? label + ' ' + split.instance : label, state.names);
 }
-function kindLabel(ch) { return kindSpec(ch).label || channelKind(ch) || 'Unknown kind'; }
+function kindLabel(ch) {
+  var spec = kindSpec(ch);
+  return spec.label ? t.kind(channelKind(ch), spec.label) : channelKind(ch) || t('common.unknownKind', 'Unknown kind');
+}
 
 // The unit a channel is stored in, which its thresholds and hysteresis are
 // entered in: a station channel's name's unit, else its kind's cloud unit; a
@@ -128,7 +157,7 @@ function stateText(ch, v) {
     return hit ? hit.value : String(v === true || v === 'true' || v === 1);
   }
   var states = entryOf(ch).states || {};
-  return states[String(v)] !== undefined ? states[String(v)] : String(v);
+  return states[String(v)] !== undefined ? t.state(nameOf(ch), states[String(v)]) : String(v);
 }
 
 // Every per-channel key this widget manages.
@@ -162,10 +191,10 @@ function channelsWith(attrs) {
 
 root.innerHTML = '';
 var cardEl = h('<div class="ts-card"><div class="ts-head"><div class="ts-head-icon">' + ICON.settings + '</div><div class="ts-head-text">' +
-  '<div class="ts-title">Settings ' + info('cascade') + '</div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
-  '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
+  '<div class="ts-title">' + esc(t('common.settings', 'Settings')) + ' ' + info('cascade') + '</div><div class="ts-subtitle"></div></div><span class="ts-chip level" hidden></span></div>' +
+  '<div class="ts-body"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div>' +
   '<div class="ts-foot" hidden><span class="ts-foot-left"></span><span class="ts-spacer"></span>' +
-  '<label class="ts-switch ts-summary"><input type="checkbox" class="ts-show-inh"> Show inherited</label></div></div>');
+  '<label class="ts-switch ts-summary"><input type="checkbox" class="ts-show-inh"> ' + esc(t('settings.showInherited', 'Show inherited')) + '</label></div></div>');
 root.appendChild(cardEl);
 window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
@@ -181,9 +210,9 @@ function fail(text) {
 
 function load() {
   // The contacts' phone numbers and addresses stay off a public link.
-  if (tb.isPublicView()) { fail('Settings are not shown on a public link.'); return Promise.resolve(); }
+  if (tb.isPublicView()) { fail(t('settings.publicLink', 'Settings are not shown on a public link.')); return Promise.resolve(); }
   return tb.boundDatasource().then(function (ds) {
-    if (!ds) { fail('No entity bound — bind a customer, project, station or device in the widget\'s Data tab.'); return; }
+    if (!ds) { fail(t('settings.noEntity', 'No entity bound — bind a customer, project, station or device in the widget\'s Data tab.')); return; }
     return tb.loadEntity(ds).then(function (origin) {
       state.origin = origin;
       state.deviceBranch = origin.entityType === 'DEVICE' || origin.kind === resolver.DEVICE_DEFAULTS_KIND;
@@ -217,7 +246,7 @@ function load() {
         render();
       });
     });
-  }).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });
+  }).catch(function (err) { fail(t('common.loadFailed', 'Could not load: {error}', { error: err && err.message ? err.message : err })); });
 }
 
 /** The address book this level's lists name: its customer's, else the tenant's. */
@@ -275,18 +304,18 @@ function bookUsage(holders) {
 function renderHead() {
   var next = state.ancestors[0];
   cardEl.querySelector('.ts-subtitle').textContent = state.origin.name +
-    (next ? ' · inherits from ' + (next.level.role === 'defaults' ? 'in-terra defaults' : next.level.name) : '');
+    (next ? t('settings.inheritsFrom', ' · inherits from {name}', { name: next.level.role === 'defaults' ? t('settings.levelDefaults', 'in-terra defaults') : next.level.name }) : '');
   var chip = cardEl.querySelector('.ts-chip.level');
   chip.hidden = false;
-  chip.textContent = state.origin.kind;
+  chip.textContent = kindName(state.origin.kind);
   cardEl.classList.toggle('ts-readonly', state.readOnly);
   footEl.hidden = false;
   var left = footEl.querySelector('.ts-foot-left');
   left.innerHTML = '';
   if (state.readOnly) {
-    left.appendChild(h('<span class="ts-summary">Read only</span>'));
+    left.appendChild(h('<span class="ts-summary">' + esc(t('settings.readOnly', 'Read only')) + '</span>'));
   } else {
-    var add = h('<button type="button" class="ts-btn primary">' + ICON.plus + 'Add setting</button>');
+    var add = h('<button type="button" class="ts-btn primary">' + ICON.plus + esc(t('settings.addSetting', 'Add setting')) + '</button>');
     add.addEventListener('click', openAdd);
     left.appendChild(add);
   }
@@ -328,16 +357,17 @@ function channelChips(ch, keys, source) {
   if (has('hysteresis')) { conds.push(chip('± ' + esc(Number(source(CH + ch + '.hysteresis'))) + ' ' + esc(unit))); }
   if (has('textWhenTrue')) { conds.push(chip('true = ' + esc(source(CH + ch + '.textWhenTrue')))); }
   if (has('textWhenFalse')) { conds.push(chip('false = ' + esc(source(CH + ch + '.textWhenFalse')))); }
-  if (has('label')) { conds.push(chip('“' + esc(source(CH + ch + '.label')) + '”', 'Name in alarm messages')); }
+  if (has('label')) { conds.push(chip('“' + esc(source(CH + ch + '.label')) + '”', t('settings.nameInAlarms', 'Name in alarm messages'))); }
   return conds.join('');
 }
 
 function fmtScalar(def, v) {
-  if (def.type === 'contacts') { return Array.isArray(v) ? (v.length === 1 ? '1 contact' : v.length + ' contacts') : ''; }
-  if (def.type === 'bool') { return v === true || v === 'true' ? 'On' : 'Off'; }
-  if (def.type === 'days' || def.type === 'hours') { return esc(v) + ' ' + def.type; }
+  if (def.type === 'contacts') { return Array.isArray(v) ? esc(v.length === 1 ? t('common.contactOne', '1 contact') : t('common.contactMany', '{n} contacts', { n: v.length })) : ''; }
+  if (def.type === 'bool') { return esc(v === true || v === 'true' ? t('common.on', 'On') : t('common.off', 'Off')); }
+  if (def.type === 'days') { return esc(t('common.days', '{n} days', { n: v })); }
+  if (def.type === 'hours') { return esc(t('settings.hoursValue', '{n} hours', { n: v })); }
   if (def.type === 'lang') { return esc(G.LANGUAGES[v] || v); }
-  if (def.type === 'text') { var t = String(v); return '<i>“' + esc(t.slice(0, 38)) + (t.length > 38 ? '…' : '') + '”</i>'; }
+  if (def.type === 'text') { var s = String(v); return '<i>“' + esc(s.slice(0, 38)) + (s.length > 38 ? '…' : '') + '”</i>'; }
   return esc(v);
 }
 
@@ -345,7 +375,7 @@ function fmtScalar(def, v) {
 function isRule(ch) { return !!(state.names[resolver.splitChannelKey(ch).name] || {}).rule; }
 
 function emptyLine(what) {
-  var el = h('<div class="ts-empty">Nothing set here, all inherited.' + (state.readOnly ? '' : ' <a>Add</a>') + '</div>');
+  var el = h('<div class="ts-empty">' + esc(t('settings.nothingSet', 'Nothing set here, all inherited.')) + (state.readOnly ? '' : ' <a>' + esc(t('common.add', 'Add')) + '</a>') + '</div>');
   var a = el.querySelector('a');
   if (a) { a.addEventListener('click', function () { if (what === 'measurement') { openMeasurementPicker(false); } else { openScalar(what, false); } }); }
   return el;
@@ -354,16 +384,16 @@ function emptyLine(what) {
 function render() {
   bodyEl.innerHTML = '';
   if (!state.defaultsShared) {
-    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>The in-terra defaults are not shared with this customer, so tenant defaults and the measurement names do not load. A tenant admin shares the “Shared defaults” group.</span></div>'));
+    bodyEl.appendChild(h('<div class="ts-banner warn">' + ICON.info + '<span>' + esc(t('settings.notShared', 'The in-terra defaults are not shared with this customer, so tenant defaults and the measurement names do not load. A tenant admin shares the “Shared defaults” group.')) + '</span></div>'));
   }
 
-  var sec = h('<div class="ts-section"><div class="ts-section-head">Measurements ' + info('measurements') + '</div></div>');
+  var sec = h('<div class="ts-section"><div class="ts-section-head">' + esc(t('settings.measurements', 'Measurements')) + ' ' + info('measurements') + '</div></div>');
   var own = channelsWith(state.own);
   var rules = Object.keys(own).filter(isRule);
   Object.keys(own).filter(function (ch) { return !isRule(ch); }).sort(function (a, b) { return chLabel(a).localeCompare(chLabel(b)); }).forEach(function (ch) {
     var row = h('<div class="ts-row" tabindex="0"><div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div>' +
       '<div class="ts-row-value">' + channelChips(ch, own[ch], ownVal) + '</div>' +
-      (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" title="Edit">' + ICON.edit + '</button></div>') + '</div>');
+      (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" title="' + esc(t('common.edit', 'Edit')) + '">' + ICON.edit + '</button></div>') + '</div>');
     row.querySelector('.ts-row-label').textContent = chLabel(ch);
     row.querySelector('.ts-row-meta').textContent = kindLabel(ch);
     var keys = Object.keys(state.own).filter(function (k) { return k.indexOf(CH + ch + '.') === 0; });
@@ -384,9 +414,9 @@ function render() {
       var from = inherited(inh[ch][0]).from;
       var row = h('<div class="ts-row inherited"><div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div>' +
         '<div class="ts-row-value">' + channelChips(ch, inh[ch], function (k) { var x = inherited(k); return x ? x.value : ''; }) + '</div>' +
-        (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-btn ghost">Change here</button></div>') + '</div>');
+        (state.readOnly ? '' : '<div class="ts-row-actions"><button type="button" class="ts-btn ghost">' + esc(t('settings.changeHere', 'Change here')) + '</button></div>') + '</div>');
       row.querySelector('.ts-row-label').textContent = chLabel(ch);
-      row.querySelector('.ts-row-meta').textContent = 'from ' + levelLabel(from);
+      row.querySelector('.ts-row-meta').textContent = t('settings.from', 'from {level}', { level: levelLabel(from) });
       if (!state.readOnly) { row.querySelector('.ts-btn').addEventListener('click', function () { openChannel(ch, false); }); }
       sec.appendChild(row);
     });
@@ -394,8 +424,8 @@ function render() {
   if (!sec.querySelector('.ts-row')) { sec.appendChild(emptyLine('measurement')); }
   if (rules.length) {
     sec.appendChild(h('<div class="ts-field-hint" data-rules="' + rules.length + '"></div>')).textContent =
-      rules.length + (rules.length === 1 ? ' dry contact interface rule raises' : ' dry contact interface rules raise') +
-      ' alarms here; their names and severities are set in the station’s Dry contact interface view.';
+      rules.length === 1 ? t('settings.rulesOne', '1 dry contact interface rule raises alarms here; their names and severities are set in the station’s Dry contact interface view.')
+        : t('settings.rulesMany', '{n} dry contact interface rules raise alarms here; their names and severities are set in the station’s Dry contact interface view.', { n: rules.length });
   }
   bodyEl.appendChild(sec);
   if (state.origin.kind === 'Station') { renderCalculations(); }
@@ -408,14 +438,15 @@ function render() {
       if (!mine && !(state.showInherited && hit)) { return; }
       var v = mine ? ownVal(d.key) : hit.value;
       var meta = mine
-        ? (hit ? 'replaces ' + (d.type === 'text' ? 'the wording' : fmtScalar(d, hit.value).replace(/<[^>]+>/g, '')) + ' from ' + levelLabel(hit.from) : '')
-        : 'from ' + levelLabel(hit.from);
+        ? (hit ? t('settings.replacesFrom', 'replaces {what} from {level}', {
+          what: d.type === 'text' ? t('settings.theWording', 'the wording') : fmtScalar(d, hit.value).replace(/<[^>]+>/g, ''), level: levelLabel(hit.from) }) : '')
+        : t('settings.from', 'from {level}', { level: levelLabel(hit.from) });
       var row = h('<div class="ts-row' + (mine ? '' : ' inherited') + '" tabindex="0"><div class="ts-row-main"><div class="ts-row-label"></div>' +
         '<div class="ts-row-meta"></div></div><div class="ts-row-value">' + fmtScalar(d, v) + '</div>' +
         (state.readOnly ? '' : mine
-          ? '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" data-act="reset" title="Reset to inherited">' + ICON.reset + '</button>' +
-            '<button type="button" class="ts-icon-btn" title="Edit">' + ICON.edit + '</button></div>'
-          : '<div class="ts-row-actions"><button type="button" class="ts-btn ghost">Change here</button></div>') + '</div>');
+          ? '<div class="ts-row-actions"><button type="button" class="ts-icon-btn" data-act="reset" title="' + esc(t('settings.resetToInherited', 'Reset to inherited')) + '">' + ICON.reset + '</button>' +
+            '<button type="button" class="ts-icon-btn" title="' + esc(t('common.edit', 'Edit')) + '">' + ICON.edit + '</button></div>'
+          : '<div class="ts-row-actions"><button type="button" class="ts-btn ghost">' + esc(t('settings.changeHere', 'Change here')) + '</button></div>') + '</div>');
       row.querySelector('.ts-row-label').textContent = d.label;
       row.querySelector('.ts-row-meta').textContent = meta;
       if (!meta) { row.querySelector('.ts-row-meta').remove(); }
@@ -456,12 +487,23 @@ function lowerFor(keys) {
   return out;
 }
 
-function lowerText(list) {
+function levelCount(k, n) {
+  switch (k) {
+    case 'project': return n === 1 ? t('common.projectOne', '1 project') : t('settings.projectMany', '{n} projects', { n: n });
+    case 'location': return n === 1 ? t('settings.locationOne', '1 location') : t('settings.locationMany', '{n} locations', { n: n });
+    case 'station': return n === 1 ? t('common.stationOne', '1 station') : t('common.stationMany', '{n} stations', { n: n });
+    default: return n + ' ' + k + (n > 1 ? 's' : '');
+  }
+}
+
+function lowerLevels(list) {
   var counts = {};
   list.forEach(function (l) { var k = String(l.level.kind || 'level').toLowerCase(); counts[k] = (counts[k] || 0) + 1; });
-  return 'replaced on ' + Object.keys(counts).sort(function (a, b) { return LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b); })
-    .map(function (k) { return counts[k] + ' ' + k + (counts[k] > 1 ? 's' : ''); }).join(', ');
+  return Object.keys(counts).sort(function (a, b) { return LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b); })
+    .map(function (k) { return levelCount(k, counts[k]); }).join(', ');
 }
+
+function lowerText(list) { return t('settings.replacedOn', 'replaced on {levels}', { levels: lowerLevels(list) }); }
 
 function lowerBadge(row, label, keys) {
   var list = lowerFor(keys);
@@ -473,12 +515,12 @@ function lowerBadge(row, label, keys) {
 }
 
 function openLower(anchor, label, list) {
-  var box = h('<div><div class="ts-subhead">Set lower down</div></div>');
+  var box = h('<div><div class="ts-subhead">' + esc(t('settings.setLower', 'Set lower down')) + '</div></div>');
   list.forEach(function (l) {
     var o = h('<div class="ts-opt" tabindex="0"><div class="ts-opt-main"><div class="ts-opt-label"></div><div class="ts-opt-desc"></div></div></div>');
     o.setAttribute('data-level', l.level.name);
     o.querySelector('.ts-opt-label').textContent = l.level.name;
-    o.querySelector('.ts-opt-desc').textContent = l.level.kind + ' · opens its settings';
+    o.querySelector('.ts-opt-desc').textContent = t('settings.opensSettings', '{kind} · opens its settings', { kind: kindName(l.level.kind) });
     o.addEventListener('click', function () {
       ctx.stateController.updateState('settings', { entityId: { entityType: l.level.entityType, id: l.level.id }, entityName: l.level.name });
     });
@@ -486,11 +528,11 @@ function openLower(anchor, label, list) {
   });
   var pop;
   if (!state.readOnly) {
-    var reset = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="reset-lower">' + ICON.reset + 'Reset to inherit</button></div>');
+    var reset = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="reset-lower">' + ICON.reset + esc(t('settings.resetToInherit', 'Reset to inherit')) + '</button></div>');
     reset.querySelector('button').addEventListener('click', function () {
       pop.close();
-      ui.confirm('Delete the value of <b>' + esc(label) + '</b> set on ' + esc(lowerText(list).replace(/^replaced on /, '')) +
-        '? They then inherit it from ' + esc(state.origin.name) + '.', 'Reset to inherit').then(function (ok) { if (ok) { resetLower(list); } });
+      ui.confirm(t('settings.resetLowerConfirm', 'Delete the value of <b>{label}</b> set on {levels}? They then inherit it from {name}.',
+        { label: esc(label), levels: esc(lowerLevels(list)), name: esc(state.origin.name) }), t('settings.resetToInherit', 'Reset to inherit')).then(function (ok) { if (ok) { resetLower(list); } });
     });
     box.appendChild(reset);
   }
@@ -505,37 +547,40 @@ function uniqueStations(levels) {
   });
 }
 
-function failed(err) { ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error'); }
+function failed(err) { ui.toast(t('settings.saveFailed', 'Save failed: {error}', { error: err && (err.message || (err.error && err.error.message)) || err }), 'error'); }
 
 function resetLower(list) {
   return Promise.all(list.map(function (l) { return tb.deleteAttrs(l.level, l.keys); }))
     .then(function () { return uniqueStations(list.map(function (l) { return l.level; })); })
     .then(function (stations) { return tb.resolveStations(stations); })
-    .then(function () { ui.toast('Reset to inherit'); return load(); })
+    .then(function () { ui.toast(t('settings.resetToInherit', 'Reset to inherit')); return load(); })
     .catch(failed);
 }
 
 // -- address book (CA-20) ---------------------------------------------------------------------
 
-function entryName(e) { return (e && (e.name || e.sms || e.email)) || 'Unknown entry'; }
-function useText(u) { return u.level.name + ' (' + (u.key === LIST_KEYS[0] ? 'measurement alarms' : 'device alarms') + ')'; }
+function entryName(e) { return (e && (e.name || e.sms || e.email)) || t('settings.unknownEntry', 'Unknown entry'); }
+function useText(u) {
+  return u.key === LIST_KEYS[0] ? t('settings.usedMeasurement', '{name} (measurement alarms)', { name: u.level.name })
+    : t('settings.usedDevice', '{name} (device alarms)', { name: u.level.name });
+}
 
 function renderBook() {
   var b = state.book;
-  var sec = h('<div class="ts-section ts-book"><div class="ts-section-head">External contacts ' + info('addressBook') + '</div></div>');
+  var sec = h('<div class="ts-section ts-book"><div class="ts-section-head">' + esc(t('settings.externalContacts', 'External contacts')) + ' ' + info('addressBook') + '</div></div>');
   var ids = Object.keys(b.entries).sort(function (x, y) { return entryName(b.entries[x]).localeCompare(entryName(b.entries[y])); });
   ids.forEach(function (id) {
     var e = b.entries[id], uses = (b.usage || {})[id] || [];
     var row = h('<div class="ts-row static"><div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div>' +
       '<div class="ts-row-meta ts-used"></div></div>' + (state.readOnly ? '' : '<div class="ts-row-actions">' +
-      '<button type="button" class="ts-icon-btn" data-a="edit" title="Edit">' + ICON.edit + '</button>' +
-      '<button type="button" class="ts-btn ghost" data-a="replace">Replace with…</button>' +
-      '<button type="button" class="ts-btn ghost" data-a="remove">Remove everywhere</button></div>') + '</div>');
+      '<button type="button" class="ts-icon-btn" data-a="edit" title="' + esc(t('common.edit', 'Edit')) + '">' + ICON.edit + '</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="replace">' + esc(t('settings.replaceWith', 'Replace with…')) + '</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="remove">' + esc(t('settings.removeEverywhere', 'Remove everywhere')) + '</button></div>') + '</div>');
     row.setAttribute('data-entry', id);
     row.querySelector('.ts-row-label').textContent = entryName(e);
     row.querySelector('.ts-row-meta').textContent = [e.sms, e.email].filter(Boolean).join(' · ') +
-      (e.sms && !E164.test(e.sms) ? ' — number not in international format, SMS will fail' : '');
-    row.querySelector('.ts-used').textContent = uses.length ? 'Used in ' + uses.map(useText).join(', ') : 'Not in any list';
+      (e.sms && !E164.test(e.sms) ? t('settings.numberNotE164', ' — number not in international format, SMS will fail') : '');
+    row.querySelector('.ts-used').textContent = uses.length ? t('settings.usedIn', 'Used in {lists}', { lists: uses.map(useText).join(', ') }) : t('settings.inNoList', 'Not in any list');
     if (!state.readOnly) {
       row.querySelector('[data-a=edit]').addEventListener('click', function () { openEntry(id); });
       row.querySelector('[data-a=replace]').addEventListener('click', function () { openReplace(id); });
@@ -543,19 +588,20 @@ function renderBook() {
     }
     sec.appendChild(row);
   });
-  if (!ids.length) { sec.appendChild(h('<div class="ts-empty">No external contact yet. <i>New external contact</i> in a contact list adds one.</div>')); }
+  if (!ids.length) { sec.appendChild(h('<div class="ts-empty">' + t('settings.noBookEntry', 'No external contact yet. <i>New external contact</i> in a contact list adds one.') + '</div>')); }
   bodyEl.appendChild(sec);
 }
 
 /** Name, SMS and e-mail inputs bound to `entry`, numbers checked as E.164. */
 function entryFields(entry, onChange) {
-  var el = h('<div><div class="ts-contact-grid"><input class="ts-input" data-f="name" placeholder="Name or role">' +
-    '<input class="ts-input" data-f="sms" placeholder="SMS: +41 79 123 45 67"><input class="ts-input" data-f="email" placeholder="E-mail: name@example.ch"></div>' +
+  var el = h('<div><div class="ts-contact-grid"><input class="ts-input" data-f="name" placeholder="' + esc(t('settings.nameOrRole', 'Name or role')) + '">' +
+    '<input class="ts-input" data-f="sms" placeholder="' + esc(t('settings.smsExample', 'SMS: +41 79 123 45 67')) + '">' +
+    '<input class="ts-input" data-f="email" placeholder="' + esc(t('settings.emailExample', 'E-mail: name@example.ch')) + '"></div>' +
     '<div class="ts-field-error"></div></div>');
   var err = el.querySelector('.ts-field-error');
   function check() {
-    err.textContent = entry.sms && !E164.test(entry.sms) ? 'SMS number must be international: + country code, no spaces (e.g. +41791234567).'
-      : entry.email && !EMAIL.test(entry.email) ? 'Not a valid e-mail address.' : '';
+    err.textContent = entry.sms && !E164.test(entry.sms) ? t('settings.smsInvalid', 'SMS number must be international: + country code, no spaces (e.g. +41791234567).')
+      : entry.email && !EMAIL.test(entry.email) ? t('settings.emailInvalid', 'Not a valid e-mail address.') : '';
   }
   el.querySelectorAll('[data-f]').forEach(function (inp) {
     var fld = inp.getAttribute('data-f');
@@ -577,7 +623,8 @@ function bookCommit(what, entries, rewrites, uses, button, always) {
   return uniqueStations(uses.map(function (u) { return u.level; })).then(function (stations) {
     var n = stations.length;
     var ask = always || n > 1
-      ? ui.confirm(what + (n ? ' This updates <b>' + n + ' station' + (n > 1 ? 's' : '') + '</b>.' : ''), n > 1 ? 'Apply to ' + n + ' stations' : 'Apply')
+      ? ui.confirm(what + (n === 1 ? t('settings.updatesStationOne', ' This updates <b>1 station</b>.') : n ? t('settings.updatesStationMany', ' This updates <b>{n} stations</b>.', { n: n }) : ''),
+        n > 1 ? t('settings.applyStations', 'Apply to {n} stations', { n: n }) : t('settings.apply', 'Apply'))
       : Promise.resolve(true);
     return ask.then(function (ok) {
       if (!ok) { if (button) { button.disabled = false; } return; }
@@ -586,7 +633,7 @@ function bookCommit(what, entries, rewrites, uses, button, always) {
         .then(function () { return tb.resolveStations(stations); })
         .then(function () {
           ui.closeDrawer();
-          ui.toast(n === 0 ? 'Saved' : n === 1 ? '1 station updated' : n + ' stations updated');
+          ui.toast(n === 0 ? t('common.saved', 'Saved') : n === 1 ? t('settings.stationUpdatedOne', '1 station updated') : t('settings.stationUpdatedMany', '{n} stations updated', { n: n }));
           return load();
         });
     });
@@ -620,14 +667,14 @@ function rewritesFor(uses, fn) {
 
 function openEntry(id) {
   var entry = Object.assign({ name: '', sms: '', email: '' }, state.book.entries[id]);
-  var dr = ui.openDrawer('Edit contact', esc(entryName(entry)));
+  var dr = ui.openDrawer(esc(t('settings.editContact', 'Edit contact')), esc(entryName(entry)));
   var save = ui.drawerActions(dr);
   dr.body.appendChild(entryFields(entry, function () { save.disabled = !entryValid(entry); }));
-  dr.body.appendChild(h('<div class="ts-field-hint">Changes this contact in every list that names it.</div>'));
+  dr.body.appendChild(h('<div class="ts-field-hint">' + esc(t('settings.editContactHint', 'Changes this contact in every list that names it.')) + '</div>'));
   save.addEventListener('click', function () {
     var entries = bookCopy();
     entries[id] = { name: entry.name, sms: entry.sms, email: entry.email };
-    bookCommit('Change <b>' + esc(entryName(entry)) + '</b> in every list that names it?', entries, [], (state.book.usage || {})[id] || [], save);
+    bookCommit(t('settings.editContactConfirm', 'Change <b>{name}</b> in every list that names it?', { name: esc(entryName(entry)) }), entries, [], (state.book.usage || {})[id] || [], save);
   });
 }
 
@@ -657,10 +704,10 @@ function swapped(c, target, hasSms, hasEmail) {
 function openReplace(id) {
   var ready = state.users === null ? tb.listUsers(state.customerId).then(function (u) { state.users = u; }).catch(function () { state.users = []; }) : Promise.resolve();
   ready.then(function () {
-    var dr = ui.openDrawer('Replace with…', esc(entryName(state.book.entries[id])));
+    var dr = ui.openDrawer(esc(t('settings.replaceWith', 'Replace with…')), esc(entryName(state.book.entries[id])));
     var uses = (state.book.usage || {})[id] || [];
     function pick(label, make) {
-      bookCommit('Replace <b>' + esc(entryName(state.book.entries[id])) + '</b> with <b>' + esc(label) + '</b> in every list that names it?',
+      bookCommit(t('settings.replaceConfirm', 'Replace <b>{name}</b> with <b>{other}</b> in every list that names it?', { name: esc(entryName(state.book.entries[id])), other: esc(label) }),
         null, rewritesFor(uses, function (list) { return replaceIn(list, id, make); }), uses, null, true);
     }
     function option(label, desc, attr, value, onPick) {
@@ -673,20 +720,20 @@ function openReplace(id) {
       dr.body.appendChild(o);
     }
     var others = Object.keys(state.book.entries).filter(function (k) { return k !== id; });
-    if (others.length) { dr.body.appendChild(h('<div class="ts-subhead">External contacts</div>')); }
+    if (others.length) { dr.body.appendChild(h('<div class="ts-subhead">' + esc(t('settings.externalContacts', 'External contacts')) + '</div>')); }
     others.forEach(function (k) {
       var e = state.book.entries[k];
       option(entryName(e), [e.sms, e.email].filter(Boolean).join(' · '), 'data-entry', k, function () {
         pick(entryName(e), function (c) { return swapped(c, { type: 'book', entryId: k }, !!e.sms, !!e.email); });
       });
     });
-    if ((state.users || []).length) { dr.body.appendChild(h('<div class="ts-subhead">Platform users</div>')); }
+    if ((state.users || []).length) { dr.body.appendChild(h('<div class="ts-subhead">' + esc(t('settings.platformUsers', 'Platform users')) + '</div>')); }
     (state.users || []).forEach(function (u) {
-      option(userName(u), u.email + (u.phone ? ' · ' + u.phone : ' · no phone'), 'data-user', u.id.id, function () {
+      option(userName(u), u.email + (u.phone ? ' · ' + u.phone : t('settings.noPhone', ' · no phone')), 'data-user', u.id.id, function () {
         pick(userName(u), function (c) { return swapped(c, { type: 'user', userId: u.id.id }, !!u.phone, !!u.email); });
       });
     });
-    if (!dr.body.children.length) { dr.body.appendChild(h('<div class="ts-empty">No other entry and no platform user to replace it with.</div>')); }
+    if (!dr.body.children.length) { dr.body.appendChild(h('<div class="ts-empty">' + esc(t('settings.nothingToReplace', 'No other entry and no platform user to replace it with.')) + '</div>')); }
   });
 }
 
@@ -694,14 +741,15 @@ function removeEntry(id) {
   var entries = bookCopy(), uses = (state.book.usage || {})[id] || [];
   var name = entryName(entries[id]);
   delete entries[id];
-  bookCommit('Remove <b>' + esc(name) + '</b> from the external contacts and from every list that names it?', entries,
+  bookCommit(t('settings.removeConfirm', 'Remove <b>{name}</b> from the external contacts and from every list that names it?', { name: esc(name) }), entries,
     rewritesFor(uses, function (list) { return list.filter(function (c) { return !(c && c.type === 'book' && c.entryId === id); }); }), uses, null, true);
 }
 
 // -- calculated measurements (measurement/vocabulary.md §4) ---------------------------
 
 function calcOwnAttributes(name) { return ((state.names[name] || {}).calculated || {}).attributes || []; }
-function calcAttrName(attr) { return (state.calcMeta.attributes[attr] || {}).label || attr; }
+function calcAttrName(attr) { var label = (state.calcMeta.attributes[attr] || {}).label; return label ? t.attribute(attr, label) : attr; }
+function calcDescription(name) { var desc = (state.names[name] || {}).description; return desc && t.channelInfo(name, desc); }
 function calcInputs(name) {
   return (((state.names[name] || {}).calculated || {}).channels || []).map(function (c) { return calc.channelLabel(state.calcMeta, state.own, c); });
 }
@@ -709,20 +757,20 @@ function calcInputs(name) {
 function renderCalculations() {
   var plan = resolver.calculationPlan(state.own, state.names);
   if (!plan.length) { return; }
-  var sec = h('<div class="ts-section ts-calc"><div class="ts-section-head">Calculated measurements</div></div>');
+  var sec = h('<div class="ts-section ts-calc"><div class="ts-section-head">' + esc(t('settings.calculated', 'Calculated measurements')) + '</div></div>');
   plan.forEach(function (p) {
     var set = p.reads.filter(function (a) { return state.own[resolver.CALC_PREFIX + a] != null; }).map(function (a) {
       var spec = state.calcMeta.attributes[a] || {};
       return calcAttrName(a) + ' ' + state.own[resolver.CALC_PREFIX + a] + (spec.unit ? ' ' + spec.unit : '');
     });
-    var needs = p.on ? [] : ['Needs ' + calc.listText(p.needs.map(calcAttrName))];
-    var meta = [(state.names[p.name] || {}).description].concat(needs, p.reads.length ? set : ['Automatic from ' + calc.listText(calcInputs(p.name))]);
+    var needs = p.on ? [] : [t('common.needs', 'Needs {list}', { list: calc.listText(p.needs.map(calcAttrName)) })];
+    var meta = [calcDescription(p.name)].concat(needs, p.reads.length ? set : [t('settings.automaticFrom', 'Automatic from {list}', { list: calc.listText(calcInputs(p.name)) })]);
     var editable = !state.readOnly && p.reads.length > 0;
     var row = h('<div class="ts-row' + (editable ? '' : ' static') + '"' + (editable ? ' tabindex="0"' : '') + ' data-calc-name="' + esc(p.name) + '">' +
       '<div class="ts-row-main"><div class="ts-row-label"></div><div class="ts-row-meta"></div></div><div class="ts-row-value"></div></div>');
     row.querySelector('.ts-row-label').textContent = calc.channelLabel(state.calcMeta, state.own, p.name);
     row.querySelector('.ts-row-meta').textContent = meta.filter(Boolean).join(' · ');
-    row.querySelector('.ts-row-value').appendChild(h(p.on ? '<span class="ts-chip accent">On</span>' : '<span class="ts-chip">Off</span>'));
+    row.querySelector('.ts-row-value').appendChild(h(p.on ? '<span class="ts-chip accent">' + esc(t('common.on', 'On')) + '</span>' : '<span class="ts-chip">' + esc(t('common.off', 'Off')) + '</span>'));
     if (editable) { row.addEventListener('click', function () { openCalculation(p, plan); }); }
     sec.appendChild(row);
   });
@@ -731,16 +779,17 @@ function renderCalculations() {
 
 function openCalculation(p, plan) {
   var station = state.origin, label = calc.channelLabel(state.calcMeta, state.own, p.name);
-  var dr = ui.openDrawer('Calculated measurement', esc(station.name));
+  var dr = ui.openDrawer(esc(t('settings.calculatedOne', 'Calculated measurement')), esc(station.name));
   var intro = h('<p class="ts-calc-intro"></p>');
-  var desc = (state.names[p.name] || {}).description;
-  intro.textContent = (desc ? desc + '. ' : '') + 'Calculated from ' + calc.listText(calcInputs(p.name)) +
-    ' and the setting' + (p.reads.length > 1 ? 's' : '') + ' below.';
+  var desc = calcDescription(p.name), inputs = calc.listText(calcInputs(p.name));
+  intro.textContent = (desc ? desc + '. ' : '') + (p.reads.length > 1
+    ? t('settings.calculatedFromMany', 'Calculated from {inputs} and the settings below.', { inputs: inputs })
+    : t('settings.calculatedFromOne', 'Calculated from {inputs} and the setting below.', { inputs: inputs }));
   dr.body.appendChild(intro);
   var form = calc.form(station, state.own, p.reads, state.calcMeta);
   dr.body.appendChild(form.el);
-  dr.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
-  var save = ui.drawerActions(dr, p.needs.length ? 'Turn on' : 'Save');
+  dr.body.appendChild(h('<div class="ts-field-hint">' + esc(t('calculations.hint', 'Values are calculated from the latest reading on; earlier readings are not recalculated.')) + '</div>'));
+  var save = ui.drawerActions(dr, p.needs.length ? t('common.turnOn', 'Turn on') : t('common.save', 'Save'));
   function sync() { save.disabled = !form.values(); }
   form.onChange(sync);
   sync();
@@ -748,33 +797,34 @@ function openCalculation(p, plan) {
     save.disabled = true;
     calc.save(station, form.values()).then(function () {
       ui.closeDrawer();
-      ui.toast(p.needs.length ? label + ' is on' : 'Saved');
+      ui.toast(p.needs.length ? t('settings.isOn', '{name} is on', { name: label }) : t('common.saved', 'Saved'));
       return load();
     }).catch(function (err) {
       save.disabled = false;
-      ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+      failed(err);
     });
   });
   var own = calcOwnAttributes(p.name);
   if (own.length && own.every(function (a) { return state.own[resolver.CALC_PREFIX + a] != null; })) {
-    var off = h('<button type="button" class="ts-btn" data-a="turn-off">Turn off</button>');
+    var off = h('<button type="button" class="ts-btn" data-a="turn-off">' + esc(t('common.turnOff', 'Turn off')) + '</button>');
     dr.foot.insertBefore(off, dr.foot.firstChild);
     off.addEventListener('click', function () {
       var goes = plan.filter(function (q) {
         return q.on && q.reads.some(function (a) { return own.indexOf(a) >= 0; });
       }).map(function (q) { return calc.channelLabel(state.calcMeta, state.own, q.name); });
-      ui.confirm('Turn off <b>' + esc(calc.listText(goes)) + '</b> on ' + esc(station.name) + '? The values stored so far are kept.', 'Turn off')
+      ui.confirm(t('settings.turnOffConfirm', 'Turn off <b>{names}</b> on {station}? The values stored so far are kept.', { names: esc(calc.listText(goes)), station: esc(station.name) }),
+        t('common.turnOff', 'Turn off'))
         .then(function (ok) {
           if (!ok) { return; }
           off.disabled = true;
           return calc.clear(station, own).then(function () {
             ui.closeDrawer();
-            ui.toast(label + ' is off');
+            ui.toast(t('settings.isOff', '{name} is off', { name: label }));
             return load();
           });
         }).catch(function (err) {
           off.disabled = false;
-          ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+          failed(err);
         });
     });
   }
@@ -788,11 +838,13 @@ function openCalculation(p, plan) {
  * given, runs once confirmed and before the write. */
 function commit(write, remove, what, button, before) {
   if (button) { button.disabled = true; }
-  var noun = state.deviceBranch ? 'device' : 'station';
+  var devices = state.deviceBranch;
   return resolver.affectedStations(state.origin, io).then(function (stations) {
     var n = stations.length;
+    var p = { what: esc(what), n: n, name: esc(state.origin.name) };
     var ask = n > 1
-      ? ui.confirm('This changes <b>' + esc(what) + '</b> for <b>' + n + ' ' + noun + 's</b> under ' + esc(state.origin.name) + '.', 'Apply to ' + n + ' ' + noun + 's')
+      ? (devices ? ui.confirm(t('settings.changesDevices', 'This changes <b>{what}</b> for <b>{n} devices</b> under {name}.', p), t('settings.applyDevices', 'Apply to {n} devices', p))
+        : ui.confirm(t('settings.changesStations', 'This changes <b>{what}</b> for <b>{n} stations</b> under {name}.', p), t('settings.applyStations', 'Apply to {n} stations', p)))
       : Promise.resolve(true);
     return ask.then(function (ok) {
       if (!ok) { if (button) { button.disabled = false; } return; }
@@ -802,35 +854,38 @@ function commit(write, remove, what, button, before) {
         .then(function () { return tb.resolveStations(stations); })
         .then(function () {
           ui.closeDrawer();
-          ui.toast(n === 0 ? 'Saved' : n === 1 ? '1 ' + noun + ' updated' : n + ' ' + noun + 's updated');
+          ui.toast(n === 0 ? t('common.saved', 'Saved')
+            : devices ? (n === 1 ? t('settings.deviceUpdatedOne', '1 device updated') : t('settings.deviceUpdatedMany', '{n} devices updated', { n: n }))
+            : n === 1 ? t('settings.stationUpdatedOne', '1 station updated') : t('settings.stationUpdatedMany', '{n} stations updated', { n: n }));
           return load();
         });
     });
   }).catch(function (err) {
     if (button) { button.disabled = false; }
-    ui.toast('Save failed: ' + (err && (err.message || (err.error && err.error.message)) || err), 'error');
+    failed(err);
   });
 }
 
 function resetScalar(d) {
   var hit = inherited(d.key);
-  ui.confirm('Reset <b>' + esc(d.label) + '</b> to ' + (hit ? 'the value inherited from ' + esc(levelLabel(hit.from)) : 'nothing (not set anywhere above)') + '?', 'Reset')
+  ui.confirm(hit ? t('settings.resetConfirm', 'Reset <b>{label}</b> to the value inherited from {level}?', { label: esc(d.label), level: esc(levelLabel(hit.from)) })
+    : t('settings.resetConfirmNothing', 'Reset <b>{label}</b> to nothing (not set anywhere above)?', { label: esc(d.label) }), t('settings.reset', 'Reset'))
     .then(function (ok) { if (ok) { commit({}, [d.key], d.label); } });
 }
 
 // -- add ----------------------------------------------------------------------------
 
 function openAdd() {
-  var dr = ui.openDrawer('Add setting', esc(state.origin.kind + ' · ' + state.origin.name));
+  var dr = ui.openDrawer(esc(t('settings.addSetting', 'Add setting')), esc(kindName(state.origin.kind) + ' · ' + state.origin.name));
   var tiles = h('<div class="ts-tiles"></div>');
-  [['measurement', ICON.gauge, 'Measurement', state.deviceBranch ? 'Alarm limits on one of the device\'s own readings'
-     : 'Alarm thresholds or conditions, unit and hysteresis for one measurement'],
-   ['notifications', ICON.bell, 'Notifications', 'Contacts for measurement and device alarms, SMS and e-mail on or off, message wording, language'],
-   ['retention', ICON.archive, 'Data retention', 'How long measured data is kept']].filter(function (t) {
-    return !state.deviceBranch || t[0] !== 'notifications';
-  }).forEach(function (t) {
-    var el = h('<button type="button" class="ts-tile"><span class="ts-tile-icon">' + t[1] + '</span><span><b>' + t[2] + '</b><span>' + t[3] + '</span></span></button>');
-    el.addEventListener('click', function () { if (t[0] === 'measurement') { openMeasurementPicker(true); } else { openScalar(t[0], true); } });
+  [['measurement', ICON.gauge, t('common.measurement', 'Measurement'), state.deviceBranch ? t('settings.tileDeviceMeasurement', 'Alarm limits on one of the device\'s own readings')
+     : t('settings.tileMeasurement', 'Alarm thresholds or conditions, unit and hysteresis for one measurement')],
+   ['notifications', ICON.bell, t('settings.notifications', 'Notifications'), t('settings.tileNotifications', 'Contacts for measurement and device alarms, SMS and e-mail on or off, message wording, language')],
+   ['retention', ICON.archive, t('settings.retention', 'Data retention'), t('settings.tileRetention', 'How long measured data is kept')]].filter(function (tile) {
+    return !state.deviceBranch || tile[0] !== 'notifications';
+  }).forEach(function (tile) {
+    var el = h('<button type="button" class="ts-tile"><span class="ts-tile-icon">' + tile[1] + '</span><span><b>' + esc(tile[2]) + '</b><span>' + esc(tile[3]) + '</span></span></button>');
+    el.addEventListener('click', function () { if (tile[0] === 'measurement') { openMeasurementPicker(true); } else { openScalar(tile[0], true); } });
     tiles.appendChild(el);
   });
   dr.body.appendChild(tiles);
@@ -838,7 +893,7 @@ function openAdd() {
 
 function openMeasurementPicker(fromAdd) {
   if (state.deviceBranch) { openSourcePicker(fromAdd); return; }
-  var dr = ui.openDrawer('Choose a measurement', 'Grouped by kind');
+  var dr = ui.openDrawer(esc(t('settings.chooseMeasurement', 'Choose a measurement')), esc(t('settings.groupedByKind', 'Grouped by kind')));
   if (fromAdd) { dr.onBack(openAdd); }
   var own = channelsWith(state.own);
   var measurable = {};
@@ -848,17 +903,17 @@ function openMeasurementPicker(fromAdd) {
     kinds: state.kinds,
     allowKind: function (spec) { return !spec || spec.alarm !== 'none'; },
     inUse: Object.keys(state.channelKinds).map(function (k) { return resolver.splitChannelKey(k).name; }),
-    badge: function (n) { return own[n] ? '<span class="ts-chip">set here</span>' : ''; },
+    badge: function (n) { return own[n] ? '<span class="ts-chip">' + esc(t('settings.setHereChip', 'set here')) + '</span>' : ''; },
     onPick: function (n) { openChannel(n, fromAdd); }
   }));
   // A name sets every instance at once; an instance key overrides one of them.
   var instances = Object.keys(state.channelKinds).filter(function (k) { return resolver.splitChannelKey(k).instance && !isRule(k); })
     .sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
   if (instances.length) {
-    dr.body.appendChild(h('<div class="ts-subhead">One instance only</div>'));
+    dr.body.appendChild(h('<div class="ts-subhead">' + esc(t('settings.oneInstance', 'One instance only')) + '</div>'));
     instances.forEach(function (k) {
-      var o = ui.nameOption(k, { label: chLabel(k), description: 'Overrides ' + chLabel(resolver.splitChannelKey(k).name) + ' for this instance' },
-        own[k] ? '<span class="ts-chip">set here</span>' : '', '');
+      var o = ui.nameOption(k, { label: chLabel(k), description: t('settings.overridesInstance', 'Overrides {name} for this instance', { name: chLabel(resolver.splitChannelKey(k).name) }) },
+        own[k] ? '<span class="ts-chip">' + esc(t('settings.setHereChip', 'set here')) + '</span>' : '', '');
       o.addEventListener('click', function () { openChannel(k, fromAdd); });
       dr.body.appendChild(o);
     });
@@ -868,14 +923,14 @@ function openMeasurementPicker(fromAdd) {
 /** The device branch: pick one of the device's own source keys, the LOGR's
  * diagnostics included — they are what a device alarm is about. */
 function openSourcePicker(fromAdd) {
-  var dr = ui.openDrawer('Choose a reading', esc(state.origin.name));
+  var dr = ui.openDrawer(esc(t('settings.chooseReading', 'Choose a reading')), esc(state.origin.name));
   if (fromAdd) { dr.onBack(openAdd); }
   var own = channelsWith(state.own);
   var keys = state.sourceKeys.slice();
   Object.keys(own).forEach(function (k) { if (keys.indexOf(k) < 0) { keys.push(k); } });
-  if (!keys.length) { dr.body.appendChild(h('<div class="ts-empty">No reading stored yet.</div>')); return; }
+  if (!keys.length) { dr.body.appendChild(h('<div class="ts-empty">' + esc(t('settings.noReading', 'No reading stored yet.')) + '</div>')); return; }
   keys.sort().forEach(function (k) {
-    var o = ui.nameOption(k, { label: chLabel(k), description: kindLabel(k) }, own[k] ? '<span class="ts-chip">set here</span>' : '', '');
+    var o = ui.nameOption(k, { label: chLabel(k), description: kindLabel(k) }, own[k] ? '<span class="ts-chip">' + esc(t('settings.setHereChip', 'set here')) + '</span>' : '', '');
     o.addEventListener('click', function () { openChannel(k, fromAdd); });
     dr.body.appendChild(o);
   });
@@ -892,14 +947,14 @@ function openChannel(ch, fromAdd) {
 function channelTextField(ch, field, label, tip, draft, onChange) {
   var key = CH + ch + '.' + field;
   var hit = inherited(key);
-  var el = h('<div class="ts-field"><div class="ts-field-label"><span></span> ' + info(tip) + '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div>' +
+  var el = h('<div class="ts-field"><div class="ts-field-label"><span></span> ' + info(tip) + '<button type="button" class="ts-reset" hidden>' + esc(t('settings.resetToInherited', 'Reset to inherited')) + '</button></div>' +
     '<input class="ts-input wide"><div class="ts-field-hint"></div></div>');
   el.querySelector('.ts-field-label span').textContent = label;
   var input = el.querySelector('input'), reset = el.querySelector('.ts-reset');
   input.value = draft[field] || '';
   input.placeholder = hit ? String(hit.value) : (field === 'label' ? chLabel(ch) : '');
-  el.querySelector('.ts-field-hint').textContent = hit ? 'Inherited: ' + hit.value + ' from ' + levelLabel(hit.from)
-    : field === 'label' ? 'Standard name: ' + chLabel(ch) : '';
+  el.querySelector('.ts-field-hint').textContent = hit ? t('settings.inheritedValue', 'Inherited: {value} from {level}', { value: hit.value, level: levelLabel(hit.from) })
+    : field === 'label' ? t('settings.standardName', 'Standard name: {name}', { name: chLabel(ch) }) : '';
   function sync() { reset.hidden = !draft[field]; if (onChange) { onChange(); } }
   input.addEventListener('input', function () { draft[field] = input.value.trim(); sync(); });
   reset.addEventListener('click', function () { draft[field] = ''; input.value = ''; sync(); });
@@ -915,16 +970,17 @@ function debounceField(ch, draft, onChange) {
   G.SEVERITIES.some(function (sv) { if (isOwn(debKey(ch, sv.id))) { draft.debounce = String(ownVal(debKey(ch, sv.id))); return true; } return false; });
   var hit = null;
   G.SEVERITIES.some(function (sv) { hit = inherited(debKey(ch, sv.id)); return !!hit; });
-  var el = h('<div class="ts-field ts-debounce"><div class="ts-field-label">Confirm after ' + info('debounce') + '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div>' +
-    '<span><input class="ts-input num" type="number" step="1" min="1"> readings in a row</span><div class="ts-field-hint"></div><div class="ts-field-error"></div></div>');
+  var el = h('<div class="ts-field ts-debounce"><div class="ts-field-label">' + esc(t('settings.confirmAfter', 'Confirm after')) + ' ' + info('debounce') + '<button type="button" class="ts-reset" hidden>' + esc(t('settings.resetToInherited', 'Reset to inherited')) + '</button></div>' +
+    '<span><input class="ts-input num" type="number" step="1" min="1"> ' + esc(t('settings.readingsInRow', 'readings in a row')) + '</span><div class="ts-field-hint"></div><div class="ts-field-error"></div></div>');
   var input = el.querySelector('input'), reset = el.querySelector('.ts-reset');
   input.value = draft.debounce || '';
   input.placeholder = hit ? String(hit.value) : '1';
-  el.querySelector('.ts-field-hint').textContent = hit ? 'Inherited: ' + hit.value + ' from ' + levelLabel(hit.from) : 'Not set above: the first reading alarms';
+  el.querySelector('.ts-field-hint').textContent = hit ? t('settings.inheritedValue', 'Inherited: {value} from {level}', { value: hit.value, level: levelLabel(hit.from) })
+    : t('settings.debounceUnset', 'Not set above: the first reading alarms');
   reset.hidden = !draft.debounce;
   function check() {
     var bad = draft.debounce !== '' && !(Number(draft.debounce) >= 1 && Math.floor(Number(draft.debounce)) === Number(draft.debounce));
-    el.querySelector('.ts-field-error').textContent = bad ? 'A whole number of readings, 1 or more.' : '';
+    el.querySelector('.ts-field-error').textContent = bad ? t('settings.debounceInvalid', 'A whole number of readings, 1 or more.') : '';
     return !bad;
   }
   input.addEventListener('input', function () { draft.debounce = input.value; reset.hidden = draft.debounce === ''; onChange(); });
@@ -947,22 +1003,23 @@ function numericEditor(ch, dr) {
   }); });
   ['hysteresis', 'label'].forEach(function (f) { if (isOwn(CH + ch + '.' + f)) { draft[f] = String(ownVal(CH + ch + '.' + f)); } });
 
-  var thr = h('<div class="ts-field"><div class="ts-field-label">Alarm thresholds ' + info('thresholds') + '</div><div class="ts-scale"></div>' +
-    '<div class="ts-thr-list"></div><button type="button" class="ts-btn ghost ts-thr-add">' + ICON.plus + 'Add threshold</button><div class="ts-field-error"></div></div>');
-  var hyst = h('<div class="ts-field"><div class="ts-field-label">Hysteresis ' + info('hysteresis') + '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div>' +
+  var thr = h('<div class="ts-field"><div class="ts-field-label">' + esc(t('settings.thresholds', 'Alarm thresholds')) + ' ' + info('thresholds') + '</div><div class="ts-scale"></div>' +
+    '<div class="ts-thr-list"></div><button type="button" class="ts-btn ghost ts-thr-add">' + ICON.plus + esc(t('settings.addThreshold', 'Add threshold')) + '</button><div class="ts-field-error"></div></div>');
+  var hyst = h('<div class="ts-field"><div class="ts-field-label">' + esc(t('settings.hysteresis', 'Hysteresis')) + ' ' + info('hysteresis') + '<button type="button" class="ts-reset" hidden>' + esc(t('settings.resetToInherited', 'Reset to inherited')) + '</button></div>' +
     '<span><input class="ts-input num" type="number" step="any" min="0"> <span class="ts-thr-unit"></span></span><div class="ts-field-hint"></div><div class="ts-field-error"></div></div>');
   dr.body.appendChild(thr);
   dr.body.appendChild(hyst);
   var deb = debounceField(ch, draft, function () { validate(); });
   dr.body.appendChild(deb);
-  dr.body.appendChild(channelTextField(ch, 'label', 'Name in messages', 'label', draft));
+  dr.body.appendChild(channelTextField(ch, 'label', t('settings.nameInMessages', 'Name in messages'), 'label', draft));
 
   var hystKey = CH + ch + '.hysteresis', hystHit = inherited(hystKey);
   var hystInput = hyst.querySelector('input'), hystReset = hyst.querySelector('.ts-reset');
   hystInput.value = draft.hysteresis;
   hystInput.placeholder = hystHit ? String(hystHit.value) : '0';
   hyst.querySelector('.ts-thr-unit').textContent = unitOf(ch);
-  hyst.querySelector('.ts-field-hint').textContent = hystHit ? 'Inherited: ' + hystHit.value + ' from ' + levelLabel(hystHit.from) : 'Not set above: no margin';
+  hyst.querySelector('.ts-field-hint').textContent = hystHit ? t('settings.inheritedValue', 'Inherited: {value} from {level}', { value: hystHit.value, level: levelLabel(hystHit.from) })
+    : t('settings.hysteresisUnset', 'Not set above: no margin');
   hystReset.hidden = draft.hysteresis === '';
   hystInput.addEventListener('input', function () { draft.hysteresis = hystInput.value; hystReset.hidden = draft.hysteresis === ''; validate(); });
   hystReset.addEventListener('click', function () { draft.hysteresis = ''; hystInput.value = ''; hystReset.hidden = true; validate(); });
@@ -992,11 +1049,11 @@ function numericEditor(ch, dr) {
     list.innerHTML = '';
     var u = unitOf(ch);
     draft.conds.forEach(function (d, i) {
-      var row = h('<div class="ts-thr"><select class="ts-select ts-dir"><option value="above">Above</option><option value="below">Below</option></select>' +
+      var row = h('<div class="ts-thr"><select class="ts-select ts-dir"><option value="above">' + esc(t('common.above', 'Above')) + '</option><option value="below">' + esc(t('common.below', 'Below')) + '</option></select>' +
         '<input class="ts-input num ts-thr-val" type="number" step="any"><span class="ts-thr-unit"></span>' +
         '<span class="ts-sev-select">' + sevDot(d.sev) + '<select class="ts-select ts-sev">' +
         G.SEVERITIES.slice().reverse().map(function (s) { return '<option value="' + s.id + '">' + s.label + '</option>'; }).join('') +
-        '</select>' + info('severity') + '</span><button type="button" class="ts-icon-btn ts-thr-rm" title="Remove">' + ICON.close + '</button></div>');
+        '</select>' + info('severity') + '</span><button type="button" class="ts-icon-btn ts-thr-rm" title="' + esc(t('common.remove', 'Remove')) + '">' + ICON.close + '</button></div>');
       var dirSel = row.querySelector('.ts-dir'), sevSel = row.querySelector('.ts-sev'), val = row.querySelector('.ts-thr-val');
       dirSel.value = d.dir; sevSel.value = d.sev; val.value = d.value;
       row.querySelector('.ts-thr-unit').textContent = u;
@@ -1007,15 +1064,15 @@ function numericEditor(ch, dr) {
       list.appendChild(row);
     });
     var inh = inheritedConds();
-    inh.forEach(function (t) {
-      var s = G.severity(t.sev);
-      var row = h('<div class="ts-thr inherited' + (shadowed(t) ? ' shadowed' : '') + '"><span class="ts-thr-static">' + (t.dir === 'above' ? 'Above' : 'Below') + '</span>' +
-        '<span class="ts-thr-static" style="text-align:right">' + esc(t.value) + '</span><span class="ts-thr-unit">' + esc(u) + '</span>' +
-        '<span class="ts-sev-select">' + sevDot(t.sev) + esc(s.label) + '</span><span></span><span class="ts-thr-from"></span></div>');
-      row.querySelector('.ts-thr-from').textContent = shadowed(t) ? 'replaced here' : 'inherited from ' + levelLabel(t.from);
+    inh.forEach(function (th) {
+      var s = G.severity(th.sev);
+      var row = h('<div class="ts-thr inherited' + (shadowed(th) ? ' shadowed' : '') + '"><span class="ts-thr-static">' + esc(th.dir === 'above' ? t('common.above', 'Above') : t('common.below', 'Below')) + '</span>' +
+        '<span class="ts-thr-static" style="text-align:right">' + esc(th.value) + '</span><span class="ts-thr-unit">' + esc(u) + '</span>' +
+        '<span class="ts-sev-select">' + sevDot(th.sev) + esc(s.label) + '</span><span></span><span class="ts-thr-from"></span></div>');
+      row.querySelector('.ts-thr-from').textContent = shadowed(th) ? t('settings.replacedHere', 'replaced here') : t('settings.inheritedFrom', 'inherited from {level}', { level: levelLabel(th.from) });
       list.appendChild(row);
     });
-    if (!draft.conds.length && !inh.length) { list.appendChild(h('<div class="ts-empty">No threshold: this measurement never raises an alarm.</div>')); }
+    if (!draft.conds.length && !inh.length) { list.appendChild(h('<div class="ts-empty">' + esc(t('settings.noThreshold', 'No threshold: this measurement never raises an alarm.')) + '</div>')); }
     renderScale();
     validate();
   }
@@ -1051,18 +1108,21 @@ function numericEditor(ch, dr) {
   function validate() {
     var seen = {}, err = '';
     draft.conds.forEach(function (d) {
-      if (seen[d.sev + d.dir]) { err = 'Only one ' + G.severity(d.sev).label + ' threshold ' + d.dir + ' per measurement.'; }
+      if (seen[d.sev + d.dir]) {
+        err = d.dir === 'above' ? t('settings.onlyOneAbove', 'Only one {severity} threshold above per measurement.', { severity: G.severity(d.sev).label })
+          : t('settings.onlyOneBelow', 'Only one {severity} threshold below per measurement.', { severity: G.severity(d.sev).label });
+      }
       seen[d.sev + d.dir] = true;
-      if (d.value === '' || !isFinite(Number(d.value))) { err = err || 'Enter a value for every threshold.'; }
+      if (d.value === '' || !isFinite(Number(d.value))) { err = err || t('settings.valueMissing', 'Enter a value for every threshold.'); }
     });
     var eff = effective();
     eff.forEach(function (a) { eff.forEach(function (b) {
       if (a.dir !== b.dir || a.sev === 'indeterminate' || b.sev === 'indeterminate' || G.rank(a.sev) <= G.rank(b.sev)) { return; }
       if ((a.dir === 'above' && a.value < b.value) || (a.dir === 'below' && a.value > b.value)) {
-        err = err || G.severity(a.sev).label + ' should be reached after ' + G.severity(b.sev).label + ', not before.';
+        err = err || t('settings.severityOrder', '{higher} should be reached after {lower}, not before.', { higher: G.severity(a.sev).label, lower: G.severity(b.sev).label });
       }
     }); });
-    var hystErr = draft.hysteresis !== '' && !(Number(draft.hysteresis) >= 0) ? 'Hysteresis is an absolute margin: zero or positive.' : '';
+    var hystErr = draft.hysteresis !== '' && !(Number(draft.hysteresis) >= 0) ? t('settings.hysteresisInvalid', 'Hysteresis is an absolute margin: zero or positive.') : '';
     msg.textContent = err;
     hyst.querySelector('.ts-field-error').textContent = hystErr;
     save.disabled = !!(err || hystErr) || !deb.valid();
@@ -1101,23 +1161,24 @@ function conditionEditor(ch, dr, isBool) {
   }
   function parse(v) { return isBool ? v === 'true' : Number(v); }
 
-  var sec = h('<div class="ts-field"><div class="ts-field-label">Alarm when ' + info(isBool ? 'boolAlarm' : 'stateAlarm') + '</div>' +
-    '<div class="ts-thr-list"></div><button type="button" class="ts-btn ghost">' + ICON.plus + 'Add condition</button><div class="ts-field-error"></div></div>');
+  var sec = h('<div class="ts-field"><div class="ts-field-label">' + esc(t('settings.alarmWhen', 'Alarm when')) + ' ' + info(isBool ? 'boolAlarm' : 'stateAlarm') + '</div>' +
+    '<div class="ts-thr-list"></div><button type="button" class="ts-btn ghost">' + ICON.plus + esc(t('settings.addCondition', 'Add condition')) + '</button><div class="ts-field-error"></div></div>');
   dr.body.appendChild(sec);
   var list = sec.querySelector('.ts-thr-list'), msg = sec.querySelector('.ts-field-error');
   var addBtn = sec.querySelector('.ts-btn');
   if (!values().length) {
     addBtn.hidden = true;
-    list.appendChild(h('<div class="ts-empty">This measurement declares no states, so no condition can be set. A tenant admin adds them in the peripheral catalog.</div>'));
+    list.appendChild(h('<div class="ts-empty">' + esc(t('settings.noStates', 'This measurement declares no states, so no condition can be set. A tenant admin adds them in the peripheral catalog.')) + '</div>'));
   }
 
   if (isBool) {
-    var ws = h('<div class="ts-field"><div class="ts-field-label">Wording ' + info('boolText') + '</div><div class="ts-wording">' +
-      '<label>When true (1)<input class="ts-input wide" data-f="textWhenTrue"></label><label>When false (0)<input class="ts-input wide" data-f="textWhenFalse"></label></div></div>');
+    var ws = h('<div class="ts-field"><div class="ts-field-label">' + esc(t('settings.wording', 'Wording')) + ' ' + info('boolText') + '</div><div class="ts-wording">' +
+      '<label>' + esc(t('settings.whenTrue', 'When true (1)')) + '<input class="ts-input wide" data-f="textWhenTrue"></label>' +
+      '<label>' + esc(t('settings.whenFalse', 'When false (0)')) + '<input class="ts-input wide" data-f="textWhenFalse"></label></div></div>');
     ws.querySelectorAll('input').forEach(function (inp) {
       var f = inp.getAttribute('data-f');
       var hit = inherited(CH + ch + '.' + f);
-      inp.placeholder = hit ? hit.value + ' (inherited)' : (f === 'textWhenTrue' ? 'true' : 'false');
+      inp.placeholder = hit ? t('settings.inheritedPlaceholder', '{value} (inherited)', { value: hit.value }) : (f === 'textWhenTrue' ? 'true' : 'false');
       inp.value = draft[f];
       inp.addEventListener('input', function () { draft[f] = inp.value.trim(); renderList(); });
     });
@@ -1125,7 +1186,7 @@ function conditionEditor(ch, dr, isBool) {
   }
   var deb = debounceField(ch, draft, function () { validate(); });
   dr.body.appendChild(deb);
-  dr.body.appendChild(channelTextField(ch, 'label', 'Name in messages', 'label', draft));
+  dr.body.appendChild(channelTextField(ch, 'label', t('settings.nameInMessages', 'Name in messages'), 'label', draft));
   var save = ui.drawerActions(dr);
 
   addBtn.addEventListener('click', function () {
@@ -1140,10 +1201,10 @@ function conditionEditor(ch, dr, isBool) {
     if (!values().length) { validate(); return; }
     list.innerHTML = '';
     draft.conds.forEach(function (d, i) {
-      var row = h('<div class="ts-thr ts-thr-state"><span class="ts-thr-static">Is</span><select class="ts-select ts-val"></select>' +
+      var row = h('<div class="ts-thr ts-thr-state"><span class="ts-thr-static">' + esc(t('settings.is', 'Is')) + '</span><select class="ts-select ts-val"></select>' +
         '<span class="ts-sev-select">' + sevDot(d.sev) + '<select class="ts-select ts-sev">' +
         G.SEVERITIES.slice().reverse().map(function (s) { return '<option value="' + s.id + '">' + s.label + '</option>'; }).join('') +
-        '</select>' + info('severity') + '</span><button type="button" class="ts-icon-btn ts-thr-rm" title="Remove">' + ICON.close + '</button></div>');
+        '</select>' + info('severity') + '</span><button type="button" class="ts-icon-btn ts-thr-rm" title="' + esc(t('common.remove', 'Remove')) + '">' + ICON.close + '</button></div>');
       var valSel = row.querySelector('.ts-val'), sevSel = row.querySelector('.ts-sev');
       values().forEach(function (v) {
         var o = document.createElement('option');
@@ -1163,20 +1224,20 @@ function conditionEditor(ch, dr, isBool) {
       if (!hit) { return; }
       any = true;
       var sh = draft.conds.some(function (d) { return d.sev === s.id; });
-      var row = h('<div class="ts-thr ts-thr-state inherited' + (sh ? ' shadowed' : '') + '"><span class="ts-thr-static">Is</span><span class="ts-thr-static"></span>' +
+      var row = h('<div class="ts-thr ts-thr-state inherited' + (sh ? ' shadowed' : '') + '"><span class="ts-thr-static">' + esc(t('settings.is', 'Is')) + '</span><span class="ts-thr-static"></span>' +
         '<span class="ts-sev-select">' + sevDot(s.id) + esc(s.label) + '</span><span></span><span class="ts-thr-from"></span></div>');
       row.querySelectorAll('.ts-thr-static')[1].textContent = label(hit.value);
-      row.querySelector('.ts-thr-from').textContent = sh ? 'replaced here' : 'inherited from ' + levelLabel(hit.from);
+      row.querySelector('.ts-thr-from').textContent = sh ? t('settings.replacedHere', 'replaced here') : t('settings.inheritedFrom', 'inherited from {level}', { level: levelLabel(hit.from) });
       list.appendChild(row);
     });
-    if (!draft.conds.length && !any) { list.appendChild(h('<div class="ts-empty">No condition: this measurement never raises an alarm.</div>')); }
+    if (!draft.conds.length && !any) { list.appendChild(h('<div class="ts-empty">' + esc(t('settings.noCondition', 'No condition: this measurement never raises an alarm.')) + '</div>')); }
     validate();
   }
 
   function validate() {
     var seen = {}, err = '';
     draft.conds.forEach(function (d) {
-      if (seen[d.sev]) { err = 'Only one ' + G.severity(d.sev).label + ' condition per measurement.'; }
+      if (seen[d.sev]) { err = t('settings.onlyOneCondition', 'Only one {severity} condition per measurement.', { severity: G.severity(d.sev).label }); }
       seen[d.sev] = true;
     });
     msg.textContent = err;
@@ -1199,13 +1260,13 @@ function conditionEditor(ch, dr, isBool) {
 // -- notifications and retention -------------------------------------------------------
 
 function openScalar(section, fromAdd) {
-  var title = SECTIONS.filter(function (x) { return x[0] === section; })[0][1];
+  var sec = SECTIONS.filter(function (x) { return x[0] === section; })[0], title = sec[1];
   var needsUsers = section === 'notifications' && state.users === null;
   var ready = needsUsers
     ? tb.listUsers(state.customerId).then(function (u) { state.users = u; }).catch(function () { state.users = []; })
     : Promise.resolve();
   ready.then(function () {
-    var dr = ui.openDrawer(title, esc(state.origin.kind + ' · ' + state.origin.name));
+    var dr = ui.openDrawer(esc(title), esc(kindName(state.origin.kind) + ' · ' + state.origin.name));
     if (fromAdd) { dr.onBack(openAdd); }
     var draft = {};
     pendingBook = {};
@@ -1213,8 +1274,8 @@ function openScalar(section, fromAdd) {
     defs.forEach(function (d) { if (isOwn(d.key)) { draft[d.key] = JSON.parse(JSON.stringify(ownVal(d.key))); } });
     if (section === 'notifications' && state.ancestors.length) {
       var b = h('<div class="ts-banner">' + ICON.info + '<span></span></div>');
-      b.querySelector('span').textContent = 'Only what you change here replaces the inherited settings; everything else keeps coming from ' +
-        levelLabel(state.ancestors[0].level) + '. A list you change here replaces the whole inherited list.';
+      b.querySelector('span').textContent = t('settings.notificationsBanner', 'Only what you change here replaces the inherited settings; everything else keeps coming from {level}. A list you change here replaces the whole inherited list.',
+        { level: levelLabel(state.ancestors[0].level) });
       dr.body.appendChild(b);
     }
     defs.filter(function (d) { return !d.nestedIn; }).forEach(function (d) { dr.body.appendChild(scalarField(d, draft)); });
@@ -1225,7 +1286,7 @@ function openScalar(section, fromAdd) {
     save.addEventListener('click', function () {
       var write = {}, remove = [];
       defs.forEach(function (d) { if (d.key in draft) { write[d.key] = draft[d.key]; } else { remove.push(d.key); } });
-      commit(write, remove, title.toLowerCase(), save, newEntries(write));
+      commit(write, remove, sec[2], save, newEntries(write));
     });
   });
 }
@@ -1245,13 +1306,13 @@ function newEntries(write) {
 
 function tokenChips(ta, onChange) {
   var box = h('<div class="ts-tokens"></div>');
-  G.TOKENS.forEach(function (t) {
+  G.TOKENS.forEach(function (tok) {
     var c = h('<button type="button" class="ts-chip"></button>');
-    c.textContent = '+ ' + t.label;
-    c.title = 'Insert ' + t.token;
+    c.textContent = '+ ' + tok.label;
+    c.title = t('settings.insertToken', 'Insert {token}', { token: tok.token });
     c.addEventListener('click', function () {
       var at = ta.selectionStart === undefined ? ta.value.length : ta.selectionStart;
-      ta.value = ta.value.slice(0, at) + t.token + ta.value.slice(ta.selectionEnd || at);
+      ta.value = ta.value.slice(0, at) + tok.token + ta.value.slice(ta.selectionEnd || at);
       onChange(); ta.focus();
     });
     box.appendChild(c);
@@ -1262,7 +1323,7 @@ function tokenChips(ta, onChange) {
 function scalarField(d, draft) {
   var hit = inherited(d.key);
   var f = h('<div class="ts-field"><div class="ts-field-label"><span></span> ' + (d.tip ? info(d.tip) : '') +
-    '<button type="button" class="ts-reset" hidden>Reset to inherited</button></div><div class="ts-ctl"></div><div class="ts-field-hint"></div></div>');
+    '<button type="button" class="ts-reset" hidden>' + esc(t('settings.resetToInherited', 'Reset to inherited')) + '</button></div><div class="ts-ctl"></div><div class="ts-field-hint"></div></div>');
   f.querySelector('.ts-field-label span').textContent = d.label;
   var ctl = f.querySelector('.ts-ctl'), hint = f.querySelector('.ts-field-hint'), reset = f.querySelector('.ts-reset');
 
@@ -1274,8 +1335,11 @@ function scalarField(d, draft) {
   function sync() {
     reset.hidden = !(d.key in draft);
     hint.textContent = d.key in draft
-      ? (hit ? 'Replaces ' + (d.type === 'text' || d.type === 'contacts' ? 'the inherited ' + (d.type === 'text' ? 'wording' : 'list') : fmtScalar(d, hit.value).replace(/<[^>]+>/g, '')) + ' from ' + levelLabel(hit.from) : 'Set here')
-      : (hit ? 'Inherited from ' + levelLabel(hit.from) : d.type === 'bool' ? 'Not set anywhere above: off' : 'Not set anywhere above');
+      ? (hit ? t('settings.replacesFromHint', 'Replaces {what} from {level}', {
+        what: d.type === 'text' ? t('settings.inheritedWording', 'the inherited wording') : d.type === 'contacts' ? t('settings.inheritedList', 'the inherited list')
+          : fmtScalar(d, hit.value).replace(/<[^>]+>/g, ''), level: levelLabel(hit.from) }) : t('settings.setHere', 'Set here'))
+      : (hit ? t('settings.inheritedFromHint', 'Inherited from {level}', { level: levelLabel(hit.from) })
+        : d.type === 'bool' ? t('settings.unsetOff', 'Not set anywhere above: off') : t('settings.unset', 'Not set anywhere above'));
   }
   function set(v) { draft[d.key] = v; sync(); }
   reset.addEventListener('click', function () { delete draft[d.key]; build(); sync(); setValid(true); });
@@ -1287,8 +1351,8 @@ function scalarField(d, draft) {
       var sw = h('<label class="ts-switch"><input type="checkbox"> <span></span></label>');
       var cb = sw.querySelector('input');
       cb.checked = v === true || v === 'true';
-      sw.querySelector('span').textContent = cb.checked ? 'On' : 'Off';
-      cb.addEventListener('change', function () { sw.querySelector('span').textContent = cb.checked ? 'On' : 'Off'; set(cb.checked); });
+      sw.querySelector('span').textContent = cb.checked ? t('common.on', 'On') : t('common.off', 'Off');
+      cb.addEventListener('change', function () { sw.querySelector('span').textContent = cb.checked ? t('common.on', 'On') : t('common.off', 'Off'); set(cb.checked); });
       ctl.appendChild(sw);
     } else if (d.type === 'contacts') {
       ctl.appendChild(contactsEditor(Array.isArray(v) ? v : [], set, setValid));
@@ -1303,7 +1367,7 @@ function scalarField(d, draft) {
       sel.addEventListener('change', function () { set(sel.value); });
       ctl.appendChild(sel);
     } else if (d.type === 'days' || d.type === 'hours') {
-      var n = h('<span><input class="ts-input num" type="number" min="1" step="1"> ' + d.type + '</span>');
+      var n = h('<span><input class="ts-input num" type="number" min="1" step="1"> ' + esc(d.type === 'days' ? t('settings.days', 'days') : t('settings.hours', 'hours')) + '</span>');
       var inp = n.querySelector('input');
       inp.value = v === null ? '' : v;
       inp.addEventListener('input', function () {
@@ -1327,9 +1391,10 @@ function textEditor(d, draft, v, set, setValid, ctl) {
     var si = G.smsInfo(ta.value);
     var over = si.parts > si.maxParts;
     counter.className = 'ts-sms-count' + (over ? ' over' : si.parts > 1 ? ' warn' : '');
-    counter.innerHTML = '≈ ' + si.len + ' / ' + si.single + ' characters · ' +
-      (over ? 'too long: at most ' + si.maxParts + ' SMS' : si.parts === 1 ? '1 SMS' : 'sent as ' + si.parts + ' SMS') +
-      (si.gsm ? '' : ' · special characters, 70 per SMS') + ' ' + info('smsLength');
+    counter.innerHTML = esc(t('settings.smsChars', '≈ {len} / {single} characters', { len: si.len, single: si.single })) + ' · ' +
+      esc(over ? t('settings.smsTooLong', 'too long: at most {max} SMS', { max: si.maxParts }) : si.parts === 1 ? t('settings.smsOne', '1 SMS')
+        : t('settings.smsMany', 'sent as {n} SMS', { n: si.parts })) +
+      (si.gsm ? '' : esc(t('settings.smsSpecial', ' · special characters, 70 per SMS'))) + ' ' + info('smsLength');
     setValid(!over);
   }
   function changed() { set(ta.value); count(); }
@@ -1341,12 +1406,12 @@ function textEditor(d, draft, v, set, setValid, ctl) {
   var nested = SCALARS.filter(function (x) { return x.nestedIn === d.key; })[0];
   if (!nested) { return; }
   var nHit = inherited(nested.key);
-  var adv = h('<details class="ts-adv"><summary>Longer text for e-mail</summary><div class="ts-adv-body">' +
+  var adv = h('<details class="ts-adv"><summary>' + esc(t('settings.longerEmail', 'Longer text for e-mail')) + '</summary><div class="ts-adv-body">' +
     '<textarea class="ts-textarea" style="min-height:110px"></textarea><div class="ts-field-hint"></div></div></details>');
   var nta = adv.querySelector('textarea');
   nta.value = nested.key in draft ? draft[nested.key] : '';
-  nta.placeholder = nHit ? 'Inherited e-mail text from ' + levelLabel(nHit.from) : 'Empty: the e-mail uses the SMS text above';
-  adv.querySelector('.ts-field-hint').textContent = 'No length limit. Leave empty to send the SMS text by e-mail too.';
+  nta.placeholder = nHit ? t('settings.inheritedEmail', 'Inherited e-mail text from {level}', { level: levelLabel(nHit.from) }) : t('settings.emailEmpty', 'Empty: the e-mail uses the SMS text above');
+  adv.querySelector('.ts-field-hint').textContent = t('settings.emailHint', 'No length limit. Leave empty to send the SMS text by e-mail too.');
   if (nta.value) { adv.open = true; }
   function nset() { if (nta.value.trim()) { draft[nested.key] = nta.value; } else { delete draft[nested.key]; } }
   nta.addEventListener('input', nset);
@@ -1379,15 +1444,15 @@ function contactsEditor(initial, set, setValid) {
   function sevToggles(c) {
     var sevs = h('<div class="ts-sevs"></div>');
     G.SEVERITIES.slice().reverse().forEach(function (sv) {
-      var t = h('<button type="button" class="ts-sev-toggle">' + sevDot(sv.id) + esc(sv.label) + '</button>');
-      t.classList.toggle('on', c.severities.indexOf(sv.id) >= 0);
-      t.addEventListener('click', function () {
+      var btn = h('<button type="button" class="ts-sev-toggle">' + sevDot(sv.id) + esc(sv.label) + '</button>');
+      btn.classList.toggle('on', c.severities.indexOf(sv.id) >= 0);
+      btn.addEventListener('click', function () {
         var k = c.severities.indexOf(sv.id);
         if (k >= 0) { c.severities.splice(k, 1); } else { c.severities.push(sv.id); }
-        t.classList.toggle('on', k < 0);
+        btn.classList.toggle('on', k < 0);
         commitPeople();
       });
-      sevs.appendChild(t);
+      sevs.appendChild(btn);
     });
     return sevs;
   }
@@ -1400,17 +1465,17 @@ function contactsEditor(initial, set, setValid) {
     if (!person) {
       el.querySelector('.ts-avatar').textContent = '?';
       el.querySelector('.ts-row-label').textContent = missing;
-      el.querySelector('.ts-row-meta').textContent = 'No longer exists, or not visible to you; no message reaches it.';
+      el.querySelector('.ts-row-meta').textContent = t('settings.contactGone', 'No longer exists, or not visible to you; no message reaches it.');
       return el;
     }
     el.querySelector('.ts-avatar').textContent = initials(person.name);
     el.querySelector('.ts-row-label').textContent = person.name;
     el.querySelector('.ts-row-meta').textContent = [person.email, person.phone].filter(Boolean).join(' · ') +
-      (person.phone && !E164.test(person.phone) ? ' — phone not in international format, SMS will fail' : '');
+      (person.phone && !E164.test(person.phone) ? t('settings.phoneNotE164', ' — phone not in international format, SMS will fail') : '');
     var via = el.querySelector('.ts-contact-via');
-    [['viaSms', 'SMS', !!person.phone], ['viaEmail', 'E-mail', !!person.email]].forEach(function (x) {
+    [['viaSms', t('glossary.setting.smsEnabled', 'SMS'), !!person.phone], ['viaEmail', t('glossary.setting.emailEnabled', 'E-mail'), !!person.email]].forEach(function (x) {
       var tip = !x[2] && x[0] === 'viaSms' && c.type === 'user' ? ' data-tip="noPhone"' : '';
-      var lab = h('<label class="ts-switch' + (x[2] ? '' : ' off') + '"' + tip + '><input type="checkbox"> ' + x[1] + '</label>');
+      var lab = h('<label class="ts-switch' + (x[2] ? '' : ' off') + '"' + tip + '><input type="checkbox"> ' + esc(x[1]) + '</label>');
       var cb = lab.querySelector('input');
       cb.disabled = !x[2];
       cb.checked = !!c[x[0]] && x[2];
@@ -1424,22 +1489,22 @@ function contactsEditor(initial, set, setValid) {
     box.innerHTML = '';
     people.forEach(function (c, i) {
       c.severities = c.severities || allSev();
-      var head = h('<div class="ts-contact-head"><span class="ts-summary">Receives</span> ' + info('severity') +
-        '<span class="ts-spacer"></span><button type="button" class="ts-icon-btn" title="Remove contact">' + ICON.close + '</button></div>');
+      var head = h('<div class="ts-contact-head"><span class="ts-summary">' + esc(t('settings.receives', 'Receives')) + '</span> ' + info('severity') +
+        '<span class="ts-spacer"></span><button type="button" class="ts-icon-btn" title="' + esc(t('settings.removeContact', 'Remove contact')) + '">' + ICON.close + '</button></div>');
       var el, e = inline(c);
       if (c.type === 'user') {
         var u = userById(c.userId);
-        el = personCard(c, u && { name: userName(u), email: u.email, phone: u.phone }, 'Platform user', 'Unknown user');
+        el = personCard(c, u && { name: userName(u), email: u.email, phone: u.phone }, t('settings.platformUser', 'Platform user'), t('settings.unknownUser', 'Unknown user'));
       } else if (!e) {
         var b = state.book.entries[c.entryId];
-        el = personCard(c, b && { name: entryName(b), email: b.email, phone: b.sms }, 'External contact', 'Unknown entry');
+        el = personCard(c, b && { name: entryName(b), email: b.email, phone: b.sms }, t('settings.externalContact', 'External contact'), t('settings.unknownEntry', 'Unknown entry'));
       } else {
         el = h('<div class="ts-contact"></div>');
         el.appendChild(entryFields(e, function () {
           if (c.type === 'book') { c.viaSms = !!e.sms; c.viaEmail = !!e.email; }
           commitPeople();
         }));
-        if (c.type === 'book') { el.appendChild(h('<div class="ts-field-hint">New external contact</div>')); }
+        if (c.type === 'book') { el.appendChild(h('<div class="ts-field-hint">' + esc(t('settings.newExternal', 'New external contact')) + '</div>')); }
       }
       el.appendChild(head);
       el.appendChild(sevToggles(c));
@@ -1451,10 +1516,10 @@ function contactsEditor(initial, set, setValid) {
       var taken = people.map(contactKey);
       var pick = h('<div class="ts-user-pick"><div class="ts-search">' + ICON.search + '<input class="ts-input"></div><div></div></div>');
       var q = pick.querySelector('input'), ul = pick.lastChild;
-      q.placeholder = picking === 'user' ? 'Search users' : 'Search external contacts';
+      q.placeholder = picking === 'user' ? t('settings.searchUsers', 'Search users') : t('settings.searchExternal', 'Search external contacts');
       var candidates = picking === 'user'
         ? (state.users || []).map(function (u) {
-          return { key: 'u:' + u.id.id, name: userName(u), desc: u.email + (u.phone ? ' · ' + u.phone : ' · no phone'),
+          return { key: 'u:' + u.id.id, name: userName(u), desc: u.email + (u.phone ? ' · ' + u.phone : t('settings.noPhone', ' · no phone')),
                    contact: { type: 'user', userId: u.id.id, viaSms: !!u.phone, viaEmail: true } };
         })
         : Object.keys(state.book.entries).map(function (id) {
@@ -1478,8 +1543,8 @@ function contactsEditor(initial, set, setValid) {
           });
           ul.appendChild(o);
         });
-        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">' + (picking === 'user' ? 'No other user.' : Object.keys(state.book.entries).length
-          ? 'No other external contact.' : 'No external contact yet: <i>New external contact</i> adds one.') + '</div>')); }
+        if (!ul.children.length) { ul.appendChild(h('<div class="ts-empty">' + (picking === 'user' ? esc(t('settings.noOtherUser', 'No other user.')) : Object.keys(state.book.entries).length
+          ? esc(t('settings.noOtherExternal', 'No other external contact.')) : t('settings.noExternalYet', 'No external contact yet: <i>New external contact</i> adds one.')) + '</div>')); }
       };
       q.addEventListener('input', fill);
       fill();
@@ -1487,9 +1552,9 @@ function contactsEditor(initial, set, setValid) {
       setTimeout(function () { q.focus(); }, 0);
     }
 
-    var add = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="user">' + ICON.plus + 'Platform user</button>' +
-      '<button type="button" class="ts-btn ghost" data-a="book">' + ICON.plus + 'Add from known external contacts</button>' +
-      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + 'New external contact</button></div>');
+    var add = h('<div class="ts-add-row"><button type="button" class="ts-btn ghost" data-a="user">' + ICON.plus + esc(t('settings.platformUser', 'Platform user')) + '</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="book">' + ICON.plus + esc(t('settings.addFromBook', 'Add from known external contacts')) + '</button>' +
+      '<button type="button" class="ts-btn ghost" data-a="ext">' + ICON.plus + esc(t('settings.newExternal', 'New external contact')) + '</button></div>');
     add.querySelector('[data-a=user]').addEventListener('click', function () { picking = picking === 'user' ? null : 'user'; render(); });
     add.querySelector('[data-a=book]').addEventListener('click', function () { picking = picking === 'book' ? null : 'book'; render(); });
     add.querySelector('[data-a=ext]').addEventListener('click', function () {

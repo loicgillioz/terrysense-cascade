@@ -24,6 +24,7 @@
 window.TerrySenseDryc = function (ctx, container, opts) {
 
 opts = opts || {};
+var t = window.TerrySenseI18n(ctx);
 
 var resolver = window.TerrySenseResolver;
 var G = window.TerrySenseGlossary;
@@ -50,17 +51,8 @@ function parseJson(raw) {
   if (raw === undefined || raw === null || raw === '') { return null; }
   try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
 }
-function ago(ts) {
-  if (!ts) { return 'never'; }
-  var s = Math.max(0, (Date.now() - Number(ts)) / 1000);
-  if (s < 90) { return 'just now'; }
-  if (s < 5400) { return Math.round(s / 60) + ' min ago'; }
-  if (s < 129600) { return Math.round(s / 3600) + ' h ago'; }
-  return Math.round(s / 86400) + ' days ago';
-}
 function truthy(v) { return v === true || v === 1 || v === '1' || v === 'true'; }
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
-function plural(n, one) { return n + ' ' + one + (n === 1 ? '' : 's'); }
 
 // -- model ------------------------------------------------------------------------------
 
@@ -116,9 +108,12 @@ function normalise(set) {
   return out;
 }
 
-function inputLabel(i) { return state.rules.inputs[i].label || 'Input ' + (i + 1); }
-function inputText(i, on) { var x = state.rules.inputs[i]; return on ? (x.whenOn || 'On') : (x.whenOff || 'Off'); }
-function relayLabel(i) { return state.rules.relays[i].label || 'Relay ' + (i + 1); }
+// The terminals' own names are the vocabulary's drycInput<n> / drycOutput<n> labels.
+function inputName(i) { return t.channel('drycInput' + (i + 1), 'Input ' + (i + 1)); }
+function relayName(i) { return t.channel('drycOutput' + (i + 1), 'Relay ' + (i + 1)); }
+function inputLabel(i) { return state.rules.inputs[i].label || inputName(i); }
+function inputText(i, on) { var x = state.rules.inputs[i]; return on ? (x.whenOn || t('common.on', 'On')) : (x.whenOff || t('common.off', 'Off')); }
+function relayLabel(i) { return state.rules.relays[i].label || relayName(i); }
 
 /** The device's records, in rule order: a wake record per notifying rule, one per relay (DRYC.md §2);
  * a supply-voltage condition adds its operator and threshold in mV to each record. */
@@ -202,7 +197,7 @@ function matching(r) {
 function syncState() {
   var want = JSON.stringify(records(normalise(parseJson(state.saved))));
   var n = JSON.parse(want).length;
-  if (!state.device) { return { s: 'nodevice', short: 'No device', text: 'No dry contact interface feeds this station. The rules are kept here and sent once one is connected.' }; }
+  if (!state.device) { return { s: 'nodevice', short: t('common.noDevice', 'No device'), text: t('dryc.syncNoDevice', 'No dry contact interface feeds this station. The rules are kept here and sent once one is connected.') }; }
   var queued = parseJson(state.server['cmd.pending']);
   var pending = queued && (queued.commands || []).some(function (c) { return c.op === 'DRYC_RULES'; })
     ? { issuedAt: queued.updatedAt || queued.issuedAt } : null;
@@ -211,31 +206,35 @@ function syncState() {
   var count = state.live.drycRuleCount ? Number(state.live.drycRuleCount.value) : null;
   if (pending) {
     if (Date.now() - (pending.issuedAt || 0) > DAY_MS) {
-      return { s: 'drift', short: 'Not confirmed', sent: pending.issuedAt, text: 'Sent ' + ago(pending.issuedAt) + ' and never confirmed. Send again.' };
+      return { s: 'drift', short: t('dryc.notConfirmed', 'Not confirmed'), sent: pending.issuedAt, text: t('dryc.syncNotConfirmed', 'Sent {ago} and never confirmed. Send again.', { ago: t.ago(pending.issuedAt) }) };
     }
-    return { s: 'waiting', short: 'Waiting for the device', sent: pending.issuedAt, text: 'Sent ' + ago(pending.issuedAt) + '. The device takes them at its next uplink.' };
+    return { s: 'waiting', short: t('dryc.waiting', 'Waiting for the device'), sent: pending.issuedAt, text: t('dryc.syncWaiting', 'Sent {ago}. The device takes them at its next uplink.', { ago: t.ago(pending.issuedAt) }) };
   }
   if (lastRules && !lastRules.ok) {
-    return { s: 'drift', short: 'Refused', sent: lastRules.issuedAt, text: 'The device refused the last rules sent. Send again.' };
+    return { s: 'drift', short: t('dryc.refused', 'Refused'), sent: lastRules.issuedAt, text: t('dryc.syncRefused', 'The device refused the last rules sent. Send again.') };
   }
   if (lastRules && JSON.stringify(lastRules.commands[0].records) !== want) {
-    return { s: 'changed', short: 'Send needed', sent: lastRules.issuedAt, confirmed: lastRules.ackedAt,
-             text: 'The rules changed since they were sent. The device still runs the previous ones.' };
+    return { s: 'changed', short: t('dryc.sendNeeded', 'Send needed'), sent: lastRules.issuedAt, confirmed: lastRules.ackedAt,
+             text: t('dryc.syncChanged', 'The rules changed since they were sent. The device still runs the previous ones.') };
   }
   // With the checksum the device's own rules are compared; without it, only their number.
   var cap = capability(), crc = state.client['status.drycRulesCrc16'];
   if (cap.crc && crc !== undefined && Number(crc) !== recordsCrc(JSON.parse(want))) {
-    return { s: 'drift', short: 'Send needed', text: 'The device holds other rules than these. Send them.' };
+    return { s: 'drift', short: t('dryc.sendNeeded', 'Send needed'), text: t('dryc.syncOtherRules', 'The device holds other rules than these. Send them.') };
   }
   if (count !== null && count !== n) {
-    return { s: 'drift', short: 'Send needed', text: 'The device holds ' + plural(count, 'record') + ', these rules need ' + n + '. Send them.' };
+    return { s: 'drift', short: t('dryc.sendNeeded', 'Send needed'), text: count === 1
+      ? t('dryc.syncCountOtherOne', 'The device holds 1 record, these rules need {n}. Send them.', { n: n })
+      : t('dryc.syncCountOtherMany', 'The device holds {count} records, these rules need {n}. Send them.', { count: count, n: n }) };
   }
   if (lastRules) {
-    return { s: 'insync', short: 'On the device', sent: lastRules.issuedAt, confirmed: lastRules.ackedAt, text: 'The device runs these rules.' };
+    return { s: 'insync', short: t('dryc.onDevice', 'On the device'), sent: lastRules.issuedAt, confirmed: lastRules.ackedAt, text: t('dryc.syncInSync', 'The device runs these rules.') };
   }
   return count === null
-    ? { s: 'insync', short: 'No status yet', text: 'No status from the device yet.' }
-    : { s: 'insync', short: 'On the device', confirmed: state.live.drycRuleCount.ts, text: 'The device holds ' + plural(count, 'record') + ', as these rules need.' };
+    ? { s: 'insync', short: t('dryc.noStatus', 'No status yet'), text: t('dryc.syncNoStatus', 'No status from the device yet.') }
+    : { s: 'insync', short: t('dryc.onDevice', 'On the device'), confirmed: state.live.drycRuleCount.ts, text: count === 1
+      ? t('dryc.syncCountOne', 'The device holds 1 record, as these rules need.')
+      : t('dryc.syncCountMany', 'The device holds {n} records, as these rules need.', { n: count }) };
 }
 
 // -- data -------------------------------------------------------------------------------
@@ -397,14 +396,17 @@ function save(set) {
 function sendRules() {
   if (!capability().voltage && state.rules.rules.some(hasVoltage)) { return; }
   var recs = records(state.rules);
-  ui.confirm('Send ' + plural(recs.length, 'record') + ' to the dry contact interface of <b>' +
-    esc(state.device.label || state.device.name) + '</b>? They replace the rules it runs now, after the logger’s next uplink.', 'Send').then(function (ok) {
+  var device = esc(state.device.label || state.device.name);
+  ui.confirm(recs.length === 1
+    ? t('dryc.sendConfirmOne', 'Send 1 record to the dry contact interface of <b>{device}</b>? They replace the rules it runs now, after the logger’s next uplink.', { device: device })
+    : t('dryc.sendConfirmMany', 'Send {n} records to the dry contact interface of <b>{device}</b>? They replace the rules it runs now, after the logger’s next uplink.', { n: recs.length, device: device }),
+    t('common.send', 'Send')).then(function (ok) {
     if (!ok) { return; }
     var request = { commands: [{ op: 'DRYC_RULES', records: recs }], by: (state.me && state.me.email) || null, issuedAt: Date.now() };
     return tb.saveAttrs(deviceEntity(), { 'cmd.request': request }).then(function () {
-      ui.toast('Sent: the device takes them at its next uplink');
+      ui.toast(t('dryc.sent', 'Sent: the device takes them at its next uplink'));
       setTimeout(refresh, 1500);
-    }).catch(function (err) { ui.toast('Not sent: ' + errText(err), 'error'); });
+    }).catch(function (err) { ui.toast(t('common.notSent', 'Not sent: {error}', { error: errText(err) }), 'error'); });
   });
 }
 
@@ -414,10 +416,10 @@ function errText(err) { return (err && (err.message || (err.error && err.error.m
 
 root.innerHTML = '';
 var cardEl = h('<div class="ts-card ts-dryc"><div class="ts-head"><div class="ts-head-icon">' + ICON.settings + '</div><div class="ts-head-text">' +
-  '<div class="ts-title"><span>Dry contact interface</span> ' + info('drycRules') + '</div><div class="ts-subtitle"></div></div>' +
+  '<div class="ts-title"><span>' + esc(t('common.dryc', 'Dry contact interface')) + '</span> ' + info('drycRules') + '</div><div class="ts-subtitle"></div></div>' +
   '<span class="ts-dryc-state" hidden></span></div>' +
-  '<div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
-  '<div class="ts-foot" hidden><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div></div>');
+  '<div class="ts-body"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div>' +
+  '<div class="ts-foot" hidden><span class="ts-summary"></span><span class="ts-spacer"></span><button type="button" class="ts-btn">' + ICON.reset + esc(t('common.refresh', 'Refresh')) + '</button></div></div>');
 root.appendChild(cardEl);
 window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
@@ -455,13 +457,12 @@ function render() {
   footEl.hidden = false;
   bodyEl.innerHTML = '';
 
-  bodyEl.appendChild(h('<div class="ts-dryc-intro">The device switches its relays itself, from the rules it was sent. ' +
-    'Rules are kept on this station: name the inputs wired on site, write the rules, then send them to the device.</div>'));
+  bodyEl.appendChild(h('<div class="ts-dryc-intro"></div>')).textContent =
+    t('dryc.intro', 'The device switches its relays itself, from the rules it was sent. Rules are kept on this station: name the inputs wired on site, write the rules, then send them to the device.');
   if (state.others.length) {
     var warn = h('<div class="ts-banner warn" data-warn="competing">' + ICON.info + '<span></span></div>');
-    warn.querySelector('span').innerHTML = 'Rules for this dry contact interface are also kept on <b>' +
-      state.others.map(function (o) { return esc(o.name); }).join('</b>, <b>') +
-      '</b>. The device runs whichever set was sent last: keep them on one station.';
+    warn.querySelector('span').innerHTML = t('dryc.competing', 'Rules for this dry contact interface are also kept on <b>{stations}</b>. The device runs whichever set was sent last: keep them on one station.',
+      { stations: state.others.map(function (o) { return esc(o.name); }).join('</b>, <b>') });
     bodyEl.appendChild(warn);
   }
   firmwareBanners().forEach(function (b) { bodyEl.appendChild(b); });
@@ -469,7 +470,8 @@ function render() {
   bodyEl.appendChild(rulesStep());
   bodyEl.appendChild(deviceStep(sync));
   var last = state.live.drycInput1;
-  summaryEl.textContent = d ? 'Last status ' + (last ? ago(last.ts) : 'never received') : 'No device';
+  summaryEl.textContent = !d ? t('common.noDevice', 'No device')
+    : last ? t('dryc.lastStatus', 'Last status {ago}', { ago: t.ago(last.ts) }) : t('dryc.lastStatusNever', 'Last status never received');
 }
 
 /** What the device's firmware keeps from the rules, and what to update to get it. */
@@ -483,24 +485,25 @@ function firmwareBanners() {
   }
   var blocked = state.rules.rules.filter(hasVoltage).length;
   if (blocked && !cap.voltage) {
-    banner('warn', 'voltage-blocked', plural(blocked, 'rule') + ' here use the supply voltage, which this device cannot check. ' +
-      'Update its firmware as below, or remove the voltage condition, before sending.');
+    banner('warn', 'voltage-blocked', esc(blocked === 1
+      ? t('dryc.voltageBlockedOne', '1 rule here uses the supply voltage, which this device cannot check. Update its firmware as below, or remove the voltage condition, before sending.')
+      : t('dryc.voltageBlockedMany', '{n} rules here use the supply voltage, which this device cannot check. Update its firmware as below, or remove the voltage condition, before sending.', { n: blocked })));
   }
+  function version(v) { return v ? '<b>' + esc(v) + '</b>' : esc(t('dryc.notReported', 'not reported yet')); }
   if (!cap.loggerOk) {
-    banner('warn', 'logger-fw', 'Logger firmware ' + (cap.logger ? '<b>' + esc(cap.logger) + '</b>' : 'not reported yet') +
-      '. Update it to ' + LOGGER_FW_MIN + ' or later to confirm the rules the device holds and to use supply-voltage conditions. ' +
-      'Until then the view compares only the number of rules.');
+    banner('warn', 'logger-fw', t('dryc.loggerFw', 'Logger firmware {version}. Update it to {min} or later to confirm the rules the device holds and to use supply-voltage conditions. Until then the view compares only the number of rules.',
+      { version: version(cap.logger), min: LOGGER_FW_MIN }));
   } else if (!cap.drycOk) {
-    banner('warn', 'dryc-fw', 'Dry contact interface firmware ' + (cap.dryc ? '<b>' + esc(cap.dryc) + '</b>' : 'not reported yet') +
-      '. Update it to ' + DRYC_FW_MIN + ' or later to confirm the rules it holds and to use supply-voltage conditions.');
+    banner('warn', 'dryc-fw', t('dryc.drycFw', 'Dry contact interface firmware {version}. Update it to {min} or later to confirm the rules it holds and to use supply-voltage conditions.',
+      { version: version(cap.dryc), min: DRYC_FW_MIN }));
   }
   return out;
 }
 
 function wiringStep() {
-  var sec = step(1, 'Inputs and relays', canEdit()
-    ? 'Name each input wired on site, and what its on and off states mean. A named input is recorded on the station; an unnamed one is not used.'
-    : 'The inputs wired on site and the relays, with their last state.');
+  var sec = step(1, t('dryc.wiring', 'Inputs and relays'), canEdit()
+    ? t('dryc.wiringHint', 'Name each input wired on site, and what its on and off states mean. A named input is recorded on the station; an unnamed one is not used.')
+    : t('dryc.wiringHintRead', 'The inputs wired on site and the relays, with their last state.'));
   var grid = sec.appendChild(h('<div class="ts-live"></div>'));
   var outs = sec.appendChild(h('<div class="ts-live ts-outs"></div>'));
   for (var i = 0; i < INPUTS; i++) {
@@ -508,7 +511,7 @@ function wiringStep() {
     var on = v && truthy(v.value), named = !!state.rules.inputs[i].label;
     var tile = h('<button type="button" class="ts-io' + (on ? ' on' : '') + (named ? '' : ' unnamed') + '" data-input="' + (i + 1) + '">' +
       '<span class="ts-io-n">IN ' + (i + 1) + '</span><span class="ts-io-l"></span><span class="ts-io-v"><span class="ts-dot"></span><span></span></span></button>');
-    tile.querySelector('.ts-io-l').textContent = named ? inputLabel(i) : 'Not used';
+    tile.querySelector('.ts-io-l').textContent = named ? inputLabel(i) : t('dryc.notUsed', 'Not used');
     tile.querySelector('.ts-io-v span:last-child').textContent = v ? inputText(i, on) : '—';
     tile.disabled = !canEdit();
     tile.addEventListener('click', namesDrawer.bind(null, 'input', i));
@@ -520,13 +523,14 @@ function wiringStep() {
     var rt = h('<button type="button" class="ts-io relay' + (ron ? ' on' : '') + '" data-relay="' + (j + 1) + '"><span class="ts-io-n">REL ' + (j + 1) + '</span>' +
       '<span class="ts-io-l"></span><span class="ts-io-v"><span class="ts-dot"></span><span></span></span></button>');
     rt.querySelector('.ts-io-l').textContent = relayLabel(j);
-    rt.querySelector('.ts-io-v span:last-child').textContent = rv ? (ron ? 'On' : 'Off') : '—';
+    rt.querySelector('.ts-io-v span:last-child').textContent = rv ? (ron ? t('common.on', 'On') : t('common.off', 'Off')) : '—';
     rt.disabled = !canEdit();
     rt.addEventListener('click', namesDrawer.bind(null, 'relay', j));
     outs.appendChild(rt);
   }
   var volt = state.live.drycVoltage;
-  var vt = h('<div class="ts-io"><span class="ts-io-n">SUPPLY</span><span class="ts-io-l">Supply voltage</span><span class="ts-io-v"></span></div>');
+  var vt = h('<div class="ts-io"><span class="ts-io-n">SUPPLY</span><span class="ts-io-l"></span><span class="ts-io-v"></span></div>');
+  vt.querySelector('.ts-io-l').textContent = t('dryc.supplyVoltage', 'Supply voltage');
   vt.querySelector('.ts-io-v').textContent = volt ? Number(volt.value).toFixed(1) + ' V' : '—';
   outs.appendChild(vt);
   return sec;
@@ -539,48 +543,52 @@ function conditionChips(r) {
     var on = !!(r.condition.state & (1 << i));
     chips.push('<span class="ts-cond">' + esc(inputLabel(i)) + ' = <b>' + esc(inputText(i, on)) + '</b></span>');
   }
-  if (r.condition.voltage) { chips.push('<span class="ts-cond"><b>' + esc(voltageText(r.condition.voltage)) + '</b></span>'); }
-  return chips.join('<span class="ts-and">and</span>') || '<span class="ts-cond">no input</span>';
+  var v = r.condition.voltage;
+  if (v) {
+    var supply = v.op === 'below' ? t('dryc.supplyBelow', 'Supply < {volts} V', { volts: v.volts.toFixed(1) })
+      : t('dryc.supplyAbove', 'Supply > {volts} V', { volts: v.volts.toFixed(1) });
+    chips.push('<span class="ts-cond"><b>' + esc(supply) + '</b></span>');
+  }
+  return chips.join('<span class="ts-and">' + esc(t('dryc.and', 'and')) + '</span>') || '<span class="ts-cond">' + esc(t('dryc.noInput', 'no input')) + '</span>';
 }
 
 function actionChips(r) {
   var chips = [];
-  if (r.relays.relay1) { chips.push('<span class="ts-chip accent">Switch ' + esc(relayLabel(0)) + ' on</span>'); }
-  if (r.relays.relay2) { chips.push('<span class="ts-chip accent">Switch ' + esc(relayLabel(1)) + ' on</span>'); }
+  if (r.relays.relay1) { chips.push('<span class="ts-chip accent">' + esc(t('dryc.switchOn', 'Switch {relay} on', { relay: relayLabel(0) })) + '</span>'); }
+  if (r.relays.relay2) { chips.push('<span class="ts-chip accent">' + esc(t('dryc.switchOn', 'Switch {relay} on', { relay: relayLabel(1) })) + '</span>'); }
   if (r.notify) {
     var sev = G.severity(r.notify.severity);
-    chips.push('<span class="ts-chip"><span class="ts-sev" style="background:var(--sev-' + esc(sev.id) + ')"></span>Station alarm · ' + esc(sev.label) + '</span>');
+    chips.push('<span class="ts-chip"><span class="ts-sev" style="background:var(--sev-' + esc(sev.id) + ')"></span>' + esc(t('dryc.stationAlarm', 'Station alarm · {severity}', { severity: sev.label })) + '</span>');
   }
   return chips.join('');
 }
 
 function rulesStep() {
-  var sec = step(2, 'Rules', 'The device checks them in this order. Each rule can switch a relay on, and raise an alarm on this station, ' +
-    'notified to its alarm contacts.');
+  var sec = step(2, t('dryc.rules', 'Rules'), t('dryc.rulesHint', 'The device checks them in this order. Each rule can switch a relay on, and raise an alarm on this station, notified to its alarm contacts.'));
   var head = sec.querySelector('.ts-section-head');
   if (canEdit()) {
-    var add = h('<button type="button" class="ts-btn" data-a="add-rule">' + ICON.plus + 'Add rule</button>');
+    var add = h('<button type="button" class="ts-btn" data-a="add-rule">' + ICON.plus + esc(t('dryc.addRule', 'Add rule')) + '</button>');
     add.disabled = records(state.rules).length >= MAX_RECORDS;
     add.addEventListener('click', function () { ruleDrawer(null); });
     head.appendChild(add);
   }
   if (!state.rules.rules.length) {
-    sec.appendChild(h('<div class="ts-empty">No rule yet. A rule says which input states switch a relay or raise an alarm.</div>'));
+    sec.appendChild(h('<div class="ts-empty"></div>')).textContent = t('dryc.noRule', 'No rule yet. A rule says which input states switch a relay or raise an alarm.');
   }
   state.rules.rules.forEach(function (r, idx) {
     var now = matching(r);
     var row = h('<div class="ts-rule" data-rule="' + esc(r.id) + '"><span class="ts-prec">' + (idx + 1) + '</span><div class="ts-grow">' +
       '<div class="ts-rule-head"><span class="ts-row-label"></span><span class="ts-chip ts-rule-now"></span></div>' +
-      '<div class="ts-line"><span class="ts-k">When</span>' + conditionChips(r) + '</div>' +
-      '<div class="ts-line"><span class="ts-k">Then</span>' + actionChips(r) + '</div></div><div class="ts-rule-acts"></div></div>');
+      '<div class="ts-line"><span class="ts-k">' + esc(t('dryc.when', 'When')) + '</span>' + conditionChips(r) + '</div>' +
+      '<div class="ts-line"><span class="ts-k">' + esc(t('dryc.then', 'Then')) + '</span>' + actionChips(r) + '</div></div><div class="ts-rule-acts"></div></div>');
     row.querySelector('.ts-row-label').textContent = r.name;
     var nowEl = row.querySelector('.ts-rule-now');
-    nowEl.textContent = now === null ? 'No status yet' : now ? 'Matching now' : 'Not matching';
+    nowEl.textContent = now === null ? t('dryc.noStatus', 'No status yet') : now ? t('dryc.matching', 'Matching now') : t('common.notMatching', 'Not matching');
     nowEl.dataset.now = now === null ? 'unknown' : String(now);
     if (canEdit()) {
       var acts = row.querySelector('.ts-rule-acts');
-      [['up', '↑', 'Earlier'], ['down', '↓', 'Later'], ['edit', null, 'Edit'], ['del', null, 'Delete']].forEach(function (a) {
-        var b = h('<button type="button" class="ts-icon-btn" data-a="' + a[0] + '" title="' + a[2] + '"></button>');
+      [['up', '↑', t('dryc.earlier', 'Earlier')], ['down', '↓', t('dryc.later', 'Later')], ['edit', null, t('common.edit', 'Edit')], ['del', null, t('common.delete', 'Delete')]].forEach(function (a) {
+        var b = h('<button type="button" class="ts-icon-btn" data-a="' + a[0] + '" title="' + esc(a[2]) + '"></button>');
         if (a[0] === 'edit') { b.innerHTML = ICON.edit; } else if (a[0] === 'del') { b.innerHTML = ICON.close; } else { b.textContent = a[1]; }
         b.disabled = (a[0] === 'up' && idx === 0) || (a[0] === 'down' && idx === state.rules.rules.length - 1);
         acts.appendChild(b);
@@ -591,18 +599,18 @@ function rulesStep() {
         var set = clone(state.rules);
         if (b.dataset.a === 'edit') { ruleDrawer(idx); return; }
         if (b.dataset.a === 'del') {
-          ui.confirm('Delete the rule <b>' + esc(r.name) + '</b>? Its station alarm goes with it. The device runs it until the rules are sent again.', 'Delete')
+          ui.confirm(t('dryc.deleteConfirm', 'Delete the rule <b>{name}</b>? Its station alarm goes with it. The device runs it until the rules are sent again.', { name: esc(r.name) }), t('common.delete', 'Delete'))
             .then(function (ok) {
               if (!ok) { return; }
               set.rules.splice(idx, 1);
-              commit(set, 'Rule deleted');
+              commit(set, t('dryc.ruleDeleted', 'Rule deleted'));
             });
           return;
         }
         var to = b.dataset.a === 'up' ? idx - 1 : idx + 1;
         var moved = set.rules.splice(idx, 1)[0];
         set.rules.splice(to, 0, moved);
-        commit(set, 'Order saved');
+        commit(set, t('dryc.orderSaved', 'Order saved'));
       });
     }
     sec.appendChild(row);
@@ -612,13 +620,15 @@ function rulesStep() {
 
 /** Step 3: saved here, sent, confirmed by the device; Send when the device lags. */
 function deviceStep(sync) {
-  var sec = step(3, 'On the device', 'Saved rules reach the device only when sent. It takes them at its next uplink and confirms.');
+  var sec = step(3, t('dryc.onDevice', 'On the device'), t('dryc.onDeviceHint', 'Saved rules reach the device only when sent. It takes them at its next uplink and confirms.'));
   var n = records(state.rules).length;
   var steps = sec.appendChild(h('<ol class="ts-dryc-track"></ol>'));
   var saved = state.saved !== 'null';
-  [['saved', 'Saved on this station', saved, saved ? plural(state.rules.rules.length, 'rule') : 'no rule yet'],
-   ['sent', 'Sent to the device', !!(sync.sent || sync.confirmed), sync.sent ? ago(sync.sent) : sync.confirmed ? 'earlier' : 'not yet'],
-   ['confirmed', 'Confirmed by the device', !!sync.confirmed && sync.s === 'insync', sync.confirmed ? ago(sync.confirmed) : 'not yet']
+  var nrules = state.rules.rules.length;
+  [['saved', t('dryc.trackSaved', 'Saved on this station'), saved, !saved ? t('dryc.noRuleYet', 'no rule yet')
+     : nrules === 1 ? t('dryc.ruleCountOne', '1 rule') : t('dryc.ruleCountMany', '{n} rules', { n: nrules })],
+   ['sent', t('dryc.trackSent', 'Sent to the device'), !!(sync.sent || sync.confirmed), sync.sent ? t.ago(sync.sent) : sync.confirmed ? t('dryc.earlierTime', 'earlier') : t('dryc.notYet', 'not yet')],
+   ['confirmed', t('dryc.trackConfirmed', 'Confirmed by the device'), !!sync.confirmed && sync.s === 'insync', sync.confirmed ? t.ago(sync.confirmed) : t('dryc.notYet', 'not yet')]
   ].forEach(function (s) {
     var li = steps.appendChild(h('<li><span class="ts-dot"></span><span class="ts-grow"></span><span class="ts-row-meta"></span></li>'));
     li.dataset.track = s[0];
@@ -628,15 +638,16 @@ function deviceStep(sync) {
   });
   var strip = sec.appendChild(h('<div class="ts-sync" data-s="' + sync.s + '"><span class="ts-grow"></span><span class="ts-cap"></span></div>'));
   strip.firstChild.textContent = sync.text;
-  strip.querySelector('.ts-cap').textContent = n + ' of ' + MAX_RECORDS + ' device records';
+  strip.querySelector('.ts-cap').textContent = t('dryc.recordUse', '{n} of {max} device records', { n: n, max: MAX_RECORDS });
   strip.querySelector('.ts-cap').insertAdjacentHTML('beforeend', ' ' + info('drycRecords'));
   if (canSend() && sync.s !== 'waiting') {
     var needed = sync.s === 'changed' || sync.s === 'drift';
-    var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '" data-a="send">Send rules to the device</button>');
+    var send = h('<button type="button" class="ts-btn' + (needed ? ' primary' : '') + '" data-a="send"></button>');
+    send.textContent = t('dryc.sendRules', 'Send rules to the device');
     // A LOGR2 before 0.44.0 retries a rule its DRYC refuses without end: no voltage record reaches it.
     if (!capability().voltage && state.rules.rules.some(hasVoltage)) {
       send.disabled = true;
-      send.title = 'A rule uses the supply voltage, which this device cannot check';
+      send.title = t('dryc.sendBlocked', 'A rule uses the supply voltage, which this device cannot check');
     }
     send.addEventListener('click', sendRules);
     strip.appendChild(send);
@@ -649,7 +660,7 @@ function commit(set, message) {
     ui.toast(message);
     ui.closeDrawer();
     return refresh();
-  }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+  }).catch(function (err) { ui.toast(t('common.notSaved', 'Not saved: {error}', { error: errText(err) }), 'error'); });
 }
 
 function ruleDrawer(idx) {
@@ -658,22 +669,23 @@ function ruleDrawer(idx) {
     ? { id: nextId(state.rules), name: '', condition: { mask: 0, state: 0 }, relays: { relay1: false, relay2: false }, notify: { severity: 'major' },
         whenActive: '', whenInactive: '' }
     : clone(state.rules.rules[idx]);
-  var dr = ui.openDrawer(creating ? 'New rule' : 'Rule ' + (idx + 1), 'Saved on this station; the device runs it once the rules are sent ' + info('drycSync'));
+  var dr = ui.openDrawer(creating ? t('dryc.newRule', 'New rule') : t('dryc.ruleN', 'Rule {n}', { n: idx + 1 }),
+    esc(t('dryc.ruleDrawerHint', 'Saved on this station; the device runs it once the rules are sent')) + ' ' + info('drycSync'));
   var body = dr.body;
-  body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Name</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="name" maxlength="60" placeholder="Pump 1 failed"></div>' +
-    '<div class="ts-field-hint">Also the name of the station alarm and of its notification.</div></div>'));
+  body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('common.name', 'Name')) + '</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="name" maxlength="60" placeholder="' + esc(t('dryc.namePlaceholder', 'Pump 1 failed')) + '"></div>' +
+    '<div class="ts-field-hint">' + esc(t('dryc.nameHint', 'Also the name of the station alarm and of its notification.')) + '</div></div>'));
   var nameIn = body.querySelector('[data-f=name]');
   nameIn.value = r.name;
-  var cond = h('<div class="ts-field"><div class="ts-field-label"><span>When</span></div>' +
-    '<div class="ts-field-hint">Set the inputs that matter; all of them must hold at once. The others are ignored.</div><div class="ts-conds"></div></div>');
+  var cond = h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('dryc.when', 'When')) + '</span></div>' +
+    '<div class="ts-field-hint">' + esc(t('dryc.whenHint', 'Set the inputs that matter; all of them must hold at once. The others are ignored.')) + '</div><div class="ts-conds"></div></div>');
   var list = cond.querySelector('.ts-conds');
   for (var i = 0; i < INPUTS; i++) {
     var cur = (r.condition.mask & (1 << i)) ? ((r.condition.state & (1 << i)) ? 'on' : 'off') : 'any';
     var row = h('<div class="ts-condrow"><span class="ts-io-n">IN ' + (i + 1) + '</span><span class="ts-grow"></span><div class="ts-seg" data-input="' + i + '"></div></div>');
     row.classList.toggle('unnamed', !state.rules.inputs[i].label);
-    row.querySelector('.ts-grow').textContent = state.rules.inputs[i].label || 'Input ' + (i + 1) + ' (not used)';
+    row.querySelector('.ts-grow').textContent = state.rules.inputs[i].label || t('dryc.inputNotUsed', 'Input {n} (not used)', { n: i + 1 });
     var seg = row.querySelector('.ts-seg');
-    [['any', 'Ignored'], ['on', inputText(i, true)], ['off', inputText(i, false)]].forEach(function (o) {
+    [['any', t('dryc.ignored', 'Ignored')], ['on', inputText(i, true)], ['off', inputText(i, false)]].forEach(function (o) {
       var b = h('<button type="button"></button>');
       b.dataset.v = o[0];
       b.textContent = o[1];
@@ -692,12 +704,12 @@ function ruleDrawer(idx) {
   // Offered only where the device runs it; a rule that already has one keeps it in
   // view on any device, so it can be removed.
   var cap = capability(), curV = r.condition.voltage || null;
-  var volt = h('<div class="ts-field ts-dryc-volt"><div class="ts-field-label"><span>And the supply voltage</span></div>' +
+  var volt = h('<div class="ts-field ts-dryc-volt"><div class="ts-field-label"><span>' + esc(t('dryc.andSupply', 'And the supply voltage')) + '</span></div>' +
     '<div class="ts-ctl"><div class="ts-seg" data-f="vop"></div>' +
     '<input class="ts-input" type="number" data-f="volts" min="0.1" max="60" step="0.1" placeholder="11.5"><span class="ts-row-meta">V</span></div>' +
     '<div class="ts-field-hint"></div></div>');
   var vseg = volt.querySelector('[data-f=vop]'), voltsIn = volt.querySelector('[data-f=volts]');
-  [['any', 'Ignored'], ['below', 'Below'], ['above', 'Above']].forEach(function (o) {
+  [['any', t('dryc.ignored', 'Ignored')], ['below', t('common.below', 'Below')], ['above', t('common.above', 'Above')]].forEach(function (o) {
     var b = h('<button type="button"></button>');
     b.dataset.v = o[0];
     b.textContent = o[1];
@@ -710,10 +722,11 @@ function ruleDrawer(idx) {
   function voltState() { voltsIn.disabled = !cap.voltage || vop() === 'any'; }
   voltState();
   volt.querySelector('.ts-field-hint').textContent = cap.voltage
-    ? 'Checked by the device together with the inputs. It reacts once the voltage has stayed past the threshold for a few seconds.'
-    : !state.device ? 'Needs a device on this station that runs logger firmware ' + LOGGER_FW_MIN + ' and dry contact interface firmware ' + DRYC_FW_MIN + '.'
-    : 'Needs logger firmware ' + LOGGER_FW_MIN + ' and dry contact interface firmware ' + DRYC_FW_MIN + '. This device reports ' +
-      (cap.logger || 'no logger version') + ' and ' + (cap.dryc || 'no interface version') + '.';
+    ? t('dryc.voltHint', 'Checked by the device together with the inputs. It reacts once the voltage has stayed past the threshold for a few seconds.')
+    : !state.device ? t('dryc.voltNeedsDevice', 'Needs a device on this station that runs logger firmware {loggerMin} and dry contact interface firmware {drycMin}.', { loggerMin: LOGGER_FW_MIN, drycMin: DRYC_FW_MIN })
+    : t('dryc.voltNeedsFw', 'Needs logger firmware {loggerMin} and dry contact interface firmware {drycMin}. This device reports {logger} and {dryc}.', {
+      loggerMin: LOGGER_FW_MIN, drycMin: DRYC_FW_MIN,
+      logger: cap.logger || t('dryc.noLoggerVersion', 'no logger version'), dryc: cap.dryc || t('dryc.noDrycVersion', 'no interface version') });
   volt.hidden = !cap.voltage && !curV;
   vseg.addEventListener('click', function (e) {
     var b = e.target.closest('button');
@@ -724,14 +737,14 @@ function ruleDrawer(idx) {
   });
   voltsIn.addEventListener('input', function () { count(); });
   body.appendChild(volt);
-  var acts = h('<div class="ts-field"><div class="ts-field-label"><span>Then</span></div>' +
+  var acts = h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('dryc.then', 'Then')) + '</span></div>' +
     '<label class="ts-switch"><input type="checkbox" data-f="relay1"> <span></span></label>' +
     '<label class="ts-switch"><input type="checkbox" data-f="relay2"> <span></span></label>' +
-    '<label class="ts-switch"><input type="checkbox" data-f="notify"> <span>Raise an alarm on this station</span></label>' +
-    '<div class="ts-ctl ts-dryc-sev"><span class="ts-row-meta">Severity</span><select class="ts-select" data-f="severity"></select></div>' +
-    '<div class="ts-field-hint">The alarm is notified to the station’s alarm contacts and clears when the rule stops matching.</div></div>');
-  acts.querySelectorAll('.ts-switch span')[0].textContent = 'Switch ' + relayLabel(0) + ' on';
-  acts.querySelectorAll('.ts-switch span')[1].textContent = 'Switch ' + relayLabel(1) + ' on';
+    '<label class="ts-switch"><input type="checkbox" data-f="notify"> <span>' + esc(t('dryc.raiseAlarm', 'Raise an alarm on this station')) + '</span></label>' +
+    '<div class="ts-ctl ts-dryc-sev"><span class="ts-row-meta">' + esc(t('common.severity', 'Severity')) + '</span><select class="ts-select" data-f="severity"></select></div>' +
+    '<div class="ts-field-hint">' + esc(t('dryc.alarmHint', 'The alarm is notified to the station’s alarm contacts and clears when the rule stops matching.')) + '</div></div>');
+  acts.querySelectorAll('.ts-switch span')[0].textContent = t('dryc.switchOn', 'Switch {relay} on', { relay: relayLabel(0) });
+  acts.querySelectorAll('.ts-switch span')[1].textContent = t('dryc.switchOn', 'Switch {relay} on', { relay: relayLabel(1) });
   var sevSel = acts.querySelector('[data-f=severity]');
   G.SEVERITIES.slice().reverse().forEach(function (s) {
     var o = document.createElement('option'); o.value = s.id; o.textContent = s.label; sevSel.appendChild(o);
@@ -748,10 +761,10 @@ function ruleDrawer(idx) {
     count();
   });
   body.appendChild(acts);
-  var wording = h('<div class="ts-field ts-dryc-wording"><div class="ts-field-label"><span>Alarm wording</span></div>' +
-    '<div class="ts-ctl"><span class="ts-row-meta">When active</span><input class="ts-input wide" data-f="whenActive" maxlength="80"></div>' +
-    '<div class="ts-ctl"><span class="ts-row-meta">When inactive</span><input class="ts-input wide" data-f="whenInactive" maxlength="80"></div>' +
-    '<div class="ts-field-hint">The value the alarm and its message show. Left empty, it reads as the condition, each input at its other state when inactive.</div></div>');
+  var wording = h('<div class="ts-field ts-dryc-wording"><div class="ts-field-label"><span>' + esc(t('dryc.alarmWording', 'Alarm wording')) + '</span></div>' +
+    '<div class="ts-ctl"><span class="ts-row-meta">' + esc(t('dryc.whenActive', 'When active')) + '</span><input class="ts-input wide" data-f="whenActive" maxlength="80"></div>' +
+    '<div class="ts-ctl"><span class="ts-row-meta">' + esc(t('dryc.whenInactive', 'When inactive')) + '</span><input class="ts-input wide" data-f="whenInactive" maxlength="80"></div>' +
+    '<div class="ts-field-hint">' + esc(t('dryc.wordingHint', 'The value the alarm and its message show. Left empty, it reads as the condition, each input at its other state when inactive.')) + '</div></div>');
   var activeIn = wording.querySelector('[data-f=whenActive]'), inactiveIn = wording.querySelector('[data-f=whenInactive]');
   activeIn.value = r.whenActive || '';
   inactiveIn.value = r.whenInactive || '';
@@ -785,44 +798,45 @@ function ruleDrawer(idx) {
   }
   function count() {
     var nrec = records(draftSet()).length;
-    countEl.textContent = 'The device holds ' + MAX_RECORDS + ' records: one per relay switched and one per alarm. These rules use ' + nrec + '.';
+    countEl.textContent = t('dryc.recordCount', 'The device holds {max} records: one per relay switched and one per alarm. These rules use {n}.', { max: MAX_RECORDS, n: nrec });
     countEl.classList.toggle('ts-error', nrec > MAX_RECORDS);
-    activeIn.placeholder = conditionText(state.rules, read()) || 'the rule’s condition';
-    inactiveIn.placeholder = conditionText(state.rules, read(), true) || 'the rule’s condition, inverted';
+    activeIn.placeholder = conditionText(state.rules, read()) || t('dryc.ruleCondition', 'the rule’s condition');
+    inactiveIn.placeholder = conditionText(state.rules, read(), true) || t('dryc.ruleConditionInverted', 'the rule’s condition, inverted');
   }
   count();
-  var primary = ui.drawerActions(dr, creating ? 'Add rule' : 'Save');
+  var primary = ui.drawerActions(dr, creating ? t('dryc.addRule', 'Add rule') : t('common.save', 'Save'));
   primary.addEventListener('click', function () {
     var x = read(), volts = Number(voltsIn.value);
-    var problem = !x.name ? 'Give the rule a name.'
-      : vop() !== 'any' && !(volts >= 0.1 && volts <= 60) ? 'Give a supply voltage from 0.1 to 60 V.'
-      : x.condition.voltage && !cap.voltage ? 'This device cannot check the supply voltage: set it to Ignored.'
-      : !x.condition.mask && !x.condition.voltage ? 'Set at least one input or the supply voltage.'
-      : !(x.relays.relay1 || x.relays.relay2 || x.notify) ? 'Pick what the rule does: a relay, an alarm or both.'
-      : records(draftSet()).length > MAX_RECORDS ? 'That needs more than ' + MAX_RECORDS + ' records on the device.'
+    var problem = !x.name ? t('dryc.needName', 'Give the rule a name.')
+      : vop() !== 'any' && !(volts >= 0.1 && volts <= 60) ? t('dryc.needVolts', 'Give a supply voltage from 0.1 to 60 V.')
+      : x.condition.voltage && !cap.voltage ? t('dryc.cannotVolts', 'This device cannot check the supply voltage: set it to Ignored.')
+      : !x.condition.mask && !x.condition.voltage ? t('dryc.needCondition', 'Set at least one input or the supply voltage.')
+      : !(x.relays.relay1 || x.relays.relay2 || x.notify) ? t('dryc.needAction', 'Pick what the rule does: a relay, an alarm or both.')
+      : records(draftSet()).length > MAX_RECORDS ? t('dryc.tooManyRecords', 'That needs more than {max} records on the device.', { max: MAX_RECORDS })
       : null;
     if (problem) { ui.toast(problem, 'error'); return; }
-    commit(draftSet(), creating ? 'Rule added' : 'Rule saved');
+    commit(draftSet(), creating ? t('dryc.ruleAdded', 'Rule added') : t('dryc.ruleSaved', 'Rule saved'));
   });
 }
 
 function namesDrawer(kind, i) {
   var isInput = kind === 'input';
-  var dr = ui.openDrawer((isInput ? 'Input ' : 'Relay ') + (i + 1), isInput ? 'What is wired to it on site' : 'What it switches on site');
+  var dr = ui.openDrawer(isInput ? inputName(i) : relayName(i),
+    isInput ? t('dryc.inputDrawerHint', 'What is wired to it on site') : t('dryc.relayDrawerHint', 'What it switches on site'));
   var cur = isInput ? state.rules.inputs[i] : state.rules.relays[i];
-  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Name</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="label" maxlength="40"></div>' +
-    (isInput ? '<div class="ts-field-hint">Leave it empty when nothing is wired: the input is then not used nor recorded.</div>' : '') + '</div>'));
+  dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('common.name', 'Name')) + '</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="label" maxlength="40"></div>' +
+    (isInput ? '<div class="ts-field-hint">' + esc(t('dryc.inputNameHint', 'Leave it empty when nothing is wired: the input is then not used nor recorded.')) + '</div>' : '') + '</div>'));
   if (isInput) {
-    dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Wording when on</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="whenOn" maxlength="30" placeholder="On"></div></div>'));
-    dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>Wording when off</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="whenOff" maxlength="30" placeholder="Off"></div>' +
-      '<div class="ts-field-hint">Shown on the rules and in the station’s charts, e.g. "Fault" and "OK".</div></div>'));
+    dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('dryc.wordingOn', 'Wording when on')) + '</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="whenOn" maxlength="30" placeholder="' + esc(t('common.on', 'On')) + '"></div></div>'));
+    dr.body.appendChild(h('<div class="ts-field"><div class="ts-field-label"><span>' + esc(t('dryc.wordingOff', 'Wording when off')) + '</span></div><div class="ts-ctl"><input class="ts-input wide" data-f="whenOff" maxlength="30" placeholder="' + esc(t('common.off', 'Off')) + '"></div>' +
+      '<div class="ts-field-hint">' + esc(t('dryc.wordingHintIo', 'Shown on the rules and in the station’s charts, e.g. "Fault" and "OK".')) + '</div></div>'));
   }
   dr.body.querySelectorAll('[data-f]').forEach(function (n) { n.value = cur[n.dataset.f] || ''; });
-  ui.drawerActions(dr, 'Save').addEventListener('click', function () {
+  ui.drawerActions(dr, t('common.save', 'Save')).addEventListener('click', function () {
     var set = clone(state.rules);
     var target = isInput ? set.inputs[i] : set.relays[i];
     dr.body.querySelectorAll('[data-f]').forEach(function (n) { target[n.dataset.f] = n.value.trim(); });
-    commit(set, 'Name saved');
+    commit(set, t('dryc.nameSaved', 'Name saved'));
   });
 }
 
@@ -830,7 +844,7 @@ function namesDrawer(kind, i) {
 
 function refresh() {
   if (!state.station) { return Promise.resolve(); }
-  return load().then(render).catch(function (err) { ui.toast('Refresh failed: ' + errText(err), 'error'); });
+  return load().then(render).catch(function (err) { ui.toast(t('common.refreshFailed', 'Refresh failed: {error}', { error: errText(err) }), 'error'); });
 }
 
 /** What changes when the device reports or answers a send. */
@@ -850,9 +864,9 @@ function poll() {
 }
 
 tb.boundDatasource().then(function (ds) {
-  if (!ds || ds.entityType !== 'ASSET') { fail('Open the dry contact interface from its station.'); return; }
+  if (!ds || ds.entityType !== 'ASSET') { fail(t('dryc.openFromStation', 'Open the dry contact interface from its station.')); return; }
   return tb.loadEntity(ds).then(function (station) {
-    if (station.kind !== 'Station') { fail('This view shows a station; ' + station.name + ' is a ' + station.kind + '.'); return null; }
+    if (station.kind !== 'Station') { fail(t('dryc.notStation', 'This view shows a station; {name} is a {kind}.', { name: station.name, kind: station.kind })); return null; }
     state.station = station;
     return Promise.all([findDevice(station), tb.currentUser(), tb.canWrite(station)]);
   }).then(function (got) {
@@ -866,6 +880,6 @@ tb.boundDatasource().then(function (ds) {
       timer = setInterval(poll, POLL_MS);
     });
   });
-}).catch(function (err) { fail('Could not load: ' + errText(err)); });
+}).catch(function (err) { fail(t('common.loadFailed', 'Could not load: {error}', { error: errText(err) })); });
 
 };

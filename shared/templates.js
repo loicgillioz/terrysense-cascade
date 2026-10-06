@@ -19,6 +19,7 @@ root.TerrySenseTemplates = function (ui, tb) {
   var MODELS_TITLE = 'Chart models';
   var TEMPLATE_GROUP = 'Station dashboards';
   var PLACEHOLDER = { channel: '__CHANNEL__', label: '__LABEL__', unit: '__UNIT__' };
+  // The titles of the chart models on the "Chart models" dashboard: they name the models, so they stay English.
   var CHARTS = { line: 'Line', 'bars:1h': 'Hourly sums', 'bars:1d': 'Daily sums', state: 'State timeline', value: 'Value only' };
   var BY_ALARM = { numeric: 'line', boolean: 'state', state: 'state' };
   var ALARMS_FQN = 'system.alarm_widgets.alarms_table';
@@ -36,6 +37,24 @@ root.TerrySenseTemplates = function (ui, tb) {
   }
 
   function jsonText(v) { return JSON.stringify(String(v)).slice(1, -1); }
+
+  /** A chart kind as the reader reads it in a panel. */
+  function chartName(chart) {
+    return {
+      line: root.TerrySenseT('templates.chart.line', 'Line'), 'bars:1h': root.TerrySenseT('templates.chart.hourly', 'Hourly sums'),
+      'bars:1d': root.TerrySenseT('templates.chart.daily', 'Daily sums'), state: root.TerrySenseT('templates.chart.state', 'State timeline'),
+      value: root.TerrySenseT('templates.chart.value', 'Value only')
+    }[chart] || chart;
+  }
+
+  /** A chart kind inside a sentence. */
+  function chartNameInline(chart) {
+    return {
+      line: root.TerrySenseT('templates.chartInline.line', 'line'), 'bars:1h': root.TerrySenseT('templates.chartInline.hourly', 'hourly sums'),
+      'bars:1d': root.TerrySenseT('templates.chartInline.daily', 'daily sums'), state: root.TerrySenseT('templates.chartInline.state', 'state timeline'),
+      value: root.TerrySenseT('templates.chartInline.value', 'value only')
+    }[chart] || chart;
+  }
 
   /** A name's `chart`, else its kind's, else what its kind's alarm type suggests. */
   function chartOf(channel, names, kinds) {
@@ -57,6 +76,7 @@ root.TerrySenseTemplates = function (ui, tb) {
       var e = names[resolver.splitChannelKey(c).name] || {};
       return {
         key: c, label: attrs['effective.' + c + '.label'] || e.label || c, unit: attrs['effective.' + c + '.unit'] || '',
+        text: root.TerrySenseT.label(c, attrs['effective.' + c + '.label'] || e.label || c, names),
         chart: chartOf(c, names, kinds), states: e.states || null,
         whenTrue: attrs['effective.' + c + '.textWhenTrue'], whenFalse: attrs['effective.' + c + '.textWhenFalse']
       };
@@ -66,7 +86,7 @@ root.TerrySenseTemplates = function (ui, tb) {
   function loadModels() {
     return tb.get('/api/user/dashboards', { pageSize: '50', page: '0', textSearch: MODELS_TITLE }).then(function (page) {
       var info = ((page && page.data) || []).filter(function (d) { return d.title === MODELS_TITLE; })[0];
-      if (!info) { throw new Error('the dashboard "' + MODELS_TITLE + '" is not visible to you'); }
+      if (!info) { throw new Error(root.TerrySenseT('templates.modelsMissing', 'the dashboard "{title}" is not visible to you', { title: MODELS_TITLE })); }
       return tb.get('/api/dashboard/' + info.id.id);
     });
   }
@@ -195,39 +215,49 @@ root.TerrySenseTemplates = function (ui, tb) {
    * tenant on a customer's station, whose group keeps it. `o`: station, owner
    * (the station's owner id), channels, back, done(dashboardId). */
   function openCreate(o) {
-    var dr = ui.openDrawer('Create from this station', esc(o.station.name));
-    var form = h('<div><div class="ts-field"><label class="ts-field-label">Name</label><div class="ts-tpl-name">' +
-      '<span class="ts-row-meta">Station · </span><input class="ts-input wide" placeholder="River level"></div>' +
-      '<div class="ts-field-hint">What kind of station it shows, so the next station of that kind can reuse it.</div></div>' +
-      '<div class="ts-section-head">Each measurement with its chart</div><div class="ts-tpl-chans"></div></div>');
+    var dr = ui.openDrawer(esc(root.TerrySenseT('templates.create.title', 'Create from this station')), esc(o.station.name));
+    var form = h('<div><div class="ts-field"><label class="ts-field-label"></label><div class="ts-tpl-name">' +
+      '<span class="ts-row-meta">Station · </span><input class="ts-input wide"></div>' +
+      '<div class="ts-field-hint"></div></div>' +
+      '<div class="ts-section-head"></div><div class="ts-tpl-chans"></div></div>');
+    form.querySelector('.ts-field-label').textContent = root.TerrySenseT('common.name', 'Name');
+    form.querySelector('input').placeholder = root.TerrySenseT('templates.create.placeholder', 'River level');
+    form.querySelector('.ts-field-hint').textContent = root.TerrySenseT('templates.create.nameHint', 'What kind of station it shows, so the next station of that kind can reuse it.');
+    form.querySelector('.ts-section-head').textContent = root.TerrySenseT('templates.create.charts', 'Each measurement with its chart');
     var input = form.querySelector('input'), list = form.querySelector('.ts-tpl-chans');
     o.channels.forEach(function (c) {
       var row = list.appendChild(h('<div class="ts-tpl-chan"><span></span><span class="ts-chip"></span></div>'));
       row.setAttribute('data-channel', c.key);
-      row.firstChild.textContent = c.label + (c.unit ? ' (' + c.unit + ')' : '');
-      row.lastChild.textContent = CHARTS[c.chart] || c.chart;
+      row.firstChild.textContent = (c.text || c.label) + (c.unit ? ' (' + c.unit + ')' : '');
+      row.lastChild.textContent = chartName(c.chart);
     });
-    if (!o.channels.length) { list.appendChild(h('<div class="ts-empty">The station has no measurement to draw yet.</div>')); }
+    if (!o.channels.length) {
+      list.appendChild(h('<div class="ts-empty"></div>')).textContent = root.TerrySenseT('templates.create.noMeasurement', 'The station has no measurement to draw yet.');
+    }
     dr.body.appendChild(form);
     if (o.back) { dr.onBack(o.back); }
-    var go = ui.drawerActions(dr, 'Create');
+    var go = ui.drawerActions(dr, root.TerrySenseT('common.create', 'Create'));
     go.disabled = !o.channels.length;
     tb.currentUser().then(function (me) {
       me = me || {};
       var tenant = me.authority === 'TENANT_ADMIN', choose = tenant && o.owner && o.owner.entityType === 'CUSTOMER';
       var note = form.appendChild(h('<div class="ts-row-meta"></div>'));
-      note.textContent = 'The template opens in ThingsBoard afterwards, to arrange as you like. ' +
-        (choose ? '' : tenant ? 'It is saved with the in-terra templates, shared with every customer.' : 'Only your organisation sees it.');
+      note.textContent = root.TerrySenseT('templates.create.opensAfter', 'The template opens in ThingsBoard afterwards, to arrange as you like.') +
+        (choose ? ' ' : tenant ? ' ' + root.TerrySenseT('templates.create.savedTenant', 'It is saved with the in-terra templates, shared with every customer.')
+          : ' ' + root.TerrySenseT('templates.create.savedOwn', 'Only your organisation sees it.'));
       var where = null;
       if (choose) {
         // A template drawn from one customer's station stays that customer's unless published on purpose.
         where = h('<div class="ts-field ts-tpl-group"><label class="ts-switch"><input type="radio" name="ts-tpl-group" value="owner" checked>' +
           ' <span></span></label><label class="ts-switch"><input type="radio" name="ts-tpl-group" value="tenant">' +
-          ' With the in-terra templates, shared with every customer</label></div>');
+          ' <span></span></label></div>');
+        where.querySelectorAll('span')[1].textContent = root.TerrySenseT('templates.create.groupTenant', 'With the in-terra templates, shared with every customer');
         form.appendChild(ui.tenantSection(where));
         tb.get('/api/customer/' + o.owner.id).then(function (c) {
-          where.querySelector('span').textContent = 'With the templates of ' + (c.title || c.name) + ', which only it sees';
-        }).catch(function () { where.querySelector('span').textContent = 'With the templates of the station\'s owner, which only it sees'; });
+          where.querySelector('span').textContent = root.TerrySenseT('templates.create.groupOwner', 'With the templates of {owner}, which only it sees', { owner: c.title || c.name });
+        }).catch(function () {
+          where.querySelector('span').textContent = root.TerrySenseT('templates.create.groupStationOwner', 'With the templates of the station\'s owner, which only it sees');
+        });
       }
       setTimeout(function () { input.focus(); }, 0);
       go.addEventListener('click', function () {
@@ -237,11 +267,11 @@ root.TerrySenseTemplates = function (ui, tb) {
         var toOwner = where && where.querySelector('[name=ts-tpl-group]:checked').value === 'owner';
         create(o.station, o.channels, use, toOwner ? o.owner : null, me).then(function (id) {
           ui.closeDrawer();
-          ui.toast('Station · ' + use + ' created and assigned');
+          ui.toast(root.TerrySenseT('templates.create.done', '{title} created and assigned', { title: 'Station · ' + use }));
           o.done(id);
         }).catch(function (err) {
           go.disabled = false;
-          ui.toast('Template not created: ' + ((err && err.message) || err), 'error');
+          ui.toast(root.TerrySenseT('templates.create.failed', 'Template not created: {error}', { error: (err && err.message) || err }), 'error');
         });
       });
     });
@@ -307,7 +337,8 @@ root.TerrySenseTemplates = function (ui, tb) {
         var it = cat.by[c.key];
         if (!it) {
           var vocab = names[resolver.splitChannelKey(c.key).name] || {};
-          it = cat.by[c.key] = { key: c.key, label: vocab.label || c.label, unit: c.unit, chart: c.chart, at: {} };
+          it = cat.by[c.key] = { key: c.key, label: vocab.label || c.label, unit: c.unit, chart: c.chart, at: {},
+            text: vocab.label ? root.TerrySenseT.channel(resolver.splitChannelKey(c.key).name, vocab.label) : c.text || c.label };
           cat.keys.push(c.key);
         }
         it.at[e.station.id] = c;
@@ -328,11 +359,13 @@ root.TerrySenseTemplates = function (ui, tb) {
    * at most two units on a line chart (one axis each), one on bars, one channel on a state timeline. */
   function joinBlock(cat, ch, key) {
     var c = cat.by[key];
-    if (c.chart !== ch.chart) { return CHARTS[c.chart].toLowerCase() + ', not ' + CHARTS[ch.chart].toLowerCase(); }
-    if (ch.chart === 'state') { return 'a state timeline shows one channel'; }
+    if (c.chart !== ch.chart) {
+      return root.TerrySenseT('templates.join.otherChart', '{chart}, not {other}', { chart: chartNameInline(c.chart), other: chartNameInline(ch.chart) });
+    }
+    if (ch.chart === 'state') { return root.TerrySenseT('templates.join.stateOne', 'a state timeline shows one channel'); }
     var units = unitsOf(cat, ch.channels.concat([key]));
-    if (ch.chart === 'line' && units.length > 2) { return 'a third unit'; }
-    if (ch.chart !== 'line' && units.length > 1) { return 'another unit'; }
+    if (ch.chart === 'line' && units.length > 2) { return root.TerrySenseT('templates.join.thirdUnit', 'a third unit'); }
+    if (ch.chart !== 'line' && units.length > 1) { return root.TerrySenseT('templates.join.otherUnit', 'another unit'); }
     return '';
   }
 
@@ -556,30 +589,36 @@ root.TerrySenseTemplates = function (ui, tb) {
    * replaces (the current dashboard's title, optional), intro (optional),
    * done(dashboardId, stations). */
   function openCreateHome(o) {
-    var dr = ui.openDrawer('Create project dashboard', esc(o.project.name));
+    var dr = ui.openDrawer(esc(root.TerrySenseT('templates.home.title', 'Create project dashboard')), esc(o.project.name));
     var cat = catalogOf(o.entries, o.names, o.kinds);
     var all = o.entries.map(function (e) { return e.station; }), ticked = {};
     all.forEach(function (st) { ticked[st.id] = true; });
     var charts = starterPlan(cat, all.map(function (st) { return st.id; }));
 
     if (o.intro) { dr.body.appendChild(h('<p class="ts-field-hint ts-home-intro"></p>')).textContent = o.intro; }
-    var input = dr.body.appendChild(h('<div class="ts-field"><label class="ts-field-label">Name</label><input class="ts-input wide" data-f="title"></div>'))
-      .querySelector('input');
+    var nameField = dr.body.appendChild(h('<div class="ts-field"><label class="ts-field-label"></label><input class="ts-input wide" data-f="title"></div>'));
+    nameField.firstChild.textContent = root.TerrySenseT('common.name', 'Name');
+    var input = nameField.querySelector('input');
     input.value = o.project.name;
-    var stationsEl = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Stations</div><div class="ts-home-stations"></div>' +
-      '<div class="ts-field-hint">On the map, with their active alarms and a table of their latest values.</div></div>')).querySelector('.ts-home-stations');
-    var chartsSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Charts</div><div class="ts-home-charts"></div></div>'));
+    var stationsSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div><div class="ts-home-stations"></div>' +
+      '<div class="ts-field-hint"></div></div>'));
+    stationsSec.querySelector('.ts-section-head').textContent = root.TerrySenseT('common.stations', 'Stations');
+    stationsSec.querySelector('.ts-field-hint').textContent = root.TerrySenseT('templates.home.stationsHint', 'On the map, with their active alarms and a table of their latest values.');
+    var stationsEl = stationsSec.querySelector('.ts-home-stations');
+    var chartsSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div><div class="ts-home-charts"></div></div>'));
+    chartsSec.firstChild.textContent = root.TerrySenseT('common.charts', 'Charts');
     var cardsEl = chartsSec.querySelector('.ts-home-charts');
     var addEl = chartsSec.appendChild(h('<div class="ts-home-addchart"></div>'));
-    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent = 'Its public link shows exactly this. ' +
-      'It opens in ThingsBoard afterwards, to arrange as you like.' +
-      (o.replaces ? ' It replaces ' + o.replaces + ' as the project dashboard; that one stays in ThingsBoard, without a public link.' : '');
-    var go = ui.drawerActions(dr, 'Create');
+    dr.body.appendChild(h('<div class="ts-row-meta"></div>')).textContent =
+      root.TerrySenseT('templates.home.note', 'Its public link shows exactly this. It opens in ThingsBoard afterwards, to arrange as you like.') +
+      (o.replaces ? ' ' + root.TerrySenseT('templates.home.replaces', 'It replaces {title} as the project dashboard; that one stays in ThingsBoard, without a public link.',
+        { title: o.replaces }) : '');
+    var go = ui.drawerActions(dr, root.TerrySenseT('common.create', 'Create'));
 
     function picked() { return all.filter(function (st) { return ticked[st.id]; }); }
     function shownOn(ch) { return chartStations({ stations: picked(), cat: cat }, ch); }
     function carried(k) { return picked().some(function (st) { return cat.by[k].at[st.id]; }); }
-    function label(k) { var c = cat.by[k]; return c.label + (c.unit ? ' (' + c.unit + ')' : ''); }
+    function label(k) { var c = cat.by[k]; return c.text + (c.unit ? ' (' + c.unit + ')' : ''); }
     function retitle(ch) { if (!ch.titled) { ch.title = ch.channels.map(function (k) { return cat.by[k].label; }).join(' and '); } }
 
     function renderStations() {
@@ -590,7 +629,8 @@ root.TerrySenseTemplates = function (ui, tb) {
         row.setAttribute('data-station', st.name);
         var n = cat.keys.filter(function (k) { return cat.by[k].at[st.id]; }).length;
         row.querySelector('span').textContent = st.name;
-        row.querySelector('.ts-row-meta').textContent = n ? n + (n === 1 ? ' channel' : ' channels') : 'no channel yet';
+        row.querySelector('.ts-row-meta').textContent = !n ? root.TerrySenseT('templates.home.noChannel', 'no channel yet')
+          : n === 1 ? root.TerrySenseT('common.channelOne', '1 channel') : root.TerrySenseT('common.channelMany', '{n} channels', { n: n });
         var box = row.querySelector('input');
         box.checked = !!ticked[st.id];
         box.addEventListener('change', function () {
@@ -609,13 +649,20 @@ root.TerrySenseTemplates = function (ui, tb) {
     function card(ch, i) {
       var sts = shownOn(ch);
       var el = h('<div class="ts-home-chart"><div class="ts-home-chart-head"><input class="ts-input ts-home-chart-title" data-f="chart-title">' +
-        '<button type="button" class="ts-icon-btn" data-a="up" title="Move up">' + ICON_UP + '</button>' +
-        '<button type="button" class="ts-icon-btn" data-a="down" title="Move down">' + ICON_DOWN + '</button>' +
-        '<button type="button" class="ts-icon-btn" data-a="remove-chart" title="Remove this chart">' + ICON_TRASH + '</button></div>' +
-        '<div class="ts-home-row"><span class="ts-home-row-label">Channels</span><span class="ts-home-chips" data-list="channels"></span></div>' +
-        '<div class="ts-home-row"><span class="ts-home-row-label">Stations</span><span class="ts-home-chips" data-list="stations"></span></div>' +
-        '<div class="ts-home-row ts-home-mode"><span class="ts-home-row-label">Show</span></div>' +
+        '<button type="button" class="ts-icon-btn" data-a="up">' + ICON_UP + '</button>' +
+        '<button type="button" class="ts-icon-btn" data-a="down">' + ICON_DOWN + '</button>' +
+        '<button type="button" class="ts-icon-btn" data-a="remove-chart">' + ICON_TRASH + '</button></div>' +
+        '<div class="ts-home-row"><span class="ts-home-row-label"></span><span class="ts-home-chips" data-list="channels"></span></div>' +
+        '<div class="ts-home-row"><span class="ts-home-row-label"></span><span class="ts-home-chips" data-list="stations"></span></div>' +
+        '<div class="ts-home-row ts-home-mode"><span class="ts-home-row-label"></span></div>' +
         '<div class="ts-row-meta ts-home-sum"></div></div>');
+      el.querySelector('[data-a=up]').title = root.TerrySenseT('templates.home.moveUp', 'Move up');
+      el.querySelector('[data-a=down]').title = root.TerrySenseT('templates.home.moveDown', 'Move down');
+      el.querySelector('[data-a=remove-chart]').title = root.TerrySenseT('templates.home.removeChart', 'Remove this chart');
+      var rowLabels = el.querySelectorAll('.ts-home-row-label');
+      rowLabels[0].textContent = root.TerrySenseT('common.channels', 'Channels');
+      rowLabels[1].textContent = root.TerrySenseT('common.stations', 'Stations');
+      rowLabels[2].textContent = root.TerrySenseT('templates.home.show', 'Show');
       el.setAttribute('data-chart', ch.channels.join('+'));
       var title = el.querySelector('[data-f=chart-title]');
       title.value = ch.title;
@@ -628,14 +675,14 @@ root.TerrySenseTemplates = function (ui, tb) {
 
       var chans = el.querySelector('[data-list=channels]');
       ch.channels.forEach(function (k, j) {
-        chans.appendChild(chip(label(k), 'Take ' + cat.by[k].label + ' off this chart')).setAttribute('data-channel', k);
+        chans.appendChild(chip(label(k), root.TerrySenseT('templates.home.takeOff', 'Take {name} off this chart', { name: cat.by[k].text }))).setAttribute('data-channel', k);
         chans.lastChild.querySelector('button').addEventListener('click', function () {
           ch.channels.splice(j, 1);
           if (!ch.channels.length) { charts.splice(i, 1); } else { retitle(ch); }
           render();
         });
       });
-      chans.appendChild(picker('Add a channel…', cat.keys.filter(function (k) { return ch.channels.indexOf(k) < 0 && chartable(cat.by[k]) && carried(k); })
+      chans.appendChild(picker(root.TerrySenseT('templates.home.addChannel', 'Add a channel…'), cat.keys.filter(function (k) { return ch.channels.indexOf(k) < 0 && chartable(cat.by[k]) && carried(k); })
         .map(function (k) { var why = joinBlock(cat, ch, k); return { value: k, text: label(k) + (why ? ' — ' + why : ''), disabled: !!why }; }),
         function (k) {
           ch.channels.push(k);
@@ -646,20 +693,21 @@ root.TerrySenseTemplates = function (ui, tb) {
 
       var stList = el.querySelector('[data-list=stations]');
       sts.forEach(function (st) {
-        stList.appendChild(chip(st.name, 'Take ' + st.name + ' off this chart')).setAttribute('data-station', st.name);
+        stList.appendChild(chip(st.name, root.TerrySenseT('templates.home.takeOff', 'Take {name} off this chart', { name: st.name }))).setAttribute('data-station', st.name);
         stList.lastChild.querySelector('button').addEventListener('click', function () {
           ch.stations.splice(ch.stations.indexOf(st.id), 1);
           render();
         });
       });
-      if (!sts.length) { stList.appendChild(h('<span class="ts-home-none">None: this chart is left out</span>')); }
-      stList.appendChild(picker('Add a station…', picked().filter(function (st) {
+      if (!sts.length) { stList.appendChild(h('<span class="ts-home-none"></span>')).textContent = root.TerrySenseT('templates.home.leftOut', 'None: this chart is left out'); }
+      stList.appendChild(picker(root.TerrySenseT('templates.home.addStation', 'Add a station…'), picked().filter(function (st) {
         return sts.indexOf(st) < 0 && ch.channels.some(function (k) { return cat.by[k].at[st.id]; });
       }).map(function (st) { return { value: st.id, text: st.name }; }), function (id) { ch.stations.push(id); render(); })).setAttribute('data-a', 'add-station');
 
       var mode = el.querySelector('.ts-home-mode');
       if (sts.length > 1) {
-        [['together', 'Together, one chart'], ['apart', 'One chart per station']].forEach(function (m) {
+        [['together', root.TerrySenseT('templates.home.together', 'Together, one chart')],
+         ['apart', root.TerrySenseT('templates.home.apart', 'One chart per station')]].forEach(function (m) {
           var r = mode.appendChild(h('<label class="ts-switch"><input type="radio"><span></span></label>'));
           var radio = r.querySelector('input');
           radio.name = 'ts-home-mode-' + i;
@@ -677,10 +725,12 @@ root.TerrySenseTemplates = function (ui, tb) {
       var units = unitsOf(cat, ch.channels).filter(Boolean);
       var single = sts.length === 1 || !ch.together;
       el.querySelector('.ts-home-sum').textContent = [
-        CHARTS[ch.chart],
-        ch.together || sts.length < 2 ? lines + (lines === 1 ? ' line' : ' lines') : sts.length + ' charts',
-        units.length > 1 ? 'two axes: ' + units.join(', ') : '',
-        sts.length && single && ch.chart === 'line' ? 'alarm bands' : ''
+        chartName(ch.chart),
+        ch.together || sts.length < 2
+          ? (lines === 1 ? root.TerrySenseT('templates.home.lineOne', '1 line') : root.TerrySenseT('templates.home.lineMany', '{n} lines', { n: lines }))
+          : root.TerrySenseT('templates.home.chartMany', '{n} charts', { n: sts.length }),
+        units.length > 1 ? root.TerrySenseT('templates.home.twoAxes', 'two axes: {units}', { units: units.join(', ') }) : '',
+        sts.length && single && ch.chart === 'line' ? root.TerrySenseT('templates.home.alarmBands', 'alarm bands') : ''
       ].filter(Boolean).join(' · ');
       return el;
     }
@@ -689,9 +739,9 @@ root.TerrySenseTemplates = function (ui, tb) {
       renderStations();
       cardsEl.innerHTML = '';
       charts.forEach(function (ch, i) { cardsEl.appendChild(card(ch, i)); });
-      if (!charts.length) { cardsEl.appendChild(h('<div class="ts-empty">No chart. The latest values still show in the table.</div>')); }
+      if (!charts.length) { cardsEl.appendChild(h('<div class="ts-empty"></div>')).textContent = root.TerrySenseT('templates.home.noChart', 'No chart. The latest values still show in the table.'); }
       addEl.innerHTML = '';
-      addEl.appendChild(picker('+ Add a chart for…', cat.keys.filter(function (k) { return chartable(cat.by[k]) && carried(k); })
+      addEl.appendChild(picker(root.TerrySenseT('templates.home.addChart', '+ Add a chart for…'), cat.keys.filter(function (k) { return chartable(cat.by[k]) && carried(k); })
         .map(function (k) { return { value: k, text: label(k) }; }), function (k) {
           charts.push(newChart(cat, k, picked().map(function (st) { return st.id; })));
           render();
@@ -710,11 +760,11 @@ root.TerrySenseTemplates = function (ui, tb) {
       go.disabled = true;
       createHome(o.project, o.owner, plan).then(function (id) {
         ui.closeDrawer();
-        ui.toast(plan.title + ' created');
+        ui.toast(root.TerrySenseT('templates.home.done', '{title} created', { title: plan.title }));
         o.done(id, stations);
       }).catch(function (err) {
         check();
-        ui.toast('Project dashboard not created: ' + errText(err), 'error');
+        ui.toast(root.TerrySenseT('templates.home.failed', 'Project dashboard not created: {error}', { error: errText(err) }), 'error');
       });
     });
   }
@@ -723,33 +773,37 @@ root.TerrySenseTemplates = function (ui, tb) {
    * the charts of its own. `o`: station, attrs, names, kinds, homeId, note
    * (what else it changes, optional), done(). */
   function openAddToHome(o) {
-    var dr = ui.openDrawer('Add to project dashboard', esc(o.station.name));
+    var dr = ui.openDrawer(esc(root.TerrySenseT('templates.add.title', 'Add to project dashboard')), esc(o.station.name));
     var cat = catalogOf([{ station: o.station, attrs: o.attrs }], o.names, o.kinds);
-    dr.body.appendChild(h('<div class="ts-loading">Loading the project dashboard…</div>'));
+    dr.body.appendChild(h('<div class="ts-loading"></div>')).textContent = root.TerrySenseT('templates.add.loading', 'Loading the project dashboard…');
     tb.get('/api/dashboard/' + o.homeId).then(function (dash) {
       dr.body.innerHTML = '';
-      dr.body.appendChild(h('<p class="ts-field-hint"></p>')).textContent = 'It joins the map, the active alarms and the latest values. ' + (o.note || '');
+      dr.body.appendChild(h('<p class="ts-field-hint"></p>')).textContent =
+        root.TerrySenseT('templates.add.joins', 'It joins the map, the active alarms and the latest values.') + ' ' + (o.note || '');
       var found = homeCharts(dash, cat.keys);
-      var joinSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Add its lines to</div></div>'));
+      var joinSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div></div>'));
+      joinSec.firstChild.textContent = root.TerrySenseT('templates.add.linesTo', 'Add its lines to');
       var joins = found.map(function (c) {
         var r = joinSec.appendChild(h('<label class="ts-switch ts-home-join"><input type="checkbox"><span></span><span class="ts-row-meta"></span></label>'));
         r.setAttribute('data-chart', c.title);
         r.querySelector('span').textContent = c.title;
-        r.querySelector('.ts-row-meta').textContent = (c.stations === 1 ? '1 station' : c.stations + ' stations') + ' · ' +
-          c.keys.map(function (k) { return cat.by[k].label; }).join(', ');
+        r.querySelector('.ts-row-meta').textContent = (c.stations === 1 ? root.TerrySenseT('common.stationOne', '1 station')
+          : root.TerrySenseT('common.stationMany', '{n} stations', { n: c.stations })) + ' · ' +
+          c.keys.map(function (k) { return cat.by[k].text; }).join(', ');
         r.querySelector('input').checked = c.stations > 1;
         return { c: c, box: r.querySelector('input') };
       });
-      if (!found.length) { joinSec.appendChild(h('<div class="ts-row-meta">No chart shows its channels yet.</div>')); }
-      var ownSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head">Charts of its own</div></div>'));
+      if (!found.length) { joinSec.appendChild(h('<div class="ts-row-meta"></div>')).textContent = root.TerrySenseT('templates.add.noChart', 'No chart shows its channels yet.'); }
+      var ownSec = dr.body.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div></div>'));
+      ownSec.firstChild.textContent = root.TerrySenseT('templates.add.ownCharts', 'Charts of its own');
       var own = cat.keys.filter(function (k) { return chartable(cat.by[k]); }).map(function (k) {
         var r = ownSec.appendChild(h('<label class="ts-switch ts-home-own"><input type="checkbox"><span></span><span class="ts-chip"></span></label>'));
         r.setAttribute('data-channel', k);
-        r.querySelector('span').textContent = cat.by[k].label + (cat.by[k].unit ? ' (' + cat.by[k].unit + ')' : '');
-        r.querySelector('.ts-chip').textContent = CHARTS[cat.by[k].chart];
+        r.querySelector('span').textContent = cat.by[k].text + (cat.by[k].unit ? ' (' + cat.by[k].unit + ')' : '');
+        r.querySelector('.ts-chip').textContent = chartName(cat.by[k].chart);
         return { key: k, row: r, box: r.querySelector('input') };
       });
-      if (!own.length) { ownSec.appendChild(h('<div class="ts-row-meta">No measurement to draw yet.</div>')); }
+      if (!own.length) { ownSec.appendChild(h('<div class="ts-row-meta"></div>')).textContent = root.TerrySenseT('templates.add.noMeasurement', 'No measurement to draw yet.'); }
       // A channel already drawn on a ticked chart needs no chart of its own.
       function sync() {
         var covered = [];
@@ -764,23 +818,24 @@ root.TerrySenseTemplates = function (ui, tb) {
       joins.forEach(function (j) { j.box.addEventListener('change', sync); });
       own.forEach(function (x) { x.box.addEventListener('change', function () { x.touched = true; }); });
       sync();
-      var go = ui.drawerActions(dr, 'Add');
+      var go = ui.drawerActions(dr, root.TerrySenseT('common.add', 'Add'));
       go.addEventListener('click', function () {
         go.disabled = true;
         addToHome(o.homeId, { station: o.station, cat: cat,
           join: joins.filter(function (j) { return j.box.checked; }).map(function (j) { return j.c.id; }),
           own: own.filter(function (x) { return x.box.checked; }).map(function (x) { return x.key; }) }).then(function () {
           ui.closeDrawer();
-          ui.toast(o.station.name + ' added to the project dashboard');
+          ui.toast(root.TerrySenseT('templates.add.done', '{name} added to the project dashboard', { name: o.station.name }));
           o.done();
         }).catch(function (err) {
           go.disabled = false;
-          ui.toast('Not added: ' + errText(err), 'error');
+          ui.toast(root.TerrySenseT('templates.notAdded', 'Not added: {error}', { error: errText(err) }), 'error');
         });
       });
     }).catch(function (err) {
       dr.body.innerHTML = '';
-      dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent = 'Could not load the project dashboard: ' + errText(err);
+      dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent =
+        root.TerrySenseT('templates.add.loadFailed', 'Could not load the project dashboard: {error}', { error: errText(err) });
     });
   }
 
@@ -825,24 +880,28 @@ root.TerrySenseTemplates = function (ui, tb) {
     var calc = root.TerrySenseCalculations(ui, tb);
     var meta = { names: o.names, attributes: o.calcAttributes };
     var current = o.attrs['config.stationDashboard'] || null;
-    var dr = ui.openDrawer('Charts dashboard', esc(o.station.name));
-    dr.body.appendChild(h('<div class="ts-loading">Loading the templates…</div>'));
+    var dr = ui.openDrawer(esc(root.TerrySenseT('common.chartsDashboard', 'Charts dashboard')), esc(o.station.name));
+    dr.body.appendChild(h('<div class="ts-loading"></div>')).textContent = root.TerrySenseT('templates.panel.loading', 'Loading the templates…');
     function charts() { return channelsOf(o.attrs, o.names, o.kinds, o.order); }
     function labelsOf(keys) { return keys.map(function (k) { return calc.channelLabel(meta, o.attrs, k); }); }
-    function attrLabels(attrs) { return attrs.map(function (a) { return (o.calcAttributes[a] || {}).label || a; }); }
+    function attrLabels(attrs) {
+      return attrs.map(function (a) { var label = (o.calcAttributes[a] || {}).label; return label ? root.TerrySenseT.attribute(a, label) : a; });
+    }
 
     tb.currentUser().then(function (me) {
       me = me || {};
       var tenantAdmin = me.authority === 'TENANT_ADMIN';
       function mayEdit(t) { return o.canCreate && (tenantAdmin || !t.tenant); }
-      function whose(t) { return t.tenant ? 'in-terra' : tenantAdmin ? 'customer' : 'own'; }
+      function whose(t) {
+        return t.tenant ? 'in-terra' : tenantAdmin ? root.TerrySenseT('templates.panel.customer', 'customer') : root.TerrySenseT('templates.panel.own', 'own');
+      }
 
       function assign(t) {
         tb.saveAttrs(o.station, { 'config.stationDashboard': t.id }).then(function () {
           ui.closeDrawer();
-          ui.toast(o.station.name + ' opens ' + t.title);
+          ui.toast(root.TerrySenseT('templates.panel.opens', '{station} opens {title}', { station: o.station.name, title: t.title }));
           o.changed();
-        }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+        }).catch(function (err) { ui.toast(root.TerrySenseT('common.notSaved', 'Not saved: {error}', { error: errText(err) }), 'error'); });
       }
 
       /** A template one setting away: enter the constants, then the station opens it. */
@@ -850,14 +909,17 @@ root.TerrySenseTemplates = function (ui, tb) {
         var turnsOn = resolver.calculationPlan(o.attrs, o.names).filter(function (p) {
           return !p.on && p.needs.every(function (a) { return needs.indexOf(a) >= 0; }) && t.channels.indexOf(p.name) >= 0;
         }).map(function (p) { return p.name; });
-        var sd = ui.openDrawer(esc('Set up ' + t.title), esc(o.station.name));
-        sd.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = t.title + ' shows ' + calc.listText(labelsOf(turnsOn)) +
-          ', calculated from this station\'s readings and the ' + (needs.length === 1 ? 'setting' : 'settings') + ' below.';
+        var sd = ui.openDrawer(esc(root.TerrySenseT('templates.setup.title', 'Set up {title}', { title: t.title })), esc(o.station.name));
+        var shows = { title: t.title, list: calc.listText(labelsOf(turnsOn)) };
+        sd.body.appendChild(h('<p class="ts-calc-intro"></p>')).textContent = needs.length === 1
+          ? root.TerrySenseT('templates.setup.introOne', '{title} shows {list}, calculated from this station\'s readings and the setting below.', shows)
+          : root.TerrySenseT('templates.setup.introMany', '{title} shows {list}, calculated from this station\'s readings and the settings below.', shows);
         var f = calc.form(o.station, o.attrs, needs, meta);
         sd.body.appendChild(f.el);
-        sd.body.appendChild(h('<div class="ts-field-hint">Values are calculated from the latest reading on; earlier readings are not recalculated.</div>'));
+        sd.body.appendChild(h('<div class="ts-field-hint"></div>')).textContent =
+          root.TerrySenseT('calculations.hint', 'Values are calculated from the latest reading on; earlier readings are not recalculated.');
         sd.onBack(function () { openPanel(o); });
-        var go = ui.drawerActions(sd, 'Save and assign');
+        var go = ui.drawerActions(sd, root.TerrySenseT('templates.setup.ok', 'Save and assign'));
         function check() { go.disabled = !f.values(); }
         f.onChange(check);
         check();
@@ -869,43 +931,46 @@ root.TerrySenseTemplates = function (ui, tb) {
           write['config.stationDashboard'] = t.id;
           calc.save(o.station, write).then(function () {
             ui.closeDrawer();
-            ui.toast(o.station.name + ' opens ' + t.title);
+            ui.toast(root.TerrySenseT('templates.panel.opens', '{station} opens {title}', { station: o.station.name, title: t.title }));
             o.changed();
           }).catch(function (err) {
             go.disabled = false;
-            ui.toast('Not saved: ' + errText(err), 'error');
+            ui.toast(root.TerrySenseT('common.notSaved', 'Not saved: {error}', { error: errText(err) }), 'error');
           });
         });
       }
 
       function addTo(t, missing) {
-        ui.confirm('Add ' + missing.length + (missing.length === 1 ? ' channel' : ' channels') + ' to <b>' + esc(t.title) + '</b>, below its widgets? ' +
-          'Every station that opens it shows them.', 'Add').then(function (ok) {
+        var what = { n: missing.length, title: esc(t.title) };
+        ui.confirm(missing.length === 1
+          ? root.TerrySenseT('templates.addTo.confirmOne', 'Add 1 channel to <b>{title}</b>, below its widgets? Every station that opens it shows them.', what)
+          : root.TerrySenseT('templates.addTo.confirmMany', 'Add {n} channels to <b>{title}</b>, below its widgets? Every station that opens it shows them.', what),
+          root.TerrySenseT('common.add', 'Add')).then(function (ok) {
           if (!ok) { return null; }
           return addChannels(t.id, missing).then(function (n) {
             listed = null;
             ui.closeDrawer();
-            ui.toast(n + (n === 1 ? ' channel' : ' channels') + ' added to ' + t.title);
+            ui.toast(n === 1 ? root.TerrySenseT('templates.addTo.doneOne', '1 channel added to {title}', { title: t.title })
+              : root.TerrySenseT('templates.addTo.doneMany', '{n} channels added to {title}', { n: n, title: t.title }));
             o.open(t.id);
           });
-        }).catch(function (err) { ui.toast('Not added: ' + errText(err), 'error'); });
+        }).catch(function (err) { ui.toast(root.TerrySenseT('templates.notAdded', 'Not added: {error}', { error: errText(err) }), 'error'); });
       }
 
       function unlink() {
         tb.deleteAttrs(o.station, ['config.stationDashboard']).then(function () {
           ui.closeDrawer();
-          ui.toast('Charts dashboard unlinked from ' + o.station.name);
+          ui.toast(root.TerrySenseT('templates.panel.unlinked', 'Charts dashboard unlinked from {name}', { name: o.station.name }));
           o.changed();
-        }).catch(function (err) { ui.toast('Not saved: ' + errText(err), 'error'); });
+        }).catch(function (err) { ui.toast(root.TerrySenseT('common.notSaved', 'Not saved: {error}', { error: errText(err) }), 'error'); });
       }
 
       function describe(r) {
-        return r.fit.fits ? 'Shows ' + calc.listText(labelsOf(r.t.channels))
-          : !r.t.channels.length ? 'Shows no measurement'
-          : r.fit.missing.length ? 'Not measured here: ' + calc.listText(labelsOf(r.fit.missing))
-          : 'Needs ' + calc.listText(attrLabels(r.fit.needs)) + ' to calculate ' + calc.listText(labelsOf(r.t.channels.filter(function (c) {
-            return !(c in resolver.channelsFromAttrs(o.attrs, o.names));
-          })));
+        return r.fit.fits ? root.TerrySenseT('templates.panel.shows', 'Shows {list}', { list: calc.listText(labelsOf(r.t.channels)) })
+          : !r.t.channels.length ? root.TerrySenseT('templates.panel.showsNothing', 'Shows no measurement')
+          : r.fit.missing.length ? root.TerrySenseT('templates.panel.notMeasured', 'Not measured here: {list}', { list: calc.listText(labelsOf(r.fit.missing)) })
+          : root.TerrySenseT('templates.panel.needs', 'Needs {needs} to calculate {list}', { needs: calc.listText(attrLabels(r.fit.needs)),
+            list: calc.listText(labelsOf(r.t.channels.filter(function (c) { return !(c in resolver.channelsFromAttrs(o.attrs, o.names)); }))) });
       }
 
       function option(r) {
@@ -914,11 +979,12 @@ root.TerrySenseTemplates = function (ui, tb) {
         el.querySelector('.ts-opt-label').textContent = r.t.title;
         el.querySelector('.ts-opt-desc').textContent = describe(r);
         var side = el.querySelector('.ts-opt-side');
-        if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent">fits</span>')); }
+        if (r.fit.fits) { side.appendChild(h('<span class="ts-chip accent"></span>')).textContent = root.TerrySenseT('templates.panel.fits', 'fits'); }
         else if (!r.fit.missing.length && r.fit.needs.length) {
-          side.appendChild(h('<span class="ts-chip">' + (r.fit.needs.length === 1 ? '1 setting' : r.fit.needs.length + ' settings') + '</span>'));
+          side.appendChild(h('<span class="ts-chip"></span>')).textContent = r.fit.needs.length === 1 ? root.TerrySenseT('templates.panel.settingOne', '1 setting')
+            : root.TerrySenseT('templates.panel.settingMany', '{n} settings', { n: r.fit.needs.length });
         }
-        side.appendChild(h('<span class="ts-chip level">' + whose(r.t) + '</span>'));
+        side.appendChild(h('<span class="ts-chip level"></span>')).textContent = whose(r.t);
         if (mayEdit(r.t)) { el.appendChild(ownerButtons(r.t)); }
         function pick() { if (!r.fit.missing.length && r.fit.needs.length) { openSetup(r.t, r.fit.needs); } else { assign(r.t); } }
         el.addEventListener('click', pick);
@@ -945,47 +1011,53 @@ root.TerrySenseTemplates = function (ui, tb) {
       function remove(t) {
         stationsOf(t).then(function (stations) {
           var names = stations.slice(0, 5).map(function (st) { return '<b>' + esc(st.name) + '</b>'; });
-          var who = !stations.length ? 'No station opens it.'
-            : (stations.length === 1 ? '1 station opens it: ' : stations.length + ' stations open it: ') + calc.listText(names) +
-              (stations.length > 5 ? ' and ' + (stations.length - 5) + ' more' : '') + '. They go back to their station view.';
-          return ui.confirm('Delete the template <b>' + esc(t.title) + '</b>? ' + who + ' This cannot be undone.', 'Delete').then(function (ok) {
+          var list = { list: calc.listText(names) + (stations.length > 5 ? ' ' + root.TerrySenseT('templates.delete.more', 'and {n} more', { n: stations.length - 5 }) : '') };
+          var who = !stations.length ? root.TerrySenseT('templates.delete.noStation', 'No station opens it.')
+            : stations.length === 1 ? root.TerrySenseT('templates.delete.stationOne', '1 station opens it: {list}. They go back to their station view.', list)
+            : root.TerrySenseT('templates.delete.stationMany', '{n} stations open it: {list}. They go back to their station view.', { n: stations.length, list: list.list });
+          return ui.confirm(root.TerrySenseT('templates.delete.confirm', 'Delete the template <b>{title}</b>? {who} This cannot be undone.', { title: esc(t.title), who: who }),
+            root.TerrySenseT('common.delete', 'Delete')).then(function (ok) {
             if (!ok) { return null; }
             return Promise.all(stations.map(function (st) { return tb.deleteAttrs(st, ['config.stationDashboard']); })).then(function () {
               return tb.del('/api/dashboard/' + t.id);
             }).then(function () {
               listed = null;
               ui.closeDrawer();
-              ui.toast(t.title + ' deleted');
+              ui.toast(root.TerrySenseT('templates.delete.done', '{title} deleted', { title: t.title }));
               o.changed();
             });
           });
-        }).catch(function (err) { ui.toast('Not deleted: ' + errText(err), 'error'); });
+        }).catch(function (err) { ui.toast(root.TerrySenseT('common.notDeleted', 'Not deleted: {error}', { error: errText(err) }), 'error'); });
       }
 
       /** Open `t` on its landing view: ThingsBoard edits a dashboard only when no view state names an entity. */
       function edit(t) {
         ui.closeDrawer();
-        ui.toast('Click the pencil at the bottom right of ' + t.title + ', then pick its "station" view in the view list. Every station that opens it follows.');
+        ui.toast(root.TerrySenseT('templates.edit.howTo', 'Click the pencil at the bottom right of {title}, then pick its "station" view in the view list. Every station that opens it follows.',
+          { title: t.title }));
         tb.openDashboard(t.id);
       }
 
       /** Edit and Delete for a template the user may change. */
       function ownerButtons(t) {
         var box = h('<span class="ts-tpl-own"></span>');
-        box.appendChild(h('<button type="button" class="ts-icon-btn" data-a="edit-template" title="Edit this template">' + ui.ICON.edit + '</button>'))
-          .addEventListener('click', function (e) { e.stopPropagation(); edit(t); });
-        box.appendChild(h('<button type="button" class="ts-icon-btn ts-tpl-del" data-a="delete-template" title="Delete this template">' + ICON_TRASH + '</button>'))
-          .addEventListener('click', function (e) { e.stopPropagation(); remove(t); });
+        var editBtn = box.appendChild(h('<button type="button" class="ts-icon-btn" data-a="edit-template">' + ui.ICON.edit + '</button>'));
+        editBtn.title = root.TerrySenseT('templates.edit.button', 'Edit this template');
+        editBtn.addEventListener('click', function (e) { e.stopPropagation(); edit(t); });
+        var delBtn = box.appendChild(h('<button type="button" class="ts-icon-btn ts-tpl-del" data-a="delete-template">' + ICON_TRASH + '</button>'));
+        delBtn.title = root.TerrySenseT('templates.delete.button', 'Delete this template');
+        delBtn.addEventListener('click', function (e) { e.stopPropagation(); remove(t); });
         return box;
       }
 
       /** The linked dashboard: Edit and Delete beside its title, what it shows here, then Open, add the station's other channels, Unlink. */
       function linkedCard(t) {
-        var card = h('<div class="ts-section ts-tpl-current"><div class="ts-section-head">Linked now</div>' +
+        var card = h('<div class="ts-section ts-tpl-current"><div class="ts-section-head"></div>' +
           '<div class="ts-tpl-current-box"><div class="ts-tpl-current-title"><span class="ts-opt-label"></span></div>' +
           '<div class="ts-tpl-current-lines"></div><div class="ts-tpl-current-acts"></div></div></div>');
         var title = card.querySelector('.ts-tpl-current-title'), lines = card.querySelector('.ts-tpl-current-lines');
         var acts = card.querySelector('.ts-tpl-current-acts');
+        card.firstChild.textContent = root.TerrySenseT('templates.linked.head', 'Linked now');
         function line(text, warn) {
           var l = lines.appendChild(h('<div class="ts-opt-desc"></div>'));
           l.textContent = text;
@@ -993,35 +1065,42 @@ root.TerrySenseTemplates = function (ui, tb) {
         }
         var own = t && t.fit && mayEdit(t);
         if (!t) {
-          title.firstChild.textContent = 'A dashboard that no longer exists or that you cannot read';
-          line('The station opens its station view instead. Link a template below, or unlink it.', true);
+          title.firstChild.textContent = root.TerrySenseT('templates.linked.gone', 'A dashboard that no longer exists or that you cannot read');
+          line(root.TerrySenseT('templates.linked.goneHint', 'The station opens its station view instead. Link a template below, or unlink it.'), true);
         } else {
           title.firstChild.textContent = t.title;
           if (t.fit) {
-            title.appendChild(h('<span class="ts-chip level">' + whose(t) + '</span>'));
+            title.appendChild(h('<span class="ts-chip level"></span>')).textContent = whose(t);
             if (own) { title.appendChild(ownerButtons(t)).classList.add('ts-tpl-current-own'); }
             var shown = t.channels.filter(function (c) { return t.fit.missing.indexOf(c) < 0; });
-            if (shown.length) { line('Shows ' + calc.listText(labelsOf(shown))); }
-            if (t.fit.missing.length) { line('Stays empty for ' + calc.listText(labelsOf(t.fit.missing)) + ': this station does not measure them', true); }
-            else if (t.fit.needs.length) { line('Waits for ' + calc.listText(attrLabels(t.fit.needs)) + ' to calculate what it shows', true); }
+            if (shown.length) { line(root.TerrySenseT('templates.panel.shows', 'Shows {list}', { list: calc.listText(labelsOf(shown)) })); }
+            if (t.fit.missing.length) {
+              line(root.TerrySenseT('templates.linked.emptyFor', 'Stays empty for {list}: this station does not measure them', { list: calc.listText(labelsOf(t.fit.missing)) }), true);
+            } else if (t.fit.needs.length) {
+              line(root.TerrySenseT('templates.linked.waits', 'Waits for {needs} to calculate what it shows', { needs: calc.listText(attrLabels(t.fit.needs)) }), true);
+            }
           } else {
-            line('A dashboard outside the station templates');
+            line(root.TerrySenseT('templates.linked.outside', 'A dashboard outside the station templates'));
           }
-          acts.appendChild(h('<button type="button" class="ts-btn" data-a="open-dashboard">Open</button>'))
-            .addEventListener('click', function () { ui.closeDrawer(); o.open(t.id); });
+          var openBtn = acts.appendChild(h('<button type="button" class="ts-btn" data-a="open-dashboard"></button>'));
+          openBtn.textContent = root.TerrySenseT('templates.linked.open', 'Open');
+          openBtn.addEventListener('click', function () { ui.closeDrawer(); o.open(t.id); });
           var missing = t.channels ? missingFrom(t.channels, charts()) : [];
           if (missing.length) {
-            line('Not shown: ' + calc.listText(missing.map(function (c) { return c.label; })));
+            line(root.TerrySenseT('templates.linked.notShown', 'Not shown: {list}', { list: calc.listText(missing.map(function (c) { return c.text || c.label; })) }));
             if (own) {
               var add = acts.appendChild(h('<button type="button" class="ts-btn" data-a="add-channels"></button>'));
-              add.textContent = missing.length === 1 ? 'Add ' + missing[0].label : 'Add these ' + missing.length;
-              add.title = 'Append to the template, below its widgets';
+              add.textContent = missing.length === 1 ? root.TerrySenseT('templates.linked.addOne', 'Add {name}', { name: missing[0].text || missing[0].label })
+                : root.TerrySenseT('templates.linked.addMany', 'Add these {n}', { n: missing.length });
+              add.title = root.TerrySenseT('templates.linked.addTitle', 'Append to the template, below its widgets');
               add.addEventListener('click', function () { addTo(t, missing); });
             }
           }
         }
         acts.appendChild(h('<span class="ts-spacer"></span>'));
-        acts.appendChild(h('<button type="button" class="ts-btn ghost" data-a="unlink">Unlink</button>')).addEventListener('click', unlink);
+        var unlinkBtn = acts.appendChild(h('<button type="button" class="ts-btn ghost" data-a="unlink"></button>'));
+        unlinkBtn.textContent = root.TerrySenseT('common.unlink', 'Unlink');
+        unlinkBtn.addEventListener('click', unlink);
         return card;
       }
 
@@ -1040,16 +1119,19 @@ root.TerrySenseTemplates = function (ui, tb) {
           }
           var ready = others.filter(function (r) { return r.fit.fits; });
           var groups = [
-            ['Ready for this station', ready],
-            ['One step away: a setting to enter', others.filter(function (r) { return !r.fit.fits && !r.fit.missing.length && r.fit.needs.length; })],
-            ['Other templates', others.filter(function (r) { return r.fit.missing.length || !r.t.channels.length; })]
+            [root.TerrySenseT('templates.panel.ready', 'Ready for this station'), ready],
+            [root.TerrySenseT('templates.panel.oneStep', 'One step away: a setting to enter'), others.filter(function (r) { return !r.fit.fits && !r.fit.missing.length && r.fit.needs.length; })],
+            [root.TerrySenseT('templates.panel.other', 'Other templates'), others.filter(function (r) { return r.fit.missing.length || !r.t.channels.length; })]
           ];
-          dr.body.appendChild(h('<div class="ts-section-head ts-tpl-list-head"></div>')).textContent = current ? 'Link another template' : 'Link a template';
+          dr.body.appendChild(h('<div class="ts-section-head ts-tpl-list-head"></div>')).textContent = current
+            ? root.TerrySenseT('templates.panel.linkAnother', 'Link another template') : root.TerrySenseT('templates.panel.link', 'Link a template');
           if (!current) {
-            dr.body.appendChild(h('<p class="ts-field-hint ts-tpl-intro">The station\'s <i>Charts</i> button opens the template linked here. ' +
-              'A template shows channels by name, so one serves every station that has them.</p>'));
+            dr.body.appendChild(h('<p class="ts-field-hint ts-tpl-intro">' + root.TerrySenseT('templates.panel.intro', 'The station\'s <i>Charts</i> button opens the template linked here. A template shows channels by name, so one serves every station that has them.') + '</p>'));
           }
-          if (!others.length) { dr.body.appendChild(h('<div class="ts-empty">' + (current ? 'No other template yet.' : 'No template yet.') + '</div>')); }
+          if (!others.length) {
+            dr.body.appendChild(h('<div class="ts-empty"></div>')).textContent = current
+              ? root.TerrySenseT('templates.panel.noOther', 'No other template yet.') : root.TerrySenseT('templates.panel.none', 'No template yet.');
+          }
           groups.forEach(function (g) {
             if (!g[1].length) { return; }
             var box = h('<div class="ts-opt-group"><div class="ts-subhead"></div></div>');
@@ -1060,9 +1142,12 @@ root.TerrySenseTemplates = function (ui, tb) {
           if (!o.canCreate) { return; }
           dr.foot.hidden = false;
           dr.foot.innerHTML = '<span class="ts-row-meta"></span><span class="ts-spacer"></span>';
-          if (ready.length) { dr.foot.firstChild.textContent = ready.length === 1 ? 'A template above already fits.' : ready.length + ' templates above already fit.'; }
+          if (ready.length) {
+            dr.foot.firstChild.textContent = ready.length === 1 ? root.TerrySenseT('templates.panel.fitsOne', 'A template above already fits.')
+              : root.TerrySenseT('templates.panel.fitsMany', '{n} templates above already fit.', { n: ready.length });
+          }
           dr.foot.appendChild(h('<button type="button" class="ts-btn' + (ready.length || linked ? '' : ' primary') + '" data-a="create-template">' +
-            ui.ICON.plus + ' Create from this station</button>')).addEventListener('click', function () {
+            ui.ICON.plus + ' ' + esc(root.TerrySenseT('templates.create.title', 'Create from this station')) + '</button>')).addEventListener('click', function () {
             openCreate({ station: o.station, owner: o.owner, channels: charts(), back: function () { openPanel(o); },
               done: function (id) { listed = null; o.open(id); } });
           });
@@ -1070,7 +1155,8 @@ root.TerrySenseTemplates = function (ui, tb) {
       });
     }).catch(function (err) {
       dr.body.innerHTML = '';
-      dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent = 'Could not load the templates: ' + errText(err);
+      dr.body.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent =
+        root.TerrySenseT('templates.panel.loadFailed', 'Could not load the templates: {error}', { error: errText(err) });
     });
   }
 

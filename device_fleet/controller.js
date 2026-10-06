@@ -28,6 +28,7 @@ window.TerrySenseDeviceFleet = function (ctx, container, opts) {
 
 opts = opts || {};
 
+var t = window.TerrySenseI18n(ctx);
 var G = window.TerrySenseGlossary;
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
@@ -36,8 +37,8 @@ var life = window.TerrySenseLifecycle(ui, tb);
 var h = ui.h, esc = ui.esc, ICON = ui.ICON;
 
 var GROUPS = [
-  { id: 'logr', label: 'LOGR', profiles: ['logr2', 'logr3', 'logr4'] },
-  { id: 'other', label: 'Other devices', profiles: ['gsaa', 'gsaa2', 'whtr', 'zc-tilt', 'default'] }
+  { id: 'logr', profiles: ['logr2', 'logr3', 'logr4'] },
+  { id: 'other', profiles: ['gsaa', 'gsaa2', 'whtr', 'zc-tilt', 'default'] }
 ];
 var ATTRS = ['active', 'lastActivityTime', 'inactivityTimeout', 'deviceInfo.hwVersion', 'deviceInfo.fwVersion',
   'status.healthFaults', 'register.hwVersion', 'register.hwStatus', 'register.loraFw', 'register.dfu',
@@ -47,24 +48,21 @@ var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
 var EMPTY_MARKER = '(empty)';
 // A LOGR2's sensors by the prefix of its device keys, as device_topology's LOGR2_SENSORS.
 var LOGR2_SENSORS = {
-  phpr: { code: 'PHPR', name: 'pH probe' }, cond: { code: 'COND', name: 'Conductivity probe' },
-  dryc: { code: 'DRYC', name: 'Dry contact interface' }, flow: { code: 'FLOW', name: 'Flow meter' },
-  clmt: { code: 'CLMT', name: 'Climate sensor' }, inclTilt: { code: 'INCL/TILT', name: 'Inclinometer or tiltmeter' },
-  usonRdar: { code: 'USON/RDAR', name: 'Ultrasonic or radar level sensor' }
+  phpr: { code: 'PHPR' }, cond: { code: 'COND' }, dryc: { code: 'DRYC' }, flow: { code: 'FLOW' },
+  clmt: { code: 'CLMT' }, inclTilt: { code: 'INCL/TILT' }, usonRdar: { code: 'USON/RDAR' }
 };
+function logr2SensorNames() {
+  return {
+    phpr: t('mapping.logr2.phpr', 'pH probe'), cond: t('mapping.logr2.cond', 'Conductivity probe'),
+    dryc: t('common.dryc', 'Dry contact interface'), flow: t('mapping.logr2.flow', 'Flow meter'),
+    clmt: t('mapping.logr2.clmt', 'Climate sensor'), inclTilt: t('mapping.logr2.inclTilt', 'Inclinometer or tiltmeter'),
+    usonRdar: t('mapping.logr2.usonRdar', 'Ultrasonic or radar level sensor')
+  };
+}
 var REFRESH_MS = 60000;
 var PAGE = 1000;
 
-function ago(ts) {
-  if (!ts) { return 'never'; }
-  var s = Math.max(0, (Date.now() - Number(ts)) / 1000);
-  if (s < 90) { return 'just now'; }
-  if (s < 5400) { return Math.round(s / 60) + ' min ago'; }
-  if (s < 129600) { return Math.round(s / 3600) + ' h ago'; }
-  return Math.round(s / 86400) + ' days ago';
-}
-
-function fmtTime(ts) { return ts ? new Date(Number(ts)).toLocaleString() : 'never'; }
+function fmtTime(ts) { return ts ? new Date(Number(ts)).toLocaleString(t.locale()) : t('common.never', 'never'); }
 function flag(v) { return v === true || v === 'true'; }
 
 // -- data -------------------------------------------------------------------------------
@@ -134,7 +132,8 @@ function sensorsOf(d) {
     return tb.get('/api/plugins/telemetry/DEVICE/' + d.id + '/keys/timeseries').then(function (keys) {
       var seen = {};
       tb.readingKeys(keys).forEach(function (k) { seen[k.slice(0, k.indexOf('.'))] = true; });
-      Object.keys(LOGR2_SENSORS).forEach(function (p) { if (seen[p]) { add(LOGR2_SENSORS[p].code, LOGR2_SENSORS[p].name); } });
+      var names = logr2SensorNames();
+      Object.keys(LOGR2_SENSORS).forEach(function (p) { if (seen[p]) { add(LOGR2_SENSORS[p].code, names[p]); } });
       return sorted(byCode);
     });
   }
@@ -212,19 +211,26 @@ function hwStatus(d) { return reports(d) ? healthFaults(d).join(', ') : String(d
 function hwStatusBad(d) { return !FINE_STATUS.test(hwStatus(d)); }
 function dfuImpossible(d) { return !reports(d) && d.attrs['register.dfu'] !== undefined && !flag(d.attrs['register.dfu']); }
 
-/** Columns of each list: header, default direction, the value it sorts by (null sorts last), cell class and width. */
+/** Columns of each list: default direction, the value it sorts by (null sorts last), cell class and width. */
 var COLUMNS = {
-  device: { label: 'Device', dir: 1, cell: 'ts-fleet-dev', width: 'minmax(180px, 2fr)', value: function (d) { return String(d.name || '').toLowerCase(); } },
-  customer: { label: 'Customer', dir: 1, cell: 'ts-fleet-cust', width: 'minmax(110px, 1fr)', value: function (d) { return d.customer ? d.customer.toLowerCase() : null; } },
-  uplink: { label: 'Last uplink', dir: -1, cell: 'ts-fleet-up', width: '110px', value: function (d) { return lastTs(d) || null; } },
-  projects: { label: 'Projects', dir: 1, cell: 'ts-fleet-proj', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.projects && d.projects.length ? d.projects[0].name.toLowerCase() : null; } },
-  stations: { label: 'Stations', dir: 1, cell: 'ts-fleet-st', width: 'minmax(120px, 1.5fr)', value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
-  sensors: { label: 'Sensors', dir: 1, cell: 'ts-fleet-sens', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.sensors && d.sensors.length ? codes(d).join(' ') : null; } },
-  versions: { label: 'Versions', dir: 1, cell: 'ts-fleet-ver', width: 'minmax(120px, 1fr)', value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
-  hardware: { label: 'Hardware', dir: -1, cell: 'ts-fleet-hw', width: 'minmax(110px, 1fr)', value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
-  type: { label: 'Type', dir: 1, cell: 'ts-fleet-type', width: '90px', value: function (d) { return d.type || null; } },
-  alarms: { label: 'Alarms', dir: -1, cell: 'ts-fleet-al', width: '90px', value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
+  device: { dir: 1, cell: 'ts-fleet-dev', width: 'minmax(180px, 2fr)', value: function (d) { return String(d.name || '').toLowerCase(); } },
+  customer: { dir: 1, cell: 'ts-fleet-cust', width: 'minmax(110px, 1fr)', value: function (d) { return d.customer ? d.customer.toLowerCase() : null; } },
+  uplink: { dir: -1, cell: 'ts-fleet-up', width: '110px', value: function (d) { return lastTs(d) || null; } },
+  projects: { dir: 1, cell: 'ts-fleet-proj', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.projects && d.projects.length ? d.projects[0].name.toLowerCase() : null; } },
+  stations: { dir: 1, cell: 'ts-fleet-st', width: 'minmax(120px, 1.5fr)', value: function (d) { return d.stations && d.stations.length ? d.stations[0].toLowerCase() : null; } },
+  sensors: { dir: 1, cell: 'ts-fleet-sens', width: 'minmax(110px, 1.2fr)', value: function (d) { return d.sensors && d.sensors.length ? codes(d).join(' ') : null; } },
+  versions: { dir: 1, cell: 'ts-fleet-ver', width: 'minmax(120px, 1fr)', value: function (d) { var v = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'); return v ? String(v.value) : null; } },
+  hardware: { dir: -1, cell: 'ts-fleet-hw', width: 'minmax(110px, 1fr)', value: function (d) { return (hwStatusBad(d) ? 2 : 0) + (dfuImpossible(d) ? 1 : 0) || null; } },
+  type: { dir: 1, cell: 'ts-fleet-type', width: '90px', value: function (d) { return d.type || null; } },
+  alarms: { dir: -1, cell: 'ts-fleet-al', width: '90px', value: function (d) { var w = worstAlarm(d); return w ? G.rank(w.toLowerCase()) * 1000 + d.alarms.length : null; } }
 };
+function columnLabels() {
+  return {
+    device: t('common.device', 'Device'), customer: t('common.customer', 'Customer'), uplink: t('fleet.lastUplink', 'Last uplink'),
+    projects: t('common.projects', 'Projects'), stations: t('common.stations', 'Stations'), sensors: t('fleet.sensors', 'Sensors'),
+    versions: t('common.versions', 'Versions'), hardware: t('fleet.hardware', 'Hardware'), type: t('fleet.type', 'Type'), alarms: t('fleet.alarms', 'Alarms')
+  };
+}
 function columnsOf(logr) {
   return ['device'].concat(state.tenant ? ['customer'] : [], ['uplink', 'projects', 'stations'], logr ? ['sensors', 'versions', 'hardware'] : ['type'], ['alarms']);
 }
@@ -303,25 +309,26 @@ function visible() {
 var cardEl = h(
   '<div class="ts-card ts-fleet">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.gauge + '</div>' +
-  '    <div class="ts-head-text"><div class="ts-title">Fleet</div><div class="ts-subtitle"></div></div></div>' +
+  '    <div class="ts-head-text"><div class="ts-title">' + esc(t('nav.fleet', 'Fleet')) + '</div><div class="ts-subtitle"></div></div></div>' +
   '  <div class="ts-fleet-bar">' +
   '    <div class="ts-seg" data-bar="group"></div>' +
-  '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">All</button><button type="button" data-v="attention">Needs a look</button>' +
-  '      <button type="button" data-v="outofservice">Out of service</button></div>' +
-  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="Name, label, customer, project, station, sensor"></label>' +
+  '    <div class="ts-seg" data-bar="filter"><button type="button" data-v="all">' + esc(t('common.all', 'All')) + '</button>' +
+  '      <button type="button" data-v="attention">' + esc(t('fleet.needsLook', 'Needs a look')) + '</button>' +
+  '      <button type="button" data-v="outofservice">' + esc(t('common.outOfService', 'Out of service')) + '</button></div>' +
+  '    <label class="ts-fleet-search">' + ICON.search + '<input type="search" placeholder="' + esc(t('fleet.search', 'Name, label, customer, project, station, sensor')) + '"></label>' +
   '  </div>' +
-  '  <div class="ts-fleet-tags" data-kind="project" hidden><span class="ts-row-meta">Projects</span><span class="ts-fleet-taglist"></span></div>' +
-  '  <div class="ts-fleet-tags" data-kind="sensor" hidden><span class="ts-row-meta">Sensors</span><span class="ts-fleet-taglist"></span></div>' +
-  '  <div class="ts-body"><div class="ts-loading">Loading…</div></div>' +
+  '  <div class="ts-fleet-tags" data-kind="project" hidden><span class="ts-row-meta">' + esc(t('common.projects', 'Projects')) + '</span><span class="ts-fleet-taglist"></span></div>' +
+  '  <div class="ts-fleet-tags" data-kind="sensor" hidden><span class="ts-row-meta">' + esc(t('fleet.sensors', 'Sensors')) + '</span><span class="ts-fleet-taglist"></span></div>' +
+  '  <div class="ts-body"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-fleet-updated"></span><span class="ts-spacer"></span>' +
-  '    <button type="button" class="ts-btn">' + ICON.reset + 'Refresh</button></div>' +
+  '    <button type="button" class="ts-btn">' + ICON.reset + esc(t('common.refresh', 'Refresh')) + '</button></div>' +
   '</div>');
 root.appendChild(cardEl);
 window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var bodyEl = cardEl.querySelector('.ts-body');
 var refreshBtn = cardEl.querySelector('.ts-foot .ts-btn');
 var groupBar = cardEl.querySelector('[data-bar=group]');
-GROUPS.forEach(function (g) { groupBar.appendChild(h('<button type="button" data-v="' + g.id + '"></button>')).textContent = g.label; });
+GROUPS.forEach(function (g) { groupBar.appendChild(h('<button type="button" data-v="' + g.id + '"></button>')).textContent = g.id === 'logr' ? 'LOGR' : t('fleet.otherDevices', 'Other devices'); });
 
 cardEl.querySelector('.ts-fleet-bar').addEventListener('click', function (e) {
   var b = e.target.closest('[data-v]');
@@ -350,11 +357,11 @@ function renderTags() {
     shown.forEach(function (o) { holder.appendChild(tagChip(kind, o)); });
     if (list.length > TAG_LIMIT) {
       var more = holder.appendChild(h('<button type="button" class="ts-btn ghost ts-fleet-tagmore" data-a="tags-more"></button>'));
-      more.textContent = state.tagsOpen[kind] ? 'Show less' : '+' + (list.length - shown.length) + ' more';
+      more.textContent = state.tagsOpen[kind] ? t('fleet.showLess', 'Show less') : t('fleet.more', '+{n} more', { n: list.length - shown.length });
       more.addEventListener('click', function () { state.tagsOpen[kind] = !state.tagsOpen[kind]; renderTags(); });
     }
     if (Object.keys(picked).length) {
-      holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">Clear</button>')).addEventListener('click', function () {
+      holder.appendChild(h('<button type="button" class="ts-btn ts-fleet-tagclear">' + esc(t('fleet.clear', 'Clear')) + '</button>')).addEventListener('click', function () {
         state.tags[kind] = {};
         render();
       });
@@ -382,25 +389,26 @@ function render() {
   var counts = { live: 0, inactive: 0, never: 0 };
   inGroup.forEach(function (d) { counts[liveness(d)]++; });
   var alarmed = inGroup.filter(function (d) { return d.alarms.length; }).length;
-  cardEl.querySelector('.ts-subtitle').textContent = inGroup.length + ' devices · ' + counts.live + ' live · ' +
-    counts.inactive + ' inactive' + (counts.never ? ' · ' + counts.never + ' never heard from' : '') +
-    (alarmed ? ' · ' + alarmed + ' with alarms' : '');
-  cardEl.querySelector('.ts-fleet-updated').textContent = 'Read ' + new Date(state.loadedAt).toLocaleTimeString();
+  cardEl.querySelector('.ts-subtitle').textContent = (inGroup.length === 1 ? t('fleet.devicesOne', '1 device') : t('fleet.devicesMany', '{n} devices', { n: inGroup.length })) + ' · ' +
+    t('fleet.liveCount', '{n} live', { n: counts.live }) + ' · ' + t('fleet.inactiveCount', '{n} inactive', { n: counts.inactive }) +
+    (counts.never ? ' · ' + t('fleet.neverCount', '{n} never heard from', { n: counts.never }) : '') +
+    (alarmed ? ' · ' + t('fleet.alarmedCount', '{n} with alarms', { n: alarmed }) : '');
+  cardEl.querySelector('.ts-fleet-updated').textContent = t('common.readAt', 'Read {time}', { time: new Date(state.loadedAt).toLocaleTimeString(t.locale()) });
   renderTags();
 
   var list = visible();
   bodyEl.innerHTML = '';
   var tagged = Object.keys(state.tags.sensor).length + Object.keys(state.tags.project).length;
-  if (!list.length) { fail(state.search || state.filter !== 'all' || tagged ? 'No device matches.' : 'No device here yet.'); return; }
+  if (!list.length) { fail(state.search || state.filter !== 'all' || tagged ? t('fleet.noMatch', 'No device matches.') : t('fleet.none', 'No device here yet.')); return; }
   var logr = state.group === 'logr';
   if (columnsOf(logr).indexOf(state.sort) < 0) { state.sort = 'uplink'; state.dir = -1; return render(); }
   var table = h('<div class="ts-fleet-list"><div class="ts-fleet-row ts-fleet-headrow"></div></div>');
   table.style.setProperty('--ts-fleet-cols', columnsOf(logr).map(function (id) { return COLUMNS[id].width; }).join(' '));
-  var head = table.firstChild;
+  var head = table.firstChild, labels = columnLabels();
   columnsOf(logr).forEach(function (id) {
     var on = state.sort === id;
     var b = head.appendChild(h('<button type="button" class="ts-fleet-sorter" data-sort="' + id + '"></button>'));
-    b.textContent = COLUMNS[id].label + (on ? (state.dir > 0 ? ' ▲' : ' ▼') : '');
+    b.textContent = labels[id] + (on ? (state.dir > 0 ? ' ▲' : ' ▼') : '');
     if (on) { b.classList.add('on'); }
     b.addEventListener('click', function () {
       if (on) { state.dir = -state.dir; } else { state.sort = id; state.dir = COLUMNS[id].dir; }
@@ -426,7 +434,7 @@ function row(d, logr) {
   life.deviceChips(d.attrs).forEach(function (c) { dev.appendChild(c); });
   if (outOfService(d)) { el.setAttribute('data-service', tb.serviceOf(d.attrs).state); }
   var cust = el.querySelector('.ts-fleet-cust');
-  if (cust) { cust.textContent = d.customer || 'none'; cust.classList.toggle('none', !d.customer); }
+  if (cust) { cust.textContent = d.customer || t('fleet.noCustomer', 'none'); cust.classList.toggle('none', !d.customer); }
   var sens = el.querySelector('.ts-fleet-sens');
   if (sens && !d.sensors) {
     sens.appendChild(h('<span class="ts-row-meta">…</span>'));
@@ -442,9 +450,10 @@ function row(d, logr) {
     d.projects.forEach(function (p) { proj.appendChild(tagChip('project', { value: p.id, label: p.name })); });
   }
   var up = el.querySelector('.ts-fleet-up');
-  up.textContent = ago(lastTs(d));
-  up.title = fmtTime(lastTs(d)) + (Number(d.attrs.inactivityTimeout) > 0
-    ? ' · inactive after ' + Math.round(Number(d.attrs.inactivityTimeout) / 360000) / 10 + ' h' : '');
+  up.textContent = t.ago(lastTs(d));
+  up.title = Number(d.attrs.inactivityTimeout) > 0
+    ? t('fleet.inactiveAfter', '{time} · inactive after {n} h', { time: fmtTime(lastTs(d)), n: Math.round(Number(d.attrs.inactivityTimeout) / 360000) / 10 })
+    : fmtTime(lastTs(d));
   if (live === 'inactive') { up.classList.add('bad'); }
   var st = el.querySelector('.ts-fleet-st');
   if (!d.stations) {
@@ -452,18 +461,20 @@ function row(d, logr) {
   } else if (d.stations.length) {
     d.stations.forEach(function (s) { st.appendChild(h('<span class="ts-chip"></span>')).textContent = s; });
   } else {
-    st.appendChild(h('<span class="ts-chip warn">on no station</span>'));
+    st.appendChild(h('<span class="ts-chip warn"></span>')).textContent = t('common.onNoStation', 'on no station');
   }
   if (logr) {
     var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
     var ver = el.querySelector('.ts-fleet-ver');
-    ver.innerHTML = [hw ? 'hw ' + esc(hw.value) + (hw.from === 'register' ? ' <i title="Kept by hand">reg</i>' : '') : '',
+    ver.innerHTML = [hw ? 'hw ' + esc(hw.value) + (hw.from === 'register' ? ' <i title="' + esc(t('fleet.keptByHand', 'Kept by hand')) + '">reg</i>' : '') : '',
       fw ? 'fw ' + esc(fw.value) : '', !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + esc(d.attrs['register.loraFw']) : '']
       .filter(Boolean).join('<br>');
     var hwEl = el.querySelector('.ts-fleet-hw');
     // Only the exceptions: a status other than fine, and no firmware update possible.
     if (hwStatusBad(d)) { hwEl.appendChild(h('<span class="ts-chip warn"></span>')).textContent = hwStatus(d); }
-    if (dfuImpossible(d)) { hwEl.appendChild(h('<span class="ts-chip warn" title="This unit cannot take a firmware update">DFU impossible</span>')); }
+    if (dfuImpossible(d)) { var dfu = hwEl.appendChild(h('<span class="ts-chip warn"></span>'));
+      dfu.textContent = t('fleet.dfuImpossible', 'DFU impossible');
+      dfu.title = t('fleet.noUpdate', 'This unit cannot take a firmware update'); }
   } else {
     el.querySelector('.ts-fleet-type').textContent = d.type;
   }
@@ -485,7 +496,7 @@ function deviceRef(d) { return { entityType: 'DEVICE', id: d.id, name: d.name, l
 
 // -- pane -------------------------------------------------------------------------------
 
-var LIVENESS = { live: 'Live', inactive: 'Inactive', never: 'Never heard from' };
+function livenessLabels() { return { live: t('fleet.live', 'Live'), inactive: t('fleet.inactive', 'Inactive'), never: t('common.neverHeard', 'Never heard from') }; }
 // Battery voltage of both generations, as device_topology's BATTERY_VOLTAGE; charging is the status.charging attribute.
 var BATTERY_VOLTAGE = ['p0.voltage', 'p0.voltage.i0', 'logr.batteryVoltage'];
 var LINK_KEYS = ['rssi', 'snr', 'p0.percent'].concat(BATTERY_VOLTAGE);
@@ -497,7 +508,7 @@ function parseJson(v) {
 
 function fmtDuration(s) {
   s = Number(s);
-  return s >= 172800 ? Math.round(s / 86400) + ' days' : s >= 7200 ? Math.round(s / 3600) + ' h' : Math.round(s / 60) + ' min';
+  return s >= 172800 ? t('common.days', '{n} days', { n: Math.round(s / 86400) }) : s >= 7200 ? Math.round(s / 3600) + ' h' : Math.round(s / 60) + ' min';
 }
 
 /** Battery and radio, fetched when the pane opens: the device's attributes and its latest readings. */
@@ -521,9 +532,9 @@ function batteryLine(link) {
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   var charging = c['status.charging'];
   if (soc !== undefined) { parts.push(Math.round(Number(soc)) + ' %'); }
-  if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + ago(volt.ts)); }
-  if (charging !== undefined) { parts.push(flag(charging) ? 'charging' : 'not charging'); }
-  if (Number(c['status.battRuntimeSeconds']) > 0) { parts.push('lasts about ' + fmtDuration(c['status.battRuntimeSeconds'])); }
+  if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + t.ago(volt.ts)); }
+  if (charging !== undefined) { parts.push(flag(charging) ? t('fleet.charging', 'charging') : t('fleet.notCharging', 'not charging')); }
+  if (Number(c['status.battRuntimeSeconds']) > 0) { parts.push(t('fleet.lasts', 'lasts about {time}', { time: fmtDuration(c['status.battRuntimeSeconds']) })); }
   return parts.join(' · ');
 }
 
@@ -535,7 +546,7 @@ function radioLine(link) {
   if (lat.snr) { items.push(ui.metric('SNR ' + lat.snr.value + ' dB', ui.radioLevel('snr', lat.snr.value))); }
   if (sf !== undefined) { items.push(ui.metric('SF' + sf, ui.radioLevel('sf', sf))); }
   var gws = parseJson(c.gateways || s.gateways) || [];
-  if (gws.length) { items.push(gws.length + (gws.length === 1 ? ' gateway' : ' gateways')); }
+  if (gws.length) { items.push(gws.length === 1 ? t('fleet.gatewayOne', '1 gateway') : t('fleet.gatewayMany', '{n} gateways', { n: gws.length })); }
   if (!items.length) { return null; }
   var line = h('<span class="ts-fleet-radio"></span>');
   items.forEach(function (x, i) {
@@ -590,26 +601,26 @@ function fillGoTo(go, d) {
     g.firstChild.textContent = title;
     return g;
   }
-  navRow(group('Device'), d.name, 'Peripherals, channels and settings', 'Device view', function () { openDevice(d); })
+  navRow(group(t('common.device', 'Device')), d.name, t('fleet.deviceMeta', 'Peripherals, channels and settings'), t('fleet.deviceView', 'Device view'), function () { openDevice(d); })
     .querySelector('button').setAttribute('data-a', 'device-view');
   if (!d.stationRefs) {
-    go.appendChild(h('<div class="ts-row-meta">Loading stations and projects…</div>'));
+    go.appendChild(h('<div class="ts-row-meta"></div>')).textContent = t('fleet.loadingStations', 'Loading stations and projects…');
     return;
   }
   if (!d.stationRefs.length) {
-    go.appendChild(h('<div class="ts-row-meta">On no station, so on no project.</div>'));
+    go.appendChild(h('<div class="ts-row-meta"></div>')).textContent = t('fleet.noStationNoProject', 'On no station, so on no project.');
     return;
   }
-  var stations = group(d.stationRefs.length === 1 ? 'Station' : 'Stations');
+  var stations = group(d.stationRefs.length === 1 ? t('common.station', 'Station') : t('common.stations', 'Stations'));
   d.stationRefs.forEach(function (s) {
-    navRow(stations, s.name, s.project ? 'in ' + s.project.name : 'on no project', 'Station view',
+    navRow(stations, s.name, s.project ? t('fleet.inProject', 'in {name}', { name: s.project.name }) : t('fleet.onNoProject', 'on no project'), t('common.stationView', 'Station view'),
       opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
   });
   if (!d.projects.length) { return; }
-  var projects = group(d.projects.length === 1 ? 'Project' : 'Projects');
+  var projects = group(d.projects.length === 1 ? t('common.project', 'Project') : t('common.projects', 'Projects'));
   d.projects.forEach(function (p) {
     var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
-    navRow(projects, p.name, n + (n === 1 ? ' station' : ' stations') + ' fed', 'Project view',
+    navRow(projects, p.name, n === 1 ? t('fleet.fedOne', '1 station fed') : t('fleet.fedMany', '{n} stations fed', { n: n }), t('fleet.projectView', 'Project view'),
       opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
   });
 }
@@ -630,52 +641,52 @@ function openPane(d) {
     img.src = image;
     img.alt = d.type;
   } else {
-    figure.appendChild(h('<span class="ts-fleet-pane-model"></span>')).textContent = String(d.type || 'device').toUpperCase();
+    figure.appendChild(h('<span class="ts-fleet-pane-model"></span>')).textContent = String(d.type || t('common.device', 'Device')).toUpperCase();
   }
   var facts = id.querySelector('.ts-fleet-pane-facts');
 
   var state0 = h('<span><span class="ts-dot"></span> <span></span></span>');
   state0.querySelector('.ts-dot').style.background = live === 'live' ? 'var(--ts-ok)' : live === 'inactive' ? 'var(--ts-danger)' : 'var(--ts-text-3)';
-  state0.lastChild.textContent = LIVENESS[live] + (lastTs(d) ? ', last uplink ' + ago(lastTs(d)) : '');
+  state0.lastChild.textContent = lastTs(d) ? t('fleet.lastUplinkAgo', '{state}, last uplink {ago}', { state: livenessLabels()[live], ago: t.ago(lastTs(d)) }) : livenessLabels()[live];
   state0.title = fmtTime(lastTs(d));
-  kv(facts, 'State', state0);
+  kv(facts, t('fleet.state', 'State'), state0);
   life.deviceChips(d.attrs).forEach(function (c) { state0.appendChild(c); });
-  if (state.tenant) { kv(facts, 'Customer', d.customer || 'none, the tenant owns it'); }
+  if (state.tenant) { kv(facts, t('common.customer', 'Customer'), d.customer || t('fleet.tenantOwns', 'none, the tenant owns it')); }
   if (groupOf(d).id === 'logr') {
     var hw = version(d, 'deviceInfo.hwVersion', 'register.hwVersion'), fw = version(d, 'deviceInfo.fwVersion', null);
-    kv(facts, 'Versions', [hw ? 'hw ' + hw.value + (hw.from === 'register' ? ' (kept by hand)' : '') : '', fw ? 'fw ' + fw.value : '',
-      !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + d.attrs['register.loraFw'] : ''].filter(Boolean).join(' · ') || 'not reported');
+    kv(facts, t('common.versions', 'Versions'), [hw ? (hw.from === 'register' ? t('fleet.hwKeptByHand', 'hw {version} (kept by hand)', { version: hw.value }) : 'hw ' + hw.value) : '', fw ? 'fw ' + fw.value : '',
+      !reports(d) && d.attrs['register.loraFw'] ? 'LoRa ' + d.attrs['register.loraFw'] : ''].filter(Boolean).join(' · ') || t('fleet.notReported', 'not reported'));
   } else {
-    kv(facts, 'Type', d.type || '');
+    kv(facts, t('fleet.type', 'Type'), d.type || '');
   }
-  var faults = [hwStatusBad(d) ? hwStatus(d) : '', dfuImpossible(d) ? 'DFU impossible' : ''].filter(Boolean);
-  if (faults.length) { kv(facts, 'Hardware', faults.join(' · ')).classList.add('warn'); }
-  var battery = kv(facts, 'Battery', 'Loading…'), radio = kv(facts, 'Radio', 'Loading…');
+  var faults = [hwStatusBad(d) ? hwStatus(d) : '', dfuImpossible(d) ? t('fleet.dfuImpossible', 'DFU impossible') : ''].filter(Boolean);
+  if (faults.length) { kv(facts, t('fleet.hardware', 'Hardware'), faults.join(' · ')).classList.add('warn'); }
+  var battery = kv(facts, t('common.battery', 'Battery'), t('common.loading', 'Loading…')), radio = kv(facts, t('fleet.radio', 'Radio'), t('common.loading', 'Loading…'));
   battery.setAttribute('data-kv', 'battery');
   radio.setAttribute('data-kv', 'radio');
   loadLink(d).then(function (link) {
-    battery.querySelector('.ts-kv-value').textContent = batteryLine(link) || 'not reported';
+    battery.querySelector('.ts-kv-value').textContent = batteryLine(link) || t('fleet.notReported', 'not reported');
     var up = radioLine(link), down = downlinkLine(link), value = radio.querySelector('.ts-kv-value');
     value.innerHTML = '';
-    if (up) { value.appendChild(up); } else { value.textContent = 'nothing from the network server yet'; }
-    if (down) { kv(facts, 'Downlink', down).setAttribute('data-kv', 'downlink'); }
+    if (up) { value.appendChild(up); } else { value.textContent = t('fleet.noRadio', 'nothing from the network server yet'); }
+    if (down) { kv(facts, t('fleet.downlink', 'Downlink'), down).setAttribute('data-kv', 'downlink'); }
   });
 
   if (groupOf(d).id === 'logr') {
-    var sens = section(body, 'Sensors');
-    if (!d.sensors) { sens.appendChild(h('<div class="ts-row-meta">Loading…</div>')); }
-    else if (!d.sensors.length) { sens.appendChild(h('<div class="ts-row-meta">No sensor reported.</div>')); }
+    var sens = section(body, t('fleet.sensors', 'Sensors'));
+    if (!d.sensors) { sens.appendChild(h('<div class="ts-row-meta"></div>')).textContent = t('common.loading', 'Loading…'); }
+    else if (!d.sensors.length) { sens.appendChild(h('<div class="ts-row-meta"></div>')).textContent = t('fleet.noSensor', 'No sensor reported.'); }
     (d.sensors || []).forEach(function (s) {
       navRow(sens, s.code + (s.count > 1 ? ' ×' + s.count : ''), s.names.join(', '));
     });
   }
 
-  var go = section(body, 'Go to');
+  var go = section(body, t('fleet.goTo', 'Go to'));
   state.pane = { id: d.id, fill: function (dev) { if (go.isConnected) { fillGoTo(go, dev); } } };
   fillGoTo(go, d);
 
   if (d.alarms.length) {
-    var al = section(body, 'Active alarms');
+    var al = section(body, t('fleet.activeAlarms', 'Active alarms'));
     d.alarms.slice().sort(function (a, b) { return G.rank(b.severity.toLowerCase()) - G.rank(a.severity.toLowerCase()); }).forEach(function (a) {
       var row = navRow(al, a.type, '');
       var chip = row.appendChild(h('<span class="ts-chip ts-fleet-sev"></span>'));
@@ -685,13 +696,13 @@ function openPane(d) {
   }
 
   if (state.writable) {
-    var act = section(body, 'Actions');
+    var act = section(body, t('ui.actions', 'Actions'));
     var service = tb.serviceOf(d.attrs).state, item = life.serviceItem(deviceRef(d), d.attrs, refresh);
-    navRow(act, 'Service', service ? G.SERVICE_STATES[service] : 'In service', item.label, item.run)
+    navRow(act, t('fleet.service', 'Service'), service ? G.SERVICE_STATES[service] : t('fleet.inService', 'In service'), item.label, item.run)
       .querySelector('button').setAttribute('data-a', item.a);
     if (state.tenant) {
       var only = act.appendChild(ui.tenantSection(h('<div></div>'))).lastChild;
-      navRow(only, 'Owner', d.customer || 'the tenant', 'Reassign…', function () { life.reassign(deviceRef(d), refresh); })
+      navRow(only, t('common.owner', 'Owner'), d.customer || t('fleet.theTenant', 'the tenant'), t('lifecycle.reassign.title', 'Reassign…'), function () { life.reassign(deviceRef(d), refresh); })
         .querySelector('button').setAttribute('data-a', 'reassign');
     }
   }
@@ -704,7 +715,7 @@ function refresh() {
   if (!root.isConnected && timer) { clearInterval(timer); return Promise.resolve(); }
   refreshBtn.disabled = true;
   return load().then(render).catch(function (err) {
-    ui.toast('Refresh failed: ' + (err && err.message ? err.message : err), 'error');
+    ui.toast(t('common.refreshFailed', 'Refresh failed: {error}', { error: err && err.message ? err.message : err }), 'error');
   }).then(function () { refreshBtn.disabled = false; });
 }
 refreshBtn.addEventListener('click', refresh);
@@ -716,6 +727,6 @@ tb.currentUser().then(function (me) {
 }).then(function (writable) { state.writable = writable; }).catch(function () {}).then(load).then(function () {
   render();
   timer = setInterval(refresh, REFRESH_MS);
-}).catch(function (err) { fail('Could not load: ' + (err && err.message ? err.message : err)); });
+}).catch(function (err) { fail(t('common.loadFailed', 'Could not load: {error}', { error: err && err.message ? err.message : err })); });
 
 };

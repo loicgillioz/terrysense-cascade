@@ -41,7 +41,12 @@ var ICON = {
 };
 
 // The state chips of FRONTEND.md *Interface conventions*; `silenced` reads its time.
-var CHIP_TEXT = { retired: 'Retired', outofservice: 'Out of service', 'private': 'Private', nodevice: 'No device yet' };
+function chipText(kind) {
+  return {
+    retired: root.TerrySenseT('common.retired', 'Retired'), outofservice: root.TerrySenseT('common.outOfService', 'Out of service'),
+    'private': root.TerrySenseT('common.private', 'Private'), nodevice: root.TerrySenseT('ui.chip.nodevice', 'No device yet')
+  }[kind];
+}
 var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function clock(ts) {
@@ -49,10 +54,11 @@ function clock(ts) {
   return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
 }
 
-/** "15:00" today, "3 Oct 15:00" another day. */
+/** "15:00" today, "3 Oct 15:00" another day; the day in the reader's locale when known. */
 function when(ts) {
-  var d = new Date(ts);
-  return d.toDateString() === new Date().toDateString() ? clock(ts) : d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + clock(ts);
+  var d = new Date(ts), locale = root.TerrySenseT.locale();
+  if (d.toDateString() === new Date().toDateString()) { return clock(ts); }
+  return (locale ? d.toLocaleDateString(locale, { day: 'numeric', month: 'short' }) : d.getDate() + ' ' + MONTHS[d.getMonth()]) + ' ' + clock(ts);
 }
 
 function esc(s) {
@@ -145,9 +151,10 @@ root.TerrySenseUi = function (rootEl) {
   function openDrawer(titleHtml, subtitleHtml) {
     closeDrawer();
     var back = h('<div class="ts-drawer-backdrop"></div>');
-    var dr = h('<div class="ts-drawer"><div class="ts-head"><button type="button" class="ts-icon-btn ts-back" hidden title="Back">' + ICON.back + '</button>' +
+    var dr = h('<div class="ts-drawer"><div class="ts-head"><button type="button" class="ts-icon-btn ts-back" hidden title="' +
+      esc(root.TerrySenseT('ui.back', 'Back')) + '">' + ICON.back + '</button>' +
       '<div class="ts-head-text"><div class="ts-title"></div><div class="ts-subtitle"></div></div>' +
-      '<button type="button" class="ts-icon-btn ts-x" title="Close">' + ICON.close + '</button></div>' +
+      '<button type="button" class="ts-icon-btn ts-x" title="' + esc(root.TerrySenseT('ui.close', 'Close')) + '">' + ICON.close + '</button></div>' +
       '<div class="ts-body"></div><div class="ts-foot" hidden></div></div>');
     dr.querySelector('.ts-title').innerHTML = titleHtml;
     dr.querySelector('.ts-subtitle').innerHTML = subtitleHtml || '';
@@ -218,7 +225,9 @@ root.TerrySenseUi = function (rootEl) {
   function namePicker(opts) {
     var names = opts.names || {}, kinds = opts.kinds || {};
     var inUse = opts.inUse || [];
-    var el = h('<div><div class="ts-search">' + ICON.search + '<input class="ts-input" placeholder="Search measurements"></div>' +
+    var t = root.TerrySenseT;
+    var el = h('<div><div class="ts-search">' + ICON.search + '<input class="ts-input" placeholder="' +
+      esc(t('ui.picker.search', 'Search measurements')) + '"></div>' +
       '<div class="ts-picker-opts"></div><div class="ts-picker-list"></div></div>');
     var input = el.querySelector('input');
     var optsEl = el.querySelector('.ts-picker-opts');
@@ -227,9 +236,9 @@ root.TerrySenseUi = function (rootEl) {
     var showDiag = false;
 
     if (inUse.length) {
-      optsEl.appendChild(h('<label class="ts-switch"><input type="checkbox" class="o-inuse" checked> Only names in use here ' + info('inUse') + '</label>'));
+      optsEl.appendChild(h('<label class="ts-switch"><input type="checkbox" class="o-inuse" checked> ' + esc(t('ui.picker.onlyInUse', 'Only names in use here')) + ' ' + info('inUse') + '</label>'));
     }
-    optsEl.appendChild(h('<label class="ts-switch"><input type="checkbox" class="o-diag"> Device diagnostics ' + info('diagnostics') + '</label>'));
+    optsEl.appendChild(h('<label class="ts-switch"><input type="checkbox" class="o-diag"> ' + esc(t('ui.picker.diagnostics', 'Device diagnostics')) + ' ' + info('diagnostics') + '</label>'));
     optsEl.addEventListener('change', function (e) {
       if (e.target.classList.contains('o-inuse')) { onlyInUse = e.target.checked; }
       if (e.target.classList.contains('o-diag')) { showDiag = e.target.checked; }
@@ -244,33 +253,39 @@ root.TerrySenseUi = function (rootEl) {
       return null;
     }
 
+    function shown(n) {
+      var e = names[n] || {};
+      return { label: e.label ? t.channel(n, e.label) : '', description: e.description ? t.channelInfo(n, e.description) : '' };
+    }
+
     function render() {
       var q = input.value.trim().toLowerCase();
       var groups = {};
       Object.keys(names).forEach(function (n) {
-        var entry = names[n] || {};
+        var entry = names[n] || {}, text = shown(n);
         var camel = kindOf(n);
         var spec = kindSpec(camel);
         if (opts.allowKind && !opts.allowKind(spec)) { return; }
         if (entry.diagnostic && !showDiag && !q) { return; }
         if (onlyInUse && !q && inUse.indexOf(n) < 0) { return; }
-        var hay = (n + ' ' + (entry.label || '') + ' ' + (entry.description || '') + ' ' + (spec ? spec.label : camel)).toLowerCase();
+        var kindLabel = spec ? t.kind(camel, spec.label) : (camel || t('common.unknownKind', 'Unknown kind'));
+        var hay = (n + ' ' + text.label + ' ' + text.description + ' ' + kindLabel).toLowerCase();
         if (q && hay.indexOf(q) < 0) { return; }
-        (groups[camel] = groups[camel] || { label: spec ? spec.label : (camel || 'Unknown kind'), names: [] }).names.push(n);
+        (groups[camel] = groups[camel] || { label: kindLabel, names: [] }).names.push(n);
       });
       list.innerHTML = '';
       Object.keys(groups).sort(function (a, b) { return groups[a].label.localeCompare(groups[b].label); }).forEach(function (camel) {
         var g = groups[camel];
         g.names.sort(function (a, b) {
-          return (inUse.indexOf(b) >= 0) - (inUse.indexOf(a) >= 0) || (names[a].label || a).localeCompare(names[b].label || b);
+          return (inUse.indexOf(b) >= 0) - (inUse.indexOf(a) >= 0) || (shown(a).label || a).localeCompare(shown(b).label || b);
         });
         var det = h('<details class="ts-group"><summary><span class="ts-chev">' + ICON.chev + '</span><span></span> <span class="ts-count"></span></summary></details>');
         det.querySelector('summary span:nth-child(2)').textContent = g.label;
         det.querySelector('.ts-count').textContent = g.names.length;
         if (q || onlyInUse || g.names.length <= 3) { det.open = true; }
         g.names.forEach(function (n) {
-          var side = (inUse.indexOf(n) >= 0 ? '<span class="ts-chip accent">in use</span>' : '') + (opts.badge ? opts.badge(n) : '');
-          var o = nameOption(n, names[n], side);
+          var side = (inUse.indexOf(n) >= 0 ? '<span class="ts-chip accent">' + esc(t('ui.picker.inUseChip', 'in use')) + '</span>' : '') + (opts.badge ? opts.badge(n) : '');
+          var o = nameOption(n, shown(n), side);
           o.addEventListener('click', function () { opts.onPick(n); });
           o.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { opts.onPick(n); } });
           det.appendChild(o);
@@ -279,7 +294,9 @@ root.TerrySenseUi = function (rootEl) {
       });
       if (!list.children.length) {
         list.appendChild(h('<div class="ts-empty"></div>'));
-        list.firstChild.textContent = 'No measurement matches' + (onlyInUse && !q ? ' — untick “Only names in use here” to see every name.' : '.');
+        list.firstChild.textContent = onlyInUse && !q
+          ? t('ui.picker.noMatchInUse', 'No measurement matches — untick “Only names in use here” to see every name.')
+          : t('ui.picker.noMatch', 'No measurement matches.');
       }
     }
     render();
@@ -313,7 +330,7 @@ root.TerrySenseUi = function (rootEl) {
   function rowMenu(items, opts) {
     opts = opts || {};
     var btn = h('<button type="button" class="ts-icon-btn ts-menu-btn" data-a="menu">' + ICON.more + '</button>');
-    btn.title = opts.title || 'Actions';
+    btn.title = opts.title || root.TerrySenseT('ui.actions', 'Actions');
     btn.addEventListener('click', function (e) {
       e.stopPropagation();
       var list = (typeof items === 'function' ? items() : items).filter(Boolean);
@@ -347,13 +364,13 @@ root.TerrySenseUi = function (rootEl) {
   }
 
   /** "Silenced until 15:00", or "Silenced until 3 Oct 15:00" another day. */
-  function silenceText(until) { return 'Silenced until ' + when(until); }
+  function silenceText(until) { return root.TerrySenseT('ui.silencedUntil', 'Silenced until {time}', { time: when(until) }); }
 
   /** A state chip: `retired`, `outofservice`, `private`, `nodevice`, or `silenced` with its end. */
   function stateChip(kind, until) {
     var el = h('<span class="ts-chip ts-state-chip"></span>');
     el.setAttribute('data-chip', kind);
-    el.textContent = kind === 'silenced' ? silenceText(until) : CHIP_TEXT[kind];
+    el.textContent = kind === 'silenced' ? silenceText(until) : chipText(kind);
     if (kind === 'silenced') { el.insertAdjacentHTML('afterbegin', ICON.mute); }
     return el;
   }
@@ -364,7 +381,7 @@ root.TerrySenseUi = function (rootEl) {
    */
   function followUp(title, steps, onDismiss) {
     var el = h('<div class="ts-followup"><div class="ts-followup-head"><b></b><span class="ts-spacer"></span>' +
-      '<button type="button" class="ts-icon-btn" data-a="dismiss" title="Dismiss">' + ICON.close + '</button></div></div>');
+      '<button type="button" class="ts-icon-btn" data-a="dismiss" title="' + esc(root.TerrySenseT('ui.dismiss', 'Dismiss')) + '">' + ICON.close + '</button></div></div>');
     el.querySelector('b').textContent = title;
     el.querySelector('[data-a=dismiss]').addEventListener('click', function () { el.remove(); onDismiss(); });
     steps.forEach(function (s) {
@@ -392,11 +409,12 @@ root.TerrySenseUi = function (rootEl) {
       var el = h('<div class="ts-confirm"><div class="ts-confirm-box"><p></p>' +
         (checkLabel ? '<label class="ts-switch ts-confirm-check"><input type="checkbox" data-f="check"> <span></span></label>' : '') +
         '<div class="ts-field"><div class="ts-field-hint ts-confirm-type"></div><input class="ts-input wide" data-f="typed"></div>' +
-        '<div class="ts-confirm-actions"><button type="button" class="ts-btn" data-a="no">Cancel</button>' +
+        '<div class="ts-confirm-actions"><button type="button" class="ts-btn" data-a="no"></button>' +
         '<button type="button" class="ts-btn primary danger" data-a="yes" disabled></button></div></div></div>');
       el.querySelector('p').innerHTML = html;
+      el.querySelector('[data-a=no]').textContent = root.TerrySenseT('common.cancel', 'Cancel');
       if (checkLabel) { el.querySelector('.ts-confirm-check span').textContent = checkLabel; }
-      el.querySelector('.ts-confirm-type').textContent = 'Type ' + name + ' to confirm.';
+      el.querySelector('.ts-confirm-type').textContent = root.TerrySenseT('ui.typeToConfirm', 'Type {name} to confirm.', { name: name });
       var yes = el.querySelector('[data-a=yes]'), typed = el.querySelector('[data-f=typed]');
       yes.textContent = okLabel;
       typed.addEventListener('input', function () { yes.disabled = typed.value.trim() !== name; });
@@ -427,7 +445,7 @@ root.TerrySenseUi = function (rootEl) {
       target.textContent = v;
       save(v).catch(function (err) {
         target.textContent = value;
-        toast('Not renamed: ' + ((err && err.message) || err), 'error');
+        toast(root.TerrySenseT('ui.notRenamed', 'Not renamed: {error}', { error: (err && err.message) || err }), 'error');
       });
     }
     input.addEventListener('click', function (e) { e.stopPropagation(); });

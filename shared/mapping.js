@@ -18,6 +18,7 @@
 
 var resolver = root.TerrySenseResolver;
 var camel = resolver.camelKind;
+var t = root.TerrySenseT;
 
 var EMPTY_MARKER = '(empty)';
 var TOPOLOGY_TYPE_RE = /^topology\.p(\d+)\.type$/;
@@ -32,6 +33,16 @@ var DRYC_KEY = /^(dryc|drycRule)\./;
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
 var LOGR2_SENSORS = { phpr: 'pH probe', cond: 'Conductivity probe', dryc: 'Dry contact interface', flow: 'Flow meter',
   clmt: 'Climate sensor', inclTilt: 'Inclinometer or tiltmeter', usonRdar: 'Ultrasonic or radar level sensor' };
+
+/** A LOGR2 sensor's name in the reader's language; LOGR2_SENSORS holds the English. */
+function sensorLabel(prefix) {
+  return {
+    phpr: t('mapping.logr2.phpr', 'pH probe'), cond: t('mapping.logr2.cond', 'Conductivity probe'),
+    dryc: t('common.dryc', 'Dry contact interface'), flow: t('mapping.logr2.flow', 'Flow meter'),
+    clmt: t('mapping.logr2.clmt', 'Climate sensor'), inclTilt: t('mapping.logr2.inclTilt', 'Inclinometer or tiltmeter'),
+    usonRdar: t('mapping.logr2.usonRdar', 'Ultrasonic or radar level sensor')
+  }[prefix] || LOGR2_SENSORS[prefix];
+}
 
 function parseSource(key) {
   var m = SOURCE_KEY_RE.exec(key);
@@ -86,7 +97,9 @@ function measureOf(m, s, node) {
 function sourceLabel(m, s, node) {
   var x = measureOf(m, s, node);
   var entry = x && m.names[x.defaultName];
-  return entry && entry.label ? entry.label : ((resolver.kindSpec(s.kind, m.kinds) || {}).label || s.kind);
+  if (entry && entry.label) { return t.channel(x.defaultName, entry.label); }
+  var kindLabel = (resolver.kindSpec(s.kind, m.kinds) || {}).label;
+  return kindLabel ? t.kind(s.kind, kindLabel) : s.kind;
 }
 
 function unitOf(m, s) { return (resolver.kindSpec(s.kind, m.kinds) || {}).cloudUnit || ''; }
@@ -101,7 +114,10 @@ function readings(m) {
 /** The channel name a reading carries: a LOGR2 key after its peripheral prefix, any other key whole. */
 function nameOf(m, key) { return isLogr2(m) ? key.slice(key.indexOf('.') + 1) : key; }
 function entryOf(m, key) { return m.names[resolver.splitChannelKey(nameOf(m, key)).name] || null; }
-function labelOf(m, key) { var e = entryOf(m, key); return (e && e.label) || key; }
+function labelOf(m, key) {
+  var e = entryOf(m, key);
+  return e && e.label ? t.channel(resolver.splitChannelKey(nameOf(m, key)).name, e.label) : key;
+}
 function readingUnit(m, key) {
   var e = entryOf(m, key);
   return e ? ((resolver.kindSpec(camel(e.kind), m.kinds) || {}).cloudUnit || '') : '';
@@ -118,9 +134,9 @@ function logr2Parts(keys) {
     rest.push(key);
   });
   var parts = [logger].concat(Object.keys(LOGR2_SENSORS).filter(function (g) { return sensors[g]; }).map(function (g) {
-    return { id: g, label: LOGR2_SENSORS[g], keys: sensors[g] };
+    return { id: g, label: sensorLabel(g), keys: sensors[g] };
   }));
-  if (rest.length) { parts.push({ id: 'other', label: 'Other readings', keys: rest }); }
+  if (rest.length) { parts.push({ id: 'other', label: t('mapping.otherReadings', 'Other readings'), keys: rest }); }
   return parts;
 }
 
@@ -176,10 +192,10 @@ function namesForReading(m, key, mapped) {
 function mappable(m, mapped) {
   if (!m.bus) {
     var parts = isLogr2(m) ? logr2Parts(readings(m)).filter(function (p) { return p.id !== 'dryc'; })
-      : [{ id: 'device', label: m.device.type || 'Device', keys: readings(m) }];
+      : [{ id: 'device', label: m.device.type || t('common.device', 'Device'), keys: readings(m) }];
     return [].concat.apply([], parts.map(function (part) {
       return part.keys.map(function (key) {
-        return { key: key, label: labelOf(m, key), unit: readingUnit(m, key), group: part.id, groupLabel: part.label || 'LOGR itself',
+        return { key: key, label: labelOf(m, key), unit: readingUnit(m, key), group: part.id, groupLabel: part.label || t('mapping.logrItself', 'LOGR itself'),
                  names: namesForReading(m, key, mapped), name: nameOf(m, key),
                  diagnostic: part.id === 'logr' || !!(entryOf(m, key) || {}).diagnostic };
       });
@@ -193,7 +209,8 @@ function mappable(m, mapped) {
       : namesForKind(m, s.kind, mapped).filter(function (n) { return !retiredName(m, n); })[0] || null;
     return {
       key: s.sourceKey, label: sourceLabel(m, s, node), unit: unitOf(m, s), group: 'p' + s.position,
-      groupLabel: s.position === 0 ? 'LOGR itself' : s.position + ' · ' + (p ? p.displayName : node ? node.type : 'Unknown peripheral'),
+      groupLabel: s.position === 0 ? t('mapping.logrItself', 'LOGR itself')
+        : s.position + ' · ' + (p ? p.displayName : node ? node.type : t('mapping.unknownPeripheral', 'Unknown peripheral')),
       names: namesForKind(m, s.kind, mapped), name: name, diagnostic: s.position === 0 || !!(name && (m.names[name] || {}).diagnostic)
     };
   }).filter(function (r) { return r.names.length; });
@@ -201,7 +218,8 @@ function mappable(m, mapped) {
 
 function channelLabel(names, key) {
   var k = resolver.splitChannelKey(key);
-  return ((names[k.name] || {}).label || k.name) + (k.instance ? ' ' + k.instance : '');
+  var label = (names[k.name] || {}).label;
+  return (label ? t.channel(k.name, label) : k.name) + (k.instance ? ' ' + k.instance : '');
 }
 
 /** The next free instance of `name` among the station's channels, `name-2` on. */
@@ -247,7 +265,7 @@ function channelsFor(names, old, chosen) {
   Object.keys(byName).forEach(function (name) {
     var group = byName[name];
     if (group.length > 1 && (resolver.splitChannelKey(name).instance || !(names[name] || {}).repeatable)) {
-      throw new Error(channelLabel(names, name) + ' (' + name + ') is picked twice and does not repeat');
+      throw new Error(t('mapping.pickedTwice', '{label} ({name}) is picked twice and does not repeat', { label: channelLabel(names, name), name: name }));
     }
     var taken = {};
     var rest = group.filter(function (c) {

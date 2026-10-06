@@ -15,6 +15,7 @@ window.TerrySenseFirmware = function (ctx, container, opts) {
 
 opts = opts || {};
 
+var t = window.TerrySenseI18n(ctx);
 var tb = window.TerrySenseTbIo(ctx);
 var root = container.querySelector('.ts-root') || container;
 var ui = window.TerrySenseUi(root);
@@ -88,13 +89,13 @@ function bundleCard(fam) {
   var card = h('<div class="ts-fw-fam"><div class="ts-fw-head"><span class="ts-fw-name"></span>' +
     '<span class="ts-chip accent"></span></div><div class="ts-fw-body"></div></div>');
   card.querySelector('.ts-fw-name').textContent = board;
-  card.querySelector('.ts-chip').textContent = top.version + (isFinal(top.version) ? '' : ' · pre-release');
+  card.querySelector('.ts-chip').textContent = isFinal(top.version) ? top.version : t('firmware.preRelease', '{version} · pre-release', { version: top.version });
   var body = card.querySelector('.ts-fw-body');
   var row = body.appendChild(h('<div class="ts-fw-row"><div class="ts-fw-main"><div class="ts-fw-images"></div>' +
     '<div class="ts-fw-notes"></div></div></div>'));
   row.querySelector('.ts-fw-images').innerHTML = imageLine(top) || 'logic + power';
   row.querySelector('.ts-fw-notes').textContent = (top.additionalInfo || {}).description || '';
-  row.appendChild(downloadLink(top, 'Download'));
+  row.appendChild(downloadLink(top, t('firmware.download', 'Download')));
   others(body, list.filter(function (p) { return p !== top; }), function (p) { return p.version; });
   return card;
 }
@@ -122,19 +123,18 @@ function sensorCard(fam) {
 function others(body, list, label) {
   if (!list.length) { return; }
   var box = body.appendChild(h('<details class="ts-fw-others"><summary></summary><div class="ts-fw-boards"></div></details>'));
-  box.querySelector('summary').textContent = list.length === 1 ? '1 other version' : list.length + ' other versions';
+  box.querySelector('summary').textContent = list.length === 1 ? t('firmware.othersOne', '1 other version') : t('firmware.othersMany', '{n} other versions', { n: list.length });
   list.forEach(function (p) { box.querySelector('.ts-fw-boards').appendChild(downloadLink(p, label(p))); });
 }
 
 root.innerHTML =
   '<div class="ts-card ts-fw">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON_CHIP + '</div>' +
-  '    <div class="ts-head-text"><div class="ts-title">Firmware</div><div class="ts-subtitle"></div></div></div>' +
+  '    <div class="ts-head-text"><div class="ts-title">' + esc(t('nav.firmware', 'Firmware')) + '</div><div class="ts-subtitle"></div></div></div>' +
   '  <div class="ts-body">' +
-  '    <div class="ts-fw-hint">Install with the LOGR companion app: it finds the firmware for a unit by itself. ' +
-  'Download a file here only to install it by hand.</div>' +
-  '    <div class="ts-search">' + ICON.search + '<input class="ts-input" placeholder="Search by board or sensor"></div>' +
-  '    <div class="ts-fw-list"><div class="ts-loading">Loading…</div></div>' +
+  '    <div class="ts-fw-hint">' + esc(t('firmware.hint', 'Install with the LOGR companion app: it finds the firmware for a unit by itself. Download a file here only to install it by hand.')) + '</div>' +
+  '    <div class="ts-search">' + ICON.search + '<input class="ts-input" placeholder="' + esc(t('firmware.search', 'Search by board or sensor')) + '"></div>' +
+  '    <div class="ts-fw-list"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div>' +
   '  </div></div>';
 var cardEl = root.querySelector('.ts-fw');
 window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
@@ -149,7 +149,7 @@ function render(all) {
     return tokens.every(function (t) { return text.indexOf(t) >= 0; });
   });
   if (!shown.length) {
-    listEl.appendChild(h('<div class="ts-empty"></div>')).textContent = all.length ? 'No firmware matches.' : 'No firmware published yet.';
+    listEl.appendChild(h('<div class="ts-empty"></div>')).textContent = all.length ? t('firmware.noMatch', 'No firmware matches.') : t('firmware.none', 'No firmware published yet.');
     return;
   }
   var generation = null, section = null;
@@ -157,8 +157,8 @@ function render(all) {
     if (fam.generation !== generation) {
       generation = fam.generation;
       section = listEl.appendChild(h('<div class="ts-section"><div class="ts-section-head"></div><div class="ts-fw-grid"></div></div>'));
-      section.querySelector('.ts-section-head').textContent = 'LOGR' + generation +
-        (generation >= 4 ? ' · logic and power together' : '');
+      section.querySelector('.ts-section-head').textContent = generation >= 4
+        ? t('firmware.together', 'LOGR{n} · logic and power together', { n: generation }) : 'LOGR' + generation;
       section = section.querySelector('.ts-fw-grid');
     }
     section.appendChild(fam.sensor ? sensorCard(fam) : bundleCard(fam));
@@ -168,13 +168,13 @@ function render(all) {
 tb.getAll('/api/otaPackages').then(function (packages) {
   var all = families((packages || []).filter(function (p) { return p.type === 'FIRMWARE'; }));
   var n = all.length;
-  cardEl.querySelector('.ts-subtitle').textContent = n + (n === 1 ? ' firmware' : ' firmwares');
+  cardEl.querySelector('.ts-subtitle').textContent = n === 1 ? t('firmware.countOne', '1 firmware') : t('firmware.countMany', '{n} firmwares', { n: n });
   input.addEventListener('input', function () { render(all); });
   render(all);
 }).catch(function (err) {
   listEl.innerHTML = '';
   listEl.appendChild(h('<div class="ts-empty ts-error"></div>')).textContent =
-    'The firmware list could not load: ' + ((err && err.status) || err);
+    t('firmware.loadFailed', 'The firmware list could not load: {error}', { error: (err && err.status) || err });
 });
 
 };

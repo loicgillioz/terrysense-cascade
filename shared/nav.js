@@ -93,7 +93,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
     },
     relays: function (e) {
       if (e.kind !== 'Station') { return; }
-      var go = function () { button('relays', ICON_RELAY, t('nav.relays', 'Dry contact interface'), function () { tb.openDashboard(opts.projectDashboardId, 'dryc', e); }); };
+      var go = function () { button('relays', ICON_RELAY, t('common.dryc', 'Dry contact interface'), function () { tb.openDashboard(opts.projectDashboardId, 'dryc', e); }); };
       return tb.attrsMap(e).then(function (attrs) {
         if (attrs['dryc.rules']) { go(); return null; }
         // A LOGR2 has a DRYC once it has reported a `dryc.` reading.
@@ -107,7 +107,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
         });
       });
     },
-    projects: function () { button('projects', ICON.back, t('nav.projects', 'Projects'), function () { landing(opts.projectDashboardId); }); },
+    projects: function () { button('projects', ICON.back, t('common.projects', 'Projects'), function () { landing(opts.projectDashboardId); }); },
     project: function (e) {
       if (e.entityType === 'DEVICE') {
         return deviceStations(e).then(function (stations) {
@@ -135,13 +135,13 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
           stations.forEach(function (s) { openStation(s, t('nav.stationOf', 'Station: {name}', { name: s.name })); });
         });
       }
-      if (e.kind === 'Station') { openStation(e, t('nav.station', 'Station')); }
+      if (e.kind === 'Station') { openStation(e, t('common.station', 'Station')); }
     },
     charts: function (e) {
       if (e.kind !== 'Station') { return; }
       return tb.attrsMap(e).then(function (attrs) { return tb.readableDashboard(attrs['config.stationDashboard']); }).then(function (id) {
         if (!id) { missing('charts', t('nav.noCharts', 'No charts dashboard yet')); return; }
-        button('charts', ICON_CHART, t('nav.charts', 'Charts'), function () { tb.openDashboard(id, 'station', e); });
+        button('charts', ICON_CHART, t('common.charts', 'Charts'), function () { tb.openDashboard(id, 'station', e); });
       });
     },
     customer: function () {
@@ -149,13 +149,13 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
       return tb.currentUser().then(function (me) {
         if (me.authority === 'TENANT_ADMIN' || !me.customerId) { return; }
         var c = { entityType: 'CUSTOMER', id: me.customerId.id };
-        button('settings', ICON.gear, t('nav.settings', 'Settings'), function () { tb.openDashboard(opts.projectDashboardId, 'settings', c); });
+        button('settings', ICON.gear, t('common.settings', 'Settings'), function () { tb.openDashboard(opts.projectDashboardId, 'settings', c); });
       });
     },
     settings: function (e) {
       if (tb.isPublicView()) { return; }
       var dashboard = e.entityType === 'DEVICE' ? opts.devicesDashboardId : opts.projectDashboardId;
-      button('settings', ICON.gear, t('nav.settings', 'Settings'), function () { tb.openDashboard(dashboard, 'settings', e); });
+      button('settings', ICON.gear, t('common.settings', 'Settings'), function () { tb.openDashboard(dashboard, 'settings', e); });
     }
   };
 

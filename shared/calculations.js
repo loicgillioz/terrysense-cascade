@@ -14,6 +14,7 @@
 
 root.TerrySenseCalculations = function (ui, tb) {
   var resolver = root.TerrySenseResolver;
+  var t = root.TerrySenseT;
   var h = ui.h, esc = ui.esc;
   var PREFIX = resolver.CALC_PREFIX;
 
@@ -30,7 +31,12 @@ root.TerrySenseCalculations = function (ui, tb) {
     });
   }
 
-  function attrSpec(meta, attr) { return meta.attributes[attr] || { label: attr, unit: '', description: '' }; }
+  /** A constant's spec, its label and description in the reader's language. */
+  function attrSpec(meta, attr) {
+    var s = meta.attributes[attr];
+    if (!s) { return { label: attr, unit: '', description: '' }; }
+    return Object.assign({}, s, { label: t.attribute(attr, s.label), description: s.description ? t.attributeInfo(attr, s.description) : s.description });
+  }
 
   /** "Sensor altitude (masl)". */
   function attrLabel(meta, attr) {
@@ -40,13 +46,16 @@ root.TerrySenseCalculations = function (ui, tb) {
 
   /** A channel key under its station label, else its vocabulary label. */
   function channelLabel(meta, attrs, key) {
-    var base = meta.names[resolver.splitChannelKey(key).name] || {};
-    return (attrs && attrs['effective.' + key + '.label']) || base.label || key;
+    var k = resolver.splitChannelKey(key), base = meta.names[k.name] || {};
+    var own = attrs && attrs['effective.' + key + '.label'];
+    if (own) { return t.label(key, own, meta.names); }
+    return base.label ? t.channel(k.name, base.label) : key;
   }
 
   /** A list as prose: "a, b and c". */
   function listText(items) {
-    return items.length < 2 ? items.join('') : items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+    return items.length < 2 ? items.join('')
+      : t('calculations.list', '{items} and {last}', { items: items.slice(0, -1).join(', '), last: items[items.length - 1] });
   }
 
   /** A reading for a person: at most four decimals, no float noise. */
@@ -76,20 +85,21 @@ root.TerrySenseCalculations = function (ui, tb) {
       if (current != null) { input.value = String(current); }
       input.addEventListener('input', function () { listeners.forEach(function (fn) { fn(); }); });
       if (spec.reading) {
-        var use = h('<button type="button" class="ts-btn ghost ts-calc-reading" disabled>Latest reading…</button>');
+        var use = h('<button type="button" class="ts-btn ghost ts-calc-reading" disabled></button>');
+        use.textContent = t('calculations.latestReading', 'Latest reading…');
         f.appendChild(use);
         tb.get('/api/plugins/telemetry/ASSET/' + station.id + '/values/timeseries', { keys: spec.reading }).then(function (got) {
           var p = got && got[spec.reading] && got[spec.reading][0];
           var v = p && p.value !== null && p.value !== undefined ? Number(p.value) : NaN;
-          if (!isFinite(v)) { use.textContent = 'No reading yet'; return; }
-          use.textContent = 'Use the latest reading: ' + shown(v) + (spec.unit ? ' ' + spec.unit : '');
+          if (!isFinite(v)) { use.textContent = t('common.noReading', 'No reading yet'); return; }
+          use.textContent = t('calculations.useReading', 'Use the latest reading: {value}', { value: shown(v) + (spec.unit ? ' ' + spec.unit : '') });
           use.title = String(v);
           use.disabled = false;
           use.addEventListener('click', function () {
             input.value = String(v);
             input.dispatchEvent(new Event('input', { bubbles: true }));
           });
-        }).catch(function () { use.textContent = 'No reading yet'; });
+        }).catch(function () { use.textContent = t('common.noReading', 'No reading yet'); });
       }
       el.appendChild(f);
     });

@@ -31,8 +31,8 @@ var CLUSTER = 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/';
 var SWISSTOPO = 'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.';
 var HOME_KEY = 'config.homeDashboard';
 var STATUS = {
-  ok: { id: 'ok', label: t('projects.ok', 'OK'), color: 'var(--ts-ok)', rank: 1 },
-  none: { id: 'none', label: t('projects.noStation', 'No station'), color: 'var(--ts-nodata)', rank: 0 }
+  ok: { id: 'ok', label: t('common.ok', 'OK'), color: 'var(--ts-ok)', rank: 1 },
+  none: { id: 'none', label: t('common.noStation', 'No station'), color: 'var(--ts-nodata)', rank: 0 }
 };
 var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
@@ -183,11 +183,11 @@ function visible() { return state.projects.filter(function (p) { return !state.o
 var cardEl = h(
   '<div class="ts-card ts-proj ts-projs">' +
   '  <div class="ts-head"><div class="ts-head-icon">' + ICON.map + '</div>' +
-  '    <div class="ts-head-text"><div class="ts-title">' + esc(t('projects.title', 'Projects')) + '</div><div class="ts-subtitle"></div></div>' +
+  '    <div class="ts-head-text"><div class="ts-title">' + esc(t('common.projects', 'Projects')) + '</div><div class="ts-subtitle"></div></div>' +
   '    <span class="ts-proj-worst"></span></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list">' +
   '    <div class="ts-projs-bar"><div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="' + esc(t('projects.search', 'Search projects')) + '"></div>' +
-  '      <select class="ts-select ts-projs-owner" data-f="customer" title="' + esc(t('projects.customer', 'Customer')) + '" hidden></select>' +
+  '      <select class="ts-select ts-projs-owner" data-f="customer" title="' + esc(t('common.customer', 'Customer')) + '" hidden></select>' +
   '      <button type="button" class="ts-btn" data-a="new-project" hidden>' + ICON.plus + ' ' + esc(t('projects.new', 'New project')) + '</button></div>' +
   '    <div class="ts-projs-rows"><div class="ts-loading">' + esc(t('common.loading', 'Loading…')) + '</div></div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
@@ -301,7 +301,7 @@ function highlight(projectId, on) {
 
 function renderHeader() {
   var shown = visible(), n = shown.length;
-  cardEl.querySelector('.ts-subtitle').textContent = (n === 1 ? t('projects.countOne', '1 project') : t('projects.countMany', '{n} projects', { n: n })) +
+  cardEl.querySelector('.ts-subtitle').textContent = (n === 1 ? t('common.projectOne', '1 project') : t('projects.countMany', '{n} projects', { n: n })) +
     (state.owner && n ? t('projects.ofOwner', ' of {owner}', { owner: shown[0].owner }) : '');
   var worstEl = cardEl.querySelector('.ts-proj-worst');
   worstEl.innerHTML = '';
@@ -323,7 +323,7 @@ function renderList() {
   var shown = visible().filter(function (p) { return (!state.filter || state.filter.indexOf(p.project.id) >= 0) && matches(p); });
   if (state.filter) {
     var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="' + esc(t('projects.showAll', 'Show every project')) + '">' + ICON.close + '</button></div>');
-    bar.querySelector('span').textContent = shown.length === 1 ? t('projects.showingOne', 'Showing {name}', { name: shown[0].project.name })
+    bar.querySelector('span').textContent = shown.length === 1 ? t('common.showingOne', 'Showing {name}', { name: shown[0].project.name })
       : t('projects.showingMany', 'Showing {n} projects', { n: shown.length });
     bar.querySelector('button').addEventListener('click', function () { select(null); });
     listEl.appendChild(bar);
@@ -348,7 +348,7 @@ function renderList() {
   if (unplaced.length) {
     var card = listEl.appendChild(h('<div class="ts-proj-loc unplaced"></div>'));
     var head = card.appendChild(h('<div class="ts-proj-group"><span class="ts-proj-group-icon">' + ICON_UNPLACE + '</span>' +
-      '<span class="ts-proj-group-name">' + esc(t('projects.noPosition', 'No position')) + '</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
+      '<span class="ts-proj-group-name">' + esc(t('common.noPosition', 'No position')) + '</span><span class="ts-count"></span><span class="ts-spacer"></span></div>'));
     head.querySelector('.ts-count').textContent = unplaced.length;
     head.appendChild(chip(worstOf(unplaced)));
     var ubody = card.appendChild(h('<div class="ts-proj-loc-body"></div>'));
@@ -375,9 +375,9 @@ function ownerGroup(o, mine) {
 
 function metaText(entry) {
   var n = inService(entry).length, gone = entry.stations.length - n, alarmed = inAlarm(entry);
-  var parts = entry.latLng ? [] : [t('projects.noPosition', 'No position')];
-  parts.push(n === 1 ? t('projects.stationOne', '1 station') : t('projects.stationMany', '{n} stations', { n: n }));
-  if (gone) { parts.push(t('projects.retired', '{n} retired', { n: gone })); }
+  var parts = entry.latLng ? [] : [t('common.noPosition', 'No position')];
+  parts.push(n === 1 ? t('common.stationOne', '1 station') : t('common.stationMany', '{n} stations', { n: n }));
+  if (gone) { parts.push(t('common.retiredCount', '{n} retired', { n: gone })); }
   if (alarmed) { parts.push(t('projects.inAlarm', '{n} in alarm', { n: alarmed })); }
   return parts.join(' · ');
 }
