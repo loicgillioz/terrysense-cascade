@@ -13,7 +13,11 @@
 // Tenant public images, by lower-case device type.
 var PRODUCT_IMAGES = {
   logr4: '/api/images/public/MV2thHN69nM3RPzhnSOCvGluKYPRahrV',
-  logr2: '/api/images/public/5R9sxOWP2LwdjGai84MW8AVI0bn8vAFn'
+  logr2: '/api/images/public/5R9sxOWP2LwdjGai84MW8AVI0bn8vAFn',
+  whtr: '/api/images/public/kus0O9cD6msP6ZU2A8WVpQbwMhfsLgGJ',
+  'zc-tilt': '/api/images/public/y2xMghNuSOdCDuurIrOv1VibfHVbUyVO',
+  gsaa: '/api/images/public/euA57c3EzeGXPzUeAaAcGSmrkbWWCVZs',
+  gsaa2: '/api/images/public/euA57c3EzeGXPzUeAaAcGSmrkbWWCVZs'
 };
 // [good from, fair from]; a spreading factor is compared negated, lower being better.
 var RADIO_LEVELS = { rssi: [-100, -115], snr: [0, -10], sf: [-8, -10] };
