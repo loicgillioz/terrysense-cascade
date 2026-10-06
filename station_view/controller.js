@@ -10,7 +10,7 @@
  * gets the header's row menu (shared/lifecycle.js), *Silence*, and
  * *Acknowledge* and *Clear* on each active alarm. A user who may create
  * dashboards creates a station dashboard from its channels (shared/templates.js).
- * Widget: logr-product-docs/cloud/FRONTEND.md *Station view*.
+ * Widget: logr-product-docs/cloud/FRONTEND.md *Station Installation view*.
  *
  * Channels are the keys of `config.channelMap`, each fed by a source key of
  * the device its entry names; labels and units are `effective.<channel>.*`. A
@@ -375,7 +375,7 @@ function alarmActions(a) {
   return el;
 }
 
-/** The station's data flow (FRONTEND.md *Station view*): each device, the
+/** The station's data flow (FRONTEND.md *Station Installation view*): each device, the
  * measurements it provides, the channel each is stored under, the station's
  * value. Channels no visible device feeds close the flow. */
 function renderChannels() {
@@ -763,7 +763,7 @@ function valueNode(row, el, c) {
   }
 }
 
-/** The station's project, with its stale channels; it opens the Project view. */
+/** The station's project, with its stale channels; it opens the project's dashboard, else its Installation view. */
 function renderPlace() {
   var p = project();
   var el = mainEl.appendChild(h('<div class="ts-stv-place" data-card="Project">' + ICON.map + '<span class="ts-stv-kind">' + esc(t('common.project', 'Project')) + '</span><b></b>' +
@@ -774,7 +774,7 @@ function renderPlace() {
     : stale ? t('station.staleCount', '{stale} of {total} channels stale', { stale: stale, total: state.channels.length }) : '';
   if (p && opts.projectDashboardId) {
     el.insertAdjacentHTML('beforeend', '<span class="ts-spacer"></span><span class="ts-stv-go">' + esc(t('station.openProject', 'Open project')) + '</span>' + ICON.chev);
-    clickable(el, t('station.openProjectView', 'Open the Project view'), function () { tb.openDashboard(opts.projectDashboardId, 'project', p); });
+    clickable(el, t('station.openProject', 'Open project'), function () { tb.openProject(opts.projectDashboardId, p); });
   }
 }
 

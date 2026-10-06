@@ -11,13 +11,16 @@
  *   relays    the Dry contact interface view of the bound station, when it
  *             keeps DRYC rules or contains a LOGR2 that has reported a DRYC
  *             reading
- *   projects  the Projects dashboard's landing view
- *   project   the Project view of the bound project, of the project above the
- *             bound station, or of each project the bound device feeds
+ *   projects  the Projects dashboard's landing view; never on a public link
+ *   project   *Project:* and the name of the project above the bound
+ *             station, or of each project the bound device feeds: its project
+ *             dashboard, else its Installation view
  *   home      the bound project's own home dashboard, `config.homeDashboard`,
  *             when the user can read it
- *   station   the station view of the bound station, or of each station the
- *             bound device feeds
+ *   station   *Station:* and the name of each station the bound device feeds:
+ *             its charts, else its Installation view
+ *   installation  the Installation view of the bound project or station; never
+ *             on a public link
  *   charts    the station's own template dashboard, `config.stationDashboard`
  *   settings  the Settings view of the bound customer, project or station, in
  *             the Projects dashboard; of the bound device, in the Fleet
@@ -76,8 +79,7 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
   var stationsOfDevice = null;
   function deviceStations(e) { return stationsOfDevice || (stationsOfDevice = tb.deviceStations(e).catch(function () { return []; })); }
 
-  function openProject(p) { button('project', ICON_PROJECT, t('nav.projectOf', 'Project: {name}', { name: p.name }), function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }); }
-  function openStation(s, text) { button('station', ICON_STATION, text, function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }); }
+  function openProject(p) { button('project', ICON_PROJECT, t('nav.projectOf', 'Project: {name}', { name: p.name }), function () { tb.openProject(opts.projectDashboardId, p); }); }
 
   var LINKS = {
     fleet: function () { button('fleet', ICON.back, t('nav.fleet', 'Fleet'), function () { landing(opts.devicesDashboardId); }); },
@@ -107,7 +109,10 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
         });
       });
     },
-    projects: function () { button('projects', ICON.back, t('common.projects', 'Projects'), function () { landing(opts.projectDashboardId); }); },
+    projects: function () {
+      if (tb.isPublicView()) { return; }
+      button('projects', ICON.back, t('common.projects', 'Projects'), function () { landing(opts.projectDashboardId); });
+    },
     project: function (e) {
       if (e.entityType === 'DEVICE') {
         return deviceStations(e).then(function (stations) {
@@ -132,10 +137,17 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
       if (e.entityType === 'DEVICE') {
         return deviceStations(e).then(function (stations) {
           if (!stations.length) { missing('station', t('nav.noStation', 'On no station')); }
-          stations.forEach(function (s) { openStation(s, t('nav.stationOf', 'Station: {name}', { name: s.name })); });
+          stations.forEach(function (s) {
+            button('station', ICON_STATION, t('nav.stationOf', 'Station: {name}', { name: s.name }), function () { tb.openStation(opts.projectDashboardId, s); });
+          });
         });
       }
-      if (e.kind === 'Station') { openStation(e, t('common.station', 'Station')); }
+    },
+    installation: function (e) {
+      if (tb.isPublicView() || (e.kind !== 'Station' && e.kind !== 'Project')) { return; }
+      button('installation', ICON.install, t('common.installation', 'Installation'), function () {
+        tb.openDashboard(opts.projectDashboardId, e.kind === 'Station' ? 'station' : 'project', e);
+      });
     },
     charts: function (e) {
       if (e.kind !== 'Station') { return; }

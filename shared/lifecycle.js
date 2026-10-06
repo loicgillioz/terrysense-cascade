@@ -6,7 +6,7 @@
  * with its consequences first and calls `done` after its writes. Shared by
  * the project widget and the station view, and by any widget whose row menu
  * holds these actions. Spec: logr-product-docs/cloud/FRONTEND.md *Interface
- * conventions*, *Project dashboard*, *Station view*.
+ * conventions*, *Projects dashboard*, *Station Installation view*.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -182,7 +182,7 @@ root.TerrySenseLifecycle = function (ui, tb) {
       .catch(fail(t('lifecycle.silence.notEnded', 'Not ended: {error}')));
   }
 
-  /** The row menu items of a station (FRONTEND.md *Project dashboard*, row menu).
+  /** The row menu items of a station (FRONTEND.md *Projects dashboard*, row menu).
    * `s`: {station, attrs, project, owner, isPublic, projectPublic, nameEl, changed(), deleted()}. */
   function stationItems(s) {
     var retired = tb.serviceOf(s.attrs).retired;

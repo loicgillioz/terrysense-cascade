@@ -1445,7 +1445,7 @@ function renderStations(pane) {
       act('<button type="button" class="ts-icon-btn" data-a="disconnect" title="' + esc(t('device.disconnect', 'Disconnect')) + '">' + ICON.close + '</button>', function () { disconnect(b); });
     }
     if (opts.projectDashboardId) {
-      act('<button type="button" class="ts-btn ghost" data-a="open">' + esc(t('common.stationView', 'Station view')) + ICON.chev + '</button>', function () {
+      act('<button type="button" class="ts-btn ghost" data-a="open">' + esc(t('common.installation', 'Installation')) + ICON.chev + '</button>', function () {
         tb.openDashboard(opts.projectDashboardId, 'station', b.station);
       });
     }

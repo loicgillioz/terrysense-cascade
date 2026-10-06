@@ -3,13 +3,13 @@
  * its state (EU-1). A project's pin stands at the centre of its area, else at
  * the centre of its stations. Projects close together at the current zoom merge
  * into one cluster. A pin or a cluster filters the list; a row opens the
- * project's Project view, and its own home dashboard when it has one. A list
+ * project's own project dashboard, else its Installation view. A list
  * spanning several owners is grouped by customer and filtered to one from the
  * list bar. A user who may create assets creates a project. Retired stations
  * count for no state.
- * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
+ * Widget: logr-product-docs/cloud/FRONTEND.md *Projects dashboard*.
  *
- * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
+ * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Installation views).
  *
  * Loads after shared/i18n.js, resolver.js, glossary.js, ui.js and tb_io.js; loads
  * Leaflet and Leaflet.markercluster itself.
@@ -34,7 +34,6 @@ var STATUS = {
   ok: { id: 'ok', label: t('common.ok', 'OK'), color: 'var(--ts-ok)', rank: 1 },
   none: { id: 'none', label: t('common.noStation', 'No station'), color: 'var(--ts-nodata)', rank: 0 }
 };
-var ICON_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
 
 function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
@@ -390,13 +389,14 @@ function projectRow(entry) {
   el.querySelector('.ts-row-meta').textContent = metaText(entry);
   var side = el.querySelector('.ts-proj-st-side');
   side.appendChild(chip(entry.status));
-  function open() { tb.openDashboard(opts.projectDashboardId, 'project', entry.project); }
+  function installation() { tb.openDashboard(opts.projectDashboardId, 'project', entry.project); }
+  function open() { if (entry.homeId) { tb.openDashboard(entry.homeId); } else { installation(); } }
   el.addEventListener('click', function (e) { if (!e.target.closest('button')) { open(); } });
   el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { open(); } });
   if (entry.homeId) {
-    var home = h('<button type="button" class="ts-btn" data-a="home">' + ICON_HOME + ' ' + esc(t('nav.home', 'Project dashboard')) + '</button>');
-    home.addEventListener('click', function () { tb.openDashboard(entry.homeId); });
-    side.appendChild(home);
+    var inst = h('<button type="button" class="ts-btn" data-a="installation">' + ICON.install + ' ' + esc(t('common.installation', 'Installation')) + '</button>');
+    inst.addEventListener('click', installation);
+    side.appendChild(inst);
   }
   el.addEventListener('mouseenter', function () { highlight(entry.project.id, true); });
   el.addEventListener('mouseleave', function () { highlight(entry.project.id, false); });

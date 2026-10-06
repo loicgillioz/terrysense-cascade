@@ -614,14 +614,14 @@ function fillGoTo(go, d) {
   }
   var stations = group(d.stationRefs.length === 1 ? t('common.station', 'Station') : t('common.stations', 'Stations'));
   d.stationRefs.forEach(function (s) {
-    navRow(stations, s.name, s.project ? t('fleet.inProject', 'in {name}', { name: s.project.name }) : t('fleet.onNoProject', 'on no project'), t('common.stationView', 'Station view'),
+    navRow(stations, s.name, s.project ? t('fleet.inProject', 'in {name}', { name: s.project.name }) : t('fleet.onNoProject', 'on no project'), t('common.installation', 'Installation'),
       opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'station', s); }).setAttribute('data-station', s.name);
   });
   if (!d.projects.length) { return; }
   var projects = group(d.projects.length === 1 ? t('common.project', 'Project') : t('common.projects', 'Projects'));
   d.projects.forEach(function (p) {
     var n = d.stationRefs.filter(function (s) { return s.project && s.project.id === p.id; }).length;
-    navRow(projects, p.name, n === 1 ? t('fleet.fedOne', '1 station fed') : t('fleet.fedMany', '{n} stations fed', { n: n }), t('fleet.projectView', 'Project view'),
+    navRow(projects, p.name, n === 1 ? t('fleet.fedOne', '1 station fed') : t('fleet.fedMany', '{n} stations fed', { n: n }), t('common.installation', 'Installation'),
       opts.projectDashboardId && function () { tb.openDashboard(opts.projectDashboardId, 'project', p); }).setAttribute('data-project', p.name);
   });
 }

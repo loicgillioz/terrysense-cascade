@@ -337,6 +337,21 @@ root.TerrySenseTbIo = function (ctx) {
     getService('router').navigate([isPublic ? '/dashboard' : '/dashboards', dashboardId], { queryParams: params });
   }
 
+  /** A project's name leads to its project dashboard, a station's to its
+   * charts, when the user can read it; else to its Installation view on
+   * `projectDashboardId` (FRONTEND.md *Navigation*). */
+  function openProject(projectDashboardId, project) {
+    return attrsMap(project).then(function (a) { return readableDashboard(a['config.homeDashboard']); }).then(function (id) {
+      if (id) { openDashboard(id); } else { openDashboard(projectDashboardId, 'project', project); }
+    });
+  }
+
+  function openStation(projectDashboardId, station) {
+    return attrsMap(station).then(function (a) { return readableDashboard(a['config.stationDashboard']); }).then(function (id) {
+      openDashboard(id || projectDashboardId, 'station', station);
+    });
+  }
+
   /** The URL a public link opens: view `stateId` of `dashboardId` on `entity`,
    * else its landing view, signed in as public customer `publicId`. */
   function publicLink(dashboardId, publicId, stateId, entity) {
@@ -606,7 +621,7 @@ root.TerrySenseTbIo = function (ctx) {
     currentUser: currentUser, canWrite: canWrite, listUsers: listUsers, resolveStations: resolveStations,
     channelFreshness: channelFreshness,
     isComplexDevice: isComplexDevice,
-    ancestors: ancestors, openDashboard: openDashboard, readableDashboard: readableDashboard, isPublicView: isPublicView,
+    ancestors: ancestors, openDashboard: openDashboard, openProject: openProject, openStation: openStation, readableDashboard: readableDashboard, isPublicView: isPublicView,
     publicLink: publicLink, ownerOf: ownerOf, renameEntity: renameEntity, publicMembers: publicMembers, setPublic: setPublic, namedGroup: namedGroup,
     relate: relate, unrelate: unrelate, createStation: createStation, ownerProjects: ownerProjects,
     settingChanges: settingChanges, moveStation: moveStation, deleteHistory: deleteHistory, deleteEntity: deleteEntity,

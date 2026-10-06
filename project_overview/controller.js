@@ -2,15 +2,15 @@
  * Project — a project's stations on a map and in a list, each with its state,
  * its stale channels and the age of its last reading (EU-1). Stations close
  * together at the current zoom merge into one cluster. A station opens its
- * station view, and its charts on its own station dashboard; an editor assigns
+ * charts on its own station dashboard, else its Installation view; an editor assigns
  * one, creates one from the station's channels (shared/templates.js), places and removes a station's position
  * and draws the project area, adds a station; the row menus of the project
  * and its stations rename, move, make public or private, retire and delete
  * (shared/lifecycle.js). Retired stations fold away at the end of the list.
- * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
+ * Widget: logr-product-docs/cloud/FRONTEND.md *Projects dashboard*.
  *
- * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Station
- * and Settings views). A public link opens the project's own dashboard,
+ * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its
+ * Installation and Settings views). A public link opens the project's own dashboard,
  * `config.homeDashboard`, created here from picked stations (shared/templates.js).
  *
  * `opts.devicesDashboardId`, the fleet, for the follow-up of a new station.
@@ -48,7 +48,6 @@ var STATUS = {
 };
 var ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 var ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>';
-var ICON_CHART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/></svg>';
 var ICON_UNPLACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-11a6 6 0 0 1 10.6-3.8M18 10c0 2.3-1 4.6-2.3 6.5"/><path d="M4 4l16 16"/></svg>';
 
 function service(name) { return ctx.$scope.$injector.get(ctx.servicesMap.get(name)); }
@@ -295,7 +294,7 @@ function initMap() {
   layers[t('map.aerial', 'Aerial')] = aerial;
   L.control.layers(layers, null, { position: 'topright' }).addTo(map);
   // Stations close together at the current zoom are one cluster, coloured by the
-  // worst of them (FRONTEND.md *Project dashboard*).
+  // worst of them (FRONTEND.md *Projects dashboard*).
   clusterLayer = L.markerClusterGroup({
     showCoverageOnHover: false, maxClusterRadius: 40, zoomToBoundsOnClick: false,
     iconCreateFunction: function (cluster) {
@@ -635,17 +634,18 @@ function stationRow(entry) {
   if (!entry.devices.length && !retired) { side.appendChild(ui.stateChip('nodevice')); }
   if (state.canEdit && !retired && linkOn() && onHome(entry) && !isPublic(entry.station.id)) { side.appendChild(ui.stateChip('private')); }
   side.appendChild(chip(entry.status));
-  // The row opens the station view; without one, its charts.
-  var view = opts.projectDashboardId ? [opts.projectDashboardId, 'station'] : entry.dashboardId ? [entry.dashboardId, 'station'] : null;
-  if (view) {
+  var target = entry.dashboardId || opts.projectDashboardId;
+  if (target) {
     el.classList.add('linked');
-    el.addEventListener('click', function (e) { if (!e.target.closest('button, input')) { openDashboard(view[0], view[1], entry.station); } });
-    el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { openDashboard(view[0], view[1], entry.station); } });
+    el.addEventListener('click', function (e) { if (!e.target.closest('button, input')) { openDashboard(target, 'station', entry.station); } });
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target === el) { openDashboard(target, 'station', entry.station); } });
   }
   if (entry.dashboardId) {
-    var charts = h('<button type="button" class="ts-icon-btn" data-a="charts" title="' + esc(t('common.charts', 'Charts')) + '">' + ICON_CHART + '</button>');
-    charts.addEventListener('click', function () { openDashboard(entry.dashboardId, 'station', entry.station); });
-    side.appendChild(charts);
+    if (opts.projectDashboardId) {
+      var inst = h('<button type="button" class="ts-icon-btn" data-a="installation" title="' + esc(t('common.installation', 'Installation')) + '">' + ICON.install + '</button>');
+      inst.addEventListener('click', function () { openDashboard(opts.projectDashboardId, 'station', entry.station); });
+      side.appendChild(inst);
+    }
   } else {
     el.querySelector('.ts-row-meta').textContent += ' · ' + t('nav.noCharts', 'No charts dashboard yet');
   }

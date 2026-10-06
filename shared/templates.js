@@ -25,6 +25,8 @@ root.TerrySenseTemplates = function (ui, tb) {
   var ALARMS_FQN = 'system.alarm_widgets.alarms_table';
   var MAP_FQN = 'system.map';
   var TABLE_FQN = 'system.cards.entities_table';
+  var NAV_FQN = 'tenant.terrysense.navigation';
+  var HOME_LINKS = ['projects', 'installation', 'settings'];
   var HOME_GROUP = 'Project home dashboards';
   var HOME_KEY = 'config.homeDashboard';
 
@@ -99,6 +101,7 @@ root.TerrySenseTemplates = function (ui, tb) {
       if (CHARTS[title]) { out.ids[title] = id; }
       if (conf.widgets[id].typeFullFqn === ALARMS_FQN) { out.alarms = id; }
       if (conf.widgets[id].typeFullFqn === TABLE_FQN) { out.table = id; }
+      if (conf.widgets[id].typeFullFqn === NAV_FQN) { out.nav = id; }
     });
     out.alias = stationAlias(conf);
     return out;
@@ -324,6 +327,18 @@ root.TerrySenseTemplates = function (ui, tb) {
     return { id: uuid(), typeFullFqn: MAP_FQN, type: stock.descriptor.type, sizeX: 24, sizeY: 10, config: conf };
   }
 
+  /** The models' navigation bar, bound to `alias`, with the links of a project
+   * dashboard; build_project_dashboard.py keeps it current. */
+  function navWidget(models, alias) {
+    var w = JSON.parse(JSON.stringify(models.dashboard.configuration.widgets[models.nav]));
+    var js = w.config.settings.js, opts = JSON.parse(js.slice(js.indexOf('{'), js.lastIndexOf('}') + 1));
+    opts.links = HOME_LINKS;
+    w.config.settings.js = js.slice(0, js.indexOf('{')) + JSON.stringify(opts) + ');';
+    w.config.datasources[0].entityAliasId = alias;
+    w.id = uuid();
+    return w;
+  }
+
   function rootLayout(conf) {
     var id = Object.keys(conf.states).filter(function (k) { return conf.states[k].root; })[0] || Object.keys(conf.states)[0];
     return conf.states[id].layouts.main.widgets;
@@ -472,9 +487,17 @@ root.TerrySenseTemplates = function (ui, tb) {
       plan.stations.forEach(function (st) { aliases[st.id] = stationAliasOf(conf, st); });
       function aliasOf(id) { return aliases[id]; }
 
-      place(mapWidget(got[1], listId, plan.title), models.alarms ? 14 : 24, 10, 0, 0);
-      if (models.alarms) { place(copyModel(models, models.alarms, { key: '', label: 'Active alarms', unit: '' }, listId), 10, 10, 0, 14); }
-      var row = 10;
+      var top = 0;
+      if (models.nav) {
+        var projectAlias = uuid();
+        conf.entityAliases[projectAlias] = { id: projectAlias, alias: 'Project',
+          filter: { type: 'singleEntity', resolveMultiple: false, singleEntity: { entityType: 'ASSET', id: project.id } } };
+        place(navWidget(models, projectAlias), 24, 1, 0, 0);
+        top = 1;
+      }
+      place(mapWidget(got[1], listId, plan.title), models.alarms ? 14 : 24, 10, top, 0);
+      if (models.alarms) { place(copyModel(models, models.alarms, { key: '', label: 'Active alarms', unit: '' }, listId), 10, 10, top, 14); }
+      var row = top + 10;
       var listed = plan.cat.keys.filter(function (k) { return plan.stations.some(function (st) { return plan.cat.by[k].at[st.id]; }); });
       if (models.table && listed.length) {
         var tall = Math.min(3 + plan.stations.length, 10);
