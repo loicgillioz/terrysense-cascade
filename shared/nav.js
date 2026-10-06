@@ -18,7 +18,8 @@
  *   home      the bound project's own home dashboard, `config.homeDashboard`,
  *             when the user can read it
  *   station   *Station:* and the name of each station the bound device feeds:
- *             its charts, else its Installation view
+ *             its charts, else its Installation view; on a bound station, as
+ *             `installation`
  *   installation  the Installation view of the bound project or station; never
  *             on a public link
  *   charts    the station's own template dashboard, `config.stationDashboard`
@@ -142,6 +143,8 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
           });
         });
       }
+      // Templates copied from older chart models name the Installation view `station`.
+      if (e.kind === 'Station') { return LINKS.installation(e); }
     },
     installation: function (e) {
       if (tb.isPublicView() || (e.kind !== 'Station' && e.kind !== 'Project')) { return; }
