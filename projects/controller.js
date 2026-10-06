@@ -3,8 +3,10 @@
  * its state (EU-1). A project's pin stands at the centre of its area, else at
  * the centre of its stations. Projects close together at the current zoom merge
  * into one cluster. A pin or a cluster filters the list; a row opens the
- * project's Project view, and its own home dashboard when it has one. A user who
- * may create assets creates a project. Retired stations count for no state.
+ * project's Project view, and its own home dashboard when it has one. A list
+ * spanning several owners is grouped by customer and filtered to one from the
+ * list bar. A user who may create assets creates a project. Retired stations
+ * count for no state.
  * Widget: logr-product-docs/cloud/FRONTEND.md *Project dashboard*.
  *
  * `opts`, set by build_project_dashboard.py: `projectDashboardId` (its Project view).
@@ -70,7 +72,7 @@ function loadMapLibraries() {
 
 // -- data --------------------------------------------------------------------------------
 
-var state = { projects: [], owners: {}, loadedAt: 0, canCreateAssets: false, me: {}, filter: null, search: '' };
+var state = { projects: [], owners: {}, loadedAt: 0, canCreateAssets: false, me: {}, filter: null, search: '', owner: '', folded: {} };
 
 function latLngOf(attrs) {
   var lat = Number(attrs.latitude), lng = Number(attrs.longitude);
@@ -158,11 +160,22 @@ function chip(status) {
   return el;
 }
 
-function manyOwners() {
-  var seen = {};
-  state.projects.forEach(function (p) { seen[p.owner] = true; });
-  return Object.keys(seen).length > 1;
+function ownerKey(entry) { return entry.ownerId && entry.ownerId.entityType === 'CUSTOMER' ? entry.ownerId.id : 'tenant'; }
+
+/** The owners of the projects, by name: `[{key, name, projects}]`. */
+function owners() {
+  var by = {};
+  state.projects.forEach(function (p) {
+    var k = ownerKey(p);
+    (by[k] = by[k] || { key: k, name: p.owner, projects: [] }).projects.push(p);
+  });
+  return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
 }
+
+function manyOwners() { return owners().length > 1; }
+
+/** The projects of the customer picked in the list bar, every one when none is. */
+function visible() { return state.projects.filter(function (p) { return !state.owner || ownerKey(p) === state.owner; }); }
 
 // -- scaffold ----------------------------------------------------------------------------
 
@@ -173,6 +186,7 @@ var cardEl = h(
   '    <span class="ts-proj-worst"></span></div>' +
   '  <div class="ts-proj-split"><div class="ts-proj-map"></div><div class="ts-proj-list">' +
   '    <div class="ts-projs-bar"><div class="ts-search ts-projs-search">' + ICON.search + '<input class="ts-input" placeholder="Search projects"></div>' +
+  '      <select class="ts-select ts-projs-owner" data-f="customer" title="Customer" hidden></select>' +
   '      <button type="button" class="ts-btn" data-a="new-project" hidden>' + ICON.plus + ' New project</button></div>' +
   '    <div class="ts-projs-rows"><div class="ts-loading">Loading…</div></div></div></div>' +
   '  <div class="ts-foot"><span class="ts-row-meta ts-proj-updated"></span><span class="ts-spacer"></span>' +
@@ -183,6 +197,7 @@ window.TerrySenseNav(ctx, tb, ui, cardEl, opts);
 var mapEl = cardEl.querySelector('.ts-proj-map');
 var listEl = cardEl.querySelector('.ts-projs-rows');
 var searchEl = cardEl.querySelector('.ts-projs-search input');
+var ownerEl = cardEl.querySelector('[data-f=customer]');
 var refreshBtn = cardEl.querySelector('.ts-proj-refresh');
 var newBtn = cardEl.querySelector('[data-a=new-project]');
 
@@ -248,7 +263,7 @@ function drawMarkers() {
   areaLayer.clearLayers();
   markers = {};
   var bounds = [];
-  state.projects.forEach(function (entry) {
+  visible().forEach(function (entry) {
     if (!entry.latLng) { return; }
     var selected = state.filter && state.filter.length === 1 && state.filter[0] === entry.project.id;
     if (entry.area) {
@@ -280,11 +295,12 @@ function highlight(projectId, on) {
 // -- list --------------------------------------------------------------------------------
 
 function renderHeader() {
-  var n = state.projects.length;
-  cardEl.querySelector('.ts-subtitle').textContent = n + (n === 1 ? ' project' : ' projects');
+  var shown = visible(), n = shown.length;
+  cardEl.querySelector('.ts-subtitle').textContent = n + (n === 1 ? ' project' : ' projects') +
+    (state.owner && n ? ' of ' + shown[0].owner : '');
   var worstEl = cardEl.querySelector('.ts-proj-worst');
   worstEl.innerHTML = '';
-  if (n) { worstEl.appendChild(chip(worstOf(state.projects))); }
+  if (n) { worstEl.appendChild(chip(worstOf(shown))); }
   cardEl.querySelector('.ts-proj-updated').textContent = 'Updated ' + fmtTime(state.loadedAt);
 }
 
@@ -299,7 +315,7 @@ function renderList() {
     fail('No project to show.');
     return;
   }
-  var shown = state.projects.filter(function (p) { return (!state.filter || state.filter.indexOf(p.project.id) >= 0) && matches(p); });
+  var shown = visible().filter(function (p) { return (!state.filter || state.filter.indexOf(p.project.id) >= 0) && matches(p); });
   if (state.filter) {
     var bar = h('<div class="ts-proj-filter"><span></span><button type="button" class="ts-icon-btn" title="Show every project">' + ICON.close + '</button></div>');
     bar.querySelector('span').textContent = shown.length === 1 ? 'Showing ' + shown[0].project.name : 'Showing ' + shown.length + ' projects';
@@ -308,6 +324,13 @@ function renderList() {
   }
   if (!shown.length) {
     listEl.appendChild(h('<div class="ts-empty">No project matches.</div>'));
+    return;
+  }
+  if (manyOwners() && !state.owner) {
+    owners().forEach(function (o) {
+      var mine = shown.filter(function (p) { return ownerKey(p) === o.key; });
+      if (mine.length) { listEl.appendChild(ownerGroup(o, mine)); }
+    });
     return;
   }
   var placed = shown.filter(function (p) { return p.latLng; });
@@ -327,9 +350,26 @@ function renderList() {
   }
 }
 
-function metaText(entry, withOwner) {
+/** One customer's projects, folding away; those with no position last, saying so. */
+function ownerGroup(o, mine) {
+  var el = h('<details class="ts-proj-loc ts-projs-group"><summary class="ts-proj-group"><span class="ts-chev">' + ICON.chev + '</span>' +
+    '<span class="ts-proj-group-name"></span>' +
+    '<span class="ts-count"></span><span class="ts-spacer"></span></summary><div class="ts-proj-loc-body"></div></details>');
+  el.setAttribute('data-customer', o.name);
+  el.open = !state.folded[o.key];
+  el.addEventListener('toggle', function () { state.folded[o.key] = !el.open; });
+  el.querySelector('.ts-proj-group-name').textContent = o.name;
+  el.querySelector('.ts-count').textContent = mine.length;
+  el.querySelector('summary').appendChild(chip(worstOf(mine)));
+  var body = el.querySelector('.ts-proj-loc-body');
+  mine.filter(function (p) { return p.latLng; }).concat(mine.filter(function (p) { return !p.latLng; }))
+    .forEach(function (entry) { body.appendChild(projectRow(entry)); });
+  return el;
+}
+
+function metaText(entry) {
   var n = inService(entry).length, gone = entry.stations.length - n, alarmed = inAlarm(entry);
-  var parts = withOwner && entry.owner ? [entry.owner] : [];
+  var parts = entry.latLng ? [] : ['No position'];
   parts.push(n === 1 ? '1 station' : n + ' stations');
   if (gone) { parts.push(gone + ' retired'); }
   if (alarmed) { parts.push(alarmed + ' in alarm'); }
@@ -341,7 +381,7 @@ function projectRow(entry) {
     '<div class="ts-row-meta"></div></div><div class="ts-proj-st-side"></div></div>');
   el.setAttribute('data-project', entry.project.name);
   el.querySelector('.ts-proj-st-name').textContent = entry.project.name;
-  el.querySelector('.ts-row-meta').textContent = metaText(entry, manyOwners());
+  el.querySelector('.ts-row-meta').textContent = metaText(entry);
   var side = el.querySelector('.ts-proj-st-side');
   side.appendChild(chip(entry.status));
   function open() { tb.openDashboard(opts.projectDashboardId, 'project', entry.project); }
@@ -357,7 +397,23 @@ function projectRow(entry) {
   return el;
 }
 
+/** *All customers*, then each owner with its project count; shown only when the list spans several. */
+function renderOwners() {
+  var list = owners();
+  ownerEl.hidden = list.length < 2;
+  if (list.every(function (o) { return o.key !== state.owner; })) { state.owner = ''; }
+  ownerEl.innerHTML = '';
+  ownerEl.appendChild(h('<option value="">All customers</option>'));
+  list.forEach(function (o) {
+    var opt = ownerEl.appendChild(h('<option></option>'));
+    opt.value = o.key;
+    opt.textContent = o.name + ' (' + o.projects.length + ')';
+  });
+  ownerEl.value = state.owner;
+}
+
 function render() {
+  renderOwners();
   renderHeader();
   renderList();
   drawMarkers();
@@ -419,6 +475,12 @@ function refresh() {
 
 refreshBtn.addEventListener('click', refresh);
 searchEl.addEventListener('input', function () { state.search = searchEl.value; renderList(); });
+ownerEl.addEventListener('change', function () {
+  state.owner = ownerEl.value;
+  state.filter = null;
+  fitted = false;
+  render();
+});
 newBtn.addEventListener('click', openNew);
 
 tb.currentUser().then(function (me) {
