@@ -12,9 +12,10 @@
  * Laid out as the product image and the device's status beside its topology:
  * the peripherals, one foldable card per position; below both, the stations it
  * feeds and their channels. The layout depends on the family:
- *   bus    LOGR3, LOGR4: positions from `topology.p<POS>.*`, sources from
- *          `subscriptions.*` and the stored telemetry keys, each with its
- *          interval and whether it is enabled; configurable by command.
+ *   bus    LOGR3, LOGR4: positions from `topology.p<POS>.*`, position 0 from
+ *          the LOGR's own catalog entry; sources from `subscriptions.*` and
+ *          the stored telemetry keys, each with its interval and whether it
+ *          is enabled, or *not subscribed*; configurable by command.
  *   logr2  the LOGR and its one or two sensors, fixed in its firmware:
  *          readings grouped by their peripheral prefix; the data of a sensor
  *          no longer used can be deleted; the register.
@@ -334,22 +335,28 @@ function discard(queued) {
   });
 }
 
-/** Catalog measures of a position that the device neither subscribes nor reports. */
+/** Catalog measures of a position that the device neither subscribes nor reports, each
+ * under the key the device reports it by: a group or index of 0 is left out (TRX_NANO.md §10). */
 function unsubscribed(pos, node, own) {
   var p = node && state.peripherals[node.type];
   if (!p) { return []; }
   var have = {};
-  own.forEach(function (s) { have[s.sourceKey] = true; });
-  var count = {};
-  (p.measures || []).forEach(function (m) { count[m.kind] = (count[m.kind] || 0) + 1; });
-  return (p.measures || []).map(function (m) {
-    var indexed = count[m.kind] > 1;
-    var key = 'p' + pos + '.' + camel(m.kind) + (m.group ? '.g' + m.group : '') + (indexed ? '.i' + m.index : '');
+  own.forEach(function (s) { have[s.kind + '/' + s.group + '/' + s.index] = true; });
+  return (p.measures || []).filter(function (m) {
+    return !have[camel(m.kind) + '/' + (m.group || 0) + '/' + (m.index || 0)];
+  }).map(function (m) {
+    var key = 'p' + pos + '.' + camel(m.kind) + (m.group ? '.g' + m.group : '') + (m.index ? '.i' + m.index : '');
     var target = { mode: 'SOURCE', position: pos, kind: m.kind };
     if (m.group) { target.group = m.group; }
-    if (indexed) { target.index = m.index; }
+    if (m.index) { target.index = m.index; }
     return { sourceKey: key, measure: m, target: target };
-  }).filter(function (c) { return !have[c.sourceKey]; });
+  });
+}
+
+function subscribe(target, input) {
+  var v = Number(input.value);
+  if (!(v >= 1 && v <= 65535 && Math.floor(v) === v)) { ui.toast(t('device.intervalInvalid', 'An interval is a whole number of seconds, 1 to 65535'), 'error'); return; }
+  send([{ op: 'CREATE_SUBSCRIPTION', target: target, interval_s: v }]);
 }
 
 function addDrawer(pos, node, own) {
@@ -364,11 +371,7 @@ function addDrawer(pos, node, own) {
       '<div class="ts-tsrc-value"><button type="button" class="ts-btn">' + esc(t('device.subscribe', 'Subscribe')) + '</button></div></div>');
     row.querySelector('.ts-row-label').textContent = entry.label ? t.channel(o.measure.defaultName, entry.label) : o.measure.defaultName;
     row.querySelector('.ts-mono').textContent = o.sourceKey;
-    row.querySelector('button').addEventListener('click', function () {
-      var v = Number(input.value);
-      if (!(v >= 1 && v <= 65535 && Math.floor(v) === v)) { ui.toast(t('device.intervalInvalid', 'An interval is a whole number of seconds, 1 to 65535'), 'error'); return; }
-      send([{ op: 'CREATE_SUBSCRIPTION', target: o.target, interval_s: v }]);
-    });
+    row.querySelector('button').addEventListener('click', function () { subscribe(o.target, input); });
     dr.body.appendChild(row);
   });
 }
@@ -1531,8 +1534,13 @@ function topologySection() {
  * position 0 or a LOGR2's own readings; none for any other device. */
 function loggerCard() {
   var fam = family();
-  if (fam === 'bus') { return positionCard(0, topology()[0], sources()); }
+  if (fam === 'bus') { return positionCard(0, topology()[0] || logrNode(), sources()); }
   return fam === 'logr2' ? partCard(logr2Parts(readings())[0], 0) : null;
+}
+
+/** Position 0 as its catalog entry, `logr-3` or `logr-4` by device type: the TOPOLOGY report lists the external positions only. */
+function logrNode() {
+  return { position: 0, type: String(state.device.type).replace(/^logr(\d)$/, 'logr-$1') };
 }
 
 /** A LOGR2 part or another device, read-only: its readings and the station channel each feeds. */
@@ -1590,7 +1598,7 @@ function positionCard(pos, node, srcs) {
   if (!node) { flags.appendChild(h('<span class="ts-chip warn"></span>')).textContent = t('device.notInTopology', 'not in the topology report'); }
   else if (!p && pos !== 0) { flags.appendChild(h('<span class="ts-chip warn"></span>')).textContent = t('device.notInCatalog', 'not in the catalog'); }
   if (bad.length) { flags.appendChild(h('<span class="ts-chip fault"></span>')).textContent = t('device.faultingCount', '{n} faulting', { n: bad.length }); }
-  var more = node && pos !== 0 ? unsubscribed(pos, node, own).length : 0;
+  var more = unsubscribed(pos, node, own).length;
   if (more) {
     var avail = flags.appendChild(h('<span class="ts-chip" data-available="' + more + '"></span>'));
     avail.title = t('device.availableTip', 'Measurements this peripheral offers that the LOGR does not subscribe, from the catalog');
@@ -1599,7 +1607,7 @@ function positionCard(pos, node, srcs) {
   if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
     flags.appendChild(h('<span class="ts-chip warn" data-unwired="1"></span>')).textContent = t('device.notWired', 'not wired to any station');
   }
-  if (state.writable && node && unsubscribed(pos, node, own).length) {
+  if (state.writable && more) {
     headButton(box, '<button type="button" class="ts-btn ts-add">' + ICON.plus + esc(t('device.addSubscription', 'Add subscription')) + '</button>', function () { addDrawer(pos, node, own); });
   }
   if (!flags.childNodes.length) { flags.remove(); }
@@ -1759,7 +1767,7 @@ function sourceRow(s, node) {
     chip.textContent = t('device.changeQueued', 'change queued');
     chip.title = t('device.afterNextUplink', '{commands}, after the next uplink', { commands: queued.map(commandText).join(' · ') });
   }
-  if (state.writable) { meta.appendChild(sourceControls(s)); } else { sourceFacts(s, meta); }
+  if (state.writable) { meta.appendChild(subscribed(s) ? sourceControls(s) : subscribeControl(s)); } else { sourceFacts(s, meta); }
   var wire = wireLine(s.sourceKey, state.wiring[s.sourceKey] || [], s.position !== 0 ? t('device.notWired', 'not wired to any station') : null, function (f) {
     return '→ ' + f.station + ' · ' + (f.label ? t.label(f.channel, f.label, state.names) + ' (' + f.channel + ')' : f.channel);
   });
@@ -1769,6 +1777,9 @@ function sourceRow(s, node) {
 
 /** Read-only: the interval and whether the subscription is on, as the device last reported. */
 function sourceFacts(s, meta) {
+  if (!subscribed(s)) {
+    meta.appendChild(h('<span class="ts-chip" data-subscribed="false"></span>')).textContent = t('device.notSubscribed', 'not subscribed');
+  }
   if (s.enabled !== undefined) {
     var on = truthyFlag(s.enabled);
     meta.appendChild(h('<span class="ts-chip' + (on ? ' ok' : '') + '" data-enabled="' + on + '"></span>')).textContent = on ? t('device.enabled', 'enabled') : t('device.disabled', 'disabled');
@@ -1776,6 +1787,19 @@ function sourceFacts(s, meta) {
   if (s.interval) {
     meta.appendChild(h('<span class="ts-tsrc-every" data-interval="' + esc(s.interval) + '"></span>')).textContent = t('device.everyDuration', 'every {d}', { d: fmtDuration(s.interval) });
   }
+}
+
+/** Whether the device's SUBSCRIPTIONS report names the source; a source known from its readings alone has none to switch. */
+function subscribed(s) { return s.enabled !== undefined || s.interval !== undefined; }
+
+/** For a source the device reports without a subscription: its interval and *Subscribe*. */
+function subscribeControl(s) {
+  var ctl = h('<div class="ts-src-act"><span class="ts-chip" data-subscribed="false"></span>' +
+    '<span class="ts-tsrc-every">' + esc(t('device.every', 'every')) + ' <input class="ts-input num sm ts-src-int" type="number" min="1" step="1" value="900"> s</span>' +
+    '<span class="ts-spacer"></span><button type="button" class="ts-btn sm" data-a="subscribe">' + esc(t('device.subscribe', 'Subscribe')) + '</button></div>');
+  ctl.querySelector('.ts-chip').textContent = t('device.notSubscribed', 'not subscribed');
+  ctl.querySelector('[data-a=subscribe]').addEventListener('click', function () { subscribe(sourceTarget(s), ctl.querySelector('input')); });
+  return ctl;
 }
 
 /** A switch that enables or disables the subscription, and its interval, each sent as a command. */
