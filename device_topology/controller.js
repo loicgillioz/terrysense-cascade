@@ -67,6 +67,8 @@ function powerSources() {
   function s(token, english) { return t.state('chargerSource', token, english); }
   return { usb: s('usb', 'USB'), sp_int: s('sp_int', 'internal solar'), sp_ext: s('sp_ext', 'external solar'), bus: s('bus', 'bus'), none: s('none', 'none') };
 }
+// A STATUS carrying the POWERBOARD fault holds no power reading: soc, sources and estimates are not reported (TRX_NANO.md §8).
+function powerUnread(c) { return (parseJson(c['status.healthFaults']) || []).indexOf('POWERBOARD') >= 0; }
 function sdStates() { return { ready: t('device.sdReady', 'ready'), fault: t('device.sdFault', 'fault'), not_inserted: t('device.sdNoCard', 'no card') }; }
 var NEW_STATION = '__new';
 // A source is silent past this many of its intervals (HEALTH.md §2).
@@ -1671,19 +1673,23 @@ function statusSection() {
     card('Downlink radio', t('device.statDownlink', 'Downlink radio'), DEVICE, [joined([metric(c['status.dlRssi'] + ' dBm', rssiLevel(c['status.dlRssi'])),
       metric('SNR ' + c['status.dlSnr'] + ' dB', snrLevel(c['status.dlSnr']))])]);
   }
-  var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  var unread = hasStatus && powerUnread(c);
+  var soc = c['status.soc'] !== undefined && !unread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var batt = [];
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   if (soc !== undefined) { batt.push(t('device.charge', 'Charge {v} %', { v: fmtValue(soc) })); }
+  else if (unread) { batt.push(t('device.chargeUnread', 'Charge not reported: the power board did not answer')); }
   if (volt) { batt.push(fmtValue(volt.value) + ' V, ' + t.ago(volt.ts)); }
   if (!hasStatus && c['status.charging'] !== undefined) { batt.push(truthyFlag(c['status.charging']) ? t('device.charging', 'Charging') : t('device.notCharging', 'Not charging')); }
-  if (Number(c['status.battRuntimeSeconds']) > 0) { batt.push(t('device.runtime', 'Lasts about {d}, the LOGR’s own estimate', { d: fmtDuration(c['status.battRuntimeSeconds']) })); }
+  if (!unread && Number(c['status.battRuntimeSeconds']) > 0) { batt.push(t('device.runtime', 'Lasts about {d}, the LOGR’s own estimate', { d: fmtDuration(c['status.battRuntimeSeconds']) })); }
   if (bus || batt.length) { card('Battery', t('common.battery', 'Battery'), DEVICE, batt.length ? batt : [t('device.notReported', 'Not reported')]); }
   if (hasStatus) {
-    var present = parseJson(c['status.sourcesPresent']) || [], powerNames = powerSources();
-    var power = [t('device.runningOn', 'Running on {source}', { source: powerNames[c['status.activeSource']] || c['status.activeSource'] }),
-                 t('device.connected', 'Connected: {list}', { list: present.length ? present.map(function (x) { return powerNames[x] || x; }).join(', ') : t('common.none', 'none') })];
-    if (truthyFlag(c['status.charging'])) {
+    var present = parseJson(c['status.sourcesPresent']) || [], powerNames = powerSources(), source = c['status.activeSource'];
+    // active_source is the charge path: with none the LOGR runs on its battery.
+    var power = unread ? [t('device.powerUnread', 'Power inputs not reported: the power board did not answer')]
+      : [source === 'none' ? t('device.runningOnBattery', 'Running on battery') : t('device.runningOn', 'Running on {source}', { source: powerNames[source] || source }),
+         t('device.connected', 'Connected: {list}', { list: present.length ? present.map(function (x) { return powerNames[x] || x; }).join(', ') : t('common.none', 'none') })];
+    if (!unread && truthyFlag(c['status.charging'])) {
       power.push(Number(c['status.ttfSeconds']) > 0 ? t('device.chargingFullIn', 'Charging, full in {d}', { d: fmtDuration(c['status.ttfSeconds']) }) : t('device.charging', 'Charging'));
     }
     card('Power', t('device.statPower', 'Power'), DEVICE, power);

@@ -532,7 +532,8 @@ function deviceNode(el, d) {
   up.insertAdjacentHTML('afterbegin', '<span class="ts-dot" style="background:' + (live ? 'var(--ts-ok)' : last ? 'var(--ts-danger)' : 'var(--ts-text-3)') + '"></span>');
   el.appendChild(h('<div class="ts-row-meta"></div>')).textContent = [dev.name !== (dev.label || dev.name) ? dev.name : '', dev.type,
     d.client['deviceInfo.fwVersion'] ? t('station.firmware', 'firmware {version}', { version: d.client['deviceInfo.fwVersion'] }) : ''].filter(Boolean).join(' · ');
-  if (d.client['status.soc'] !== undefined) {
+  // A STATUS carrying the POWERBOARD fault holds no charge reading (TRX_NANO.md §8).
+  if (d.client['status.soc'] !== undefined && (parseJson(d.client['status.healthFaults']) || []).indexOf('POWERBOARD') < 0) {
     el.appendChild(h('<div class="ts-flow-line"></div>')).textContent = t('station.battery', 'Battery {soc} %', { soc: fmtNumber(Number(d.client['status.soc'])) });
   }
   var sev = worst(d.alarms.map(function (a) { return a.severity; }));

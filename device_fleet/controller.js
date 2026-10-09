@@ -527,15 +527,19 @@ function loadLink(d) {
   });
 }
 
+// A STATUS carrying the POWERBOARD fault holds no power reading (TRX_NANO.md §8).
+function powerUnread(c) { return (parseJson(c['status.healthFaults']) || []).indexOf('POWERBOARD') >= 0; }
+
 function batteryLine(link) {
-  var c = link.client, lat = link.latest, parts = [];
-  var soc = c['status.soc'] !== undefined ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  var c = link.client, lat = link.latest, parts = [], unread = powerUnread(c);
+  var soc = c['status.soc'] !== undefined && !unread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   var charging = c['status.charging'];
   if (soc !== undefined) { parts.push(Math.round(Number(soc)) + ' %'); }
+  else if (unread) { parts.push(t('fleet.chargeUnread', 'charge not reported')); }
   if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + t.ago(volt.ts)); }
   if (charging !== undefined) { parts.push(flag(charging) ? t('fleet.charging', 'charging') : t('fleet.notCharging', 'not charging')); }
-  if (Number(c['status.battRuntimeSeconds']) > 0) { parts.push(t('fleet.lasts', 'lasts about {time}', { time: fmtDuration(c['status.battRuntimeSeconds']) })); }
+  if (!unread && Number(c['status.battRuntimeSeconds']) > 0) { parts.push(t('fleet.lasts', 'lasts about {time}', { time: fmtDuration(c['status.battRuntimeSeconds']) })); }
   return parts.join(' · ');
 }
 
