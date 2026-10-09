@@ -27,7 +27,8 @@ var NETWORK_KEYS = ['rssi', 'snr'];
 // Device bookkeeping, not readings: radio, uplink markers, the dry contact interface's own counters.
 var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRuleCount', 'dryc.drycRulesSynced'];
 var RULE_SOURCE = /^drycRule\./;
-var DRYC_KEY = /^(dryc|drycRule)\./;
+// A LOGR4 DRYC's fields sit under its position (`p1.drycInput3`), its status under `p1.drycStatus`.
+var DRYC_KEY = /^(dryc|drycRule)\.|^p\d+\.dryc[A-Z]/;
 // The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
 // (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
@@ -213,7 +214,7 @@ function mappable(m, mapped) {
         : s.position + ' · ' + (p ? p.displayName : node ? node.type : t('mapping.unknownPeripheral', 'Unknown peripheral')),
       names: namesForKind(m, s.kind, mapped), name: name, diagnostic: s.position === 0 || !!(name && (m.names[name] || {}).diagnostic)
     };
-  }).filter(function (r) { return r.names.length; });
+  }).filter(function (r) { return r.names.length && !DRYC_KEY.test(r.key); });
 }
 
 function channelLabel(names, key) {

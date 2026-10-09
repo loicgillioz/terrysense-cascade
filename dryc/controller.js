@@ -1,22 +1,24 @@
 /*
  * DRYC — the dry contact interface of a station: the inputs wired on site and
  * the relays, the rules on them, and the rules sent to the device (CA-5).
- * Bound to a STATION; its device is the LOGR2 it contains. Model:
+ * Bound to a STATION; its device is the LOGR2 or LOGR4 it contains. Model:
  * logr-product-docs/cloud/DRYC.md. View: logr-product-docs/cloud/FRONTEND.md
  * *Dry contact interface view*.
  *
  * Rules live in `dryc.rules` on the STATION, so a replaced device takes them
  * over; the device keeps only what was sent to it (`cmd.lastResult`,
- * `drycRuleCount`). Saving also gives each notifying rule its station channel
+ * `drycRuleCount`, `drycRulesCrc16`). A LOGR4 DRYC sits on a bus position, which
+ * the rule set names. Saving also gives each notifying rule its station channel
  * `drycRule-<n>`, mapped to `drycRule.<id>` with a boolean alarm at the rule's
  * severity, its value worded as the rule's condition unless the rule words it;
  * `station_project` fills that value on every DRYC status. The
  * labelled inputs, the outputs and the voltage go onto the station too, for
  * display and history. A device may feed several stations; when more than one
  * holds rules for its dry contact interface, the widget warns that the device
- * runs whichever set was sent last. Send writes one `cmd.request` DRYC_RULES,
- * which `dl_dispatch` sends through the LOGR2 integration. The view refreshes
- * itself when the device reports or answers.
+ * runs whichever set was sent last. Send writes one `cmd.request`: DRYC_RULES
+ * for a LOGR2, a PERIPHERAL_OP with `dryc_rules` at the DRYC's position for a
+ * LOGR4, which `dl_dispatch` sends through the family's integration. The view
+ * refreshes itself when the device reports or answers.
  *
  * Loads after shared/resolver.js, glossary.js, ui.js and tb_io.js.
  */
@@ -37,15 +39,18 @@ var INPUTS = 8, RELAYS = 2, MAX_RECORDS = 16, DAY_MS = 86400000;
 // The firmware the rules checksum and supply-voltage conditions need (DRYC.md §5);
 // an older logger or DRYC keeps today's behaviour and the view says what to update.
 var LOGGER_FW_MIN = '0.44.0', DRYC_FW_MIN = '1.3.0';
+// A LOGR4 runs supply-voltage records from logr-logic 1.19.0 and reports no DRYC firmware (TRX_NANO.md §10.4).
+var NANO_FW_MIN = '1.19.0';
 var VOLT_OPS = { below: 1, above: 2 };
 var POLL_MS = opts.pollMs || 15000;
 var RULE_CHANNEL = 'drycRule';
 var SEVERITY_IDS = ['critical', 'major', 'minor', 'warning', 'indeterminate'];
-// The device stores them under the DRYC prefix (`dryc.drycInput1`); state.live drops it.
-var LIVE_PREFIX = 'dryc.';
+// The device stores them under the DRYC prefix, `dryc.` on a LOGR2, `p<position>.` on a LOGR4; state.live drops it.
 var LIVE_KEYS = [];
 for (var k = 1; k <= INPUTS; k++) { LIVE_KEYS.push('drycInput' + k); }
-LIVE_KEYS = LIVE_KEYS.concat(['drycOutput1', 'drycOutput2', 'drycVoltage', 'drycRuleCount', 'drycRulesSynced']);
+LIVE_KEYS = LIVE_KEYS.concat(['drycOutput1', 'drycOutput2', 'drycVoltage', 'drycRuleCount', 'drycRulesSynced', 'drycRulesCrc16']);
+var DRYC_SOURCE = /^(dryc|p\d+)\.dryc(Input|Output|Voltage)\d*$/;
+var DEVICE_TYPES = ['logr2', 'logr3', 'logr4'];
 
 function parseJson(raw) {
   if (raw === undefined || raw === null || raw === '') { return null; }
@@ -57,9 +62,25 @@ function clone(o) { return JSON.parse(JSON.stringify(o)); }
 // -- model ------------------------------------------------------------------------------
 
 var state = {
-  station: null, device: null, others: [], rules: null, saved: '', live: {}, server: {}, client: {},
+  station: null, device: null, position: null, others: [], rules: null, saved: '', live: {}, server: {}, client: {},
   writeDevice: false, writeStation: false, me: null
 };
+
+/** A TRX Nano logger (LOGR3, LOGR4): its DRYC sits on a bus position and takes rules as a PERIPHERAL_OP. */
+function nano() { return !!state.device && String(state.device.type).toLowerCase() !== 'logr2'; }
+function livePrefix() { return nano() ? (state.position ? 'p' + state.position + '.' : null) : 'dryc.'; }
+function loggerMin() { return nano() ? NANO_FW_MIN : LOGGER_FW_MIN; }
+
+/** The DRYC's bus position: the one the rule set names, else the first the device's topology reports. */
+function drycPosition(set) {
+  if (!nano()) { return null; }
+  if (set && Number(set.position) > 0) { return Number(set.position); }
+  var found = Object.keys(state.client).map(function (key) {
+    var m = /^topology\.p(\d+)\.type$/.exec(key);
+    return m && /^dryc/.test(String(state.client[key])) ? Number(m[1]) : null;
+  }).filter(Boolean).sort(function (a, b) { return a - b; });
+  return found[0] || null;
+}
 
 /** `v` at or past `min`, on major.minor.patch; a pre-release counts as its release. */
 function versionAtLeast(v, min) {
@@ -74,6 +95,11 @@ function versionAtLeast(v, min) {
  * supply-voltage conditions. Both need the two minimum versions. */
 function capability() {
   var logger = state.client['deviceInfo.fwVersion'] || null, dryc = state.client['deviceInfo.drycFwVersion'] || null;
+  // An older DRYC behind a LOGR4 refuses a voltage record and the ACK says so: only the logger gates.
+  if (nano()) {
+    var ok = versionAtLeast(logger, NANO_FW_MIN);
+    return { logger: logger, dryc: null, loggerOk: ok, drycOk: ok, voltage: ok, crc: ok };
+  }
   var loggerOk = versionAtLeast(logger, LOGGER_FW_MIN), drycOk = loggerOk && versionAtLeast(dryc, DRYC_FW_MIN);
   return { logger: logger, dryc: dryc, loggerOk: loggerOk, drycOk: drycOk, voltage: drycOk, crc: drycOk };
 }
@@ -82,7 +108,7 @@ function hasVoltage(r) { return !!(r.condition && r.condition.voltage); }
 
 /** Rules are edited on the station and sent from the device. */
 function canEdit() { return state.writeStation; }
-function canSend() { return !!state.device && state.writeDevice; }
+function canSend() { return !!state.device && state.writeDevice && (!nano() || !!state.position); }
 
 function emptySet() {
   var inputs = [], relays = [];
@@ -127,6 +153,20 @@ function records(set) {
     if (r.relays.relay2) { out.push(rec(2)); }
   });
   return out;
+}
+
+/** The records as a LOGR4 PERIPHERAL_OP carries them (TRX_NANO.md §10.4), and back. */
+function drycRules(recs) {
+  return recs.map(function (x) {
+    return x[3] ? { output: x[0], condition: x[1], mask: x[2], vop: x[3], threshold_mv: x[4] } : { output: x[0], condition: x[1], mask: x[2] };
+  });
+}
+function recordsOf(c) {
+  return c.records || (c.dryc_rules || []).map(function (r) { return r.vop ? [r.output, r.condition, r.mask, r.vop, r.threshold_mv] : [r.output, r.condition, r.mask]; });
+}
+/** A command that sets this station's DRYC rules. */
+function isRulesCommand(c) {
+  return nano() ? c.op === 'PERIPHERAL_OP' && !!c.dryc_rules && (c.target || {}).position === state.position : c.op === 'DRYC_RULES';
 }
 
 /** CRC-16/CCITT-FALSE of the records as the device hashes them (TRX_NANO.md §10.4). */
@@ -198,11 +238,17 @@ function syncState() {
   var want = JSON.stringify(records(normalise(parseJson(state.saved))));
   var n = JSON.parse(want).length;
   if (!state.device) { return { s: 'nodevice', short: t('common.noDevice', 'No device'), text: t('dryc.syncNoDevice', 'No dry contact interface feeds this station. The rules are kept here and sent once one is connected.') }; }
+  if (nano() && !state.position) { return { s: 'nodevice', short: t('dryc.noInterface', 'No interface reported'), text: t('dryc.syncNoPosition', 'The device reports no dry contact interface on its bus. Rules are sent once it reports one.') }; }
   var queued = parseJson(state.server['cmd.pending']);
-  var pending = queued && (queued.commands || []).some(function (c) { return c.op === 'DRYC_RULES'; })
+  var pending = queued && (queued.commands || []).some(isRulesCommand)
     ? { issuedAt: queued.updatedAt || queued.issuedAt } : null;
   var last = parseJson(state.server['cmd.lastResult']);
-  var lastRules = last && (last.commands || [])[0] && last.commands[0].op === 'DRYC_RULES' ? last : null;
+  var lastRules = null;
+  (last && last.commands || []).forEach(function (c, i) {
+    if (!isRulesCommand(c)) { return; }
+    var res = (last.results || [])[i];
+    lastRules = { cmd: c, ok: nano() ? !!res && res.status === 'OK' : last.ok, issuedAt: last.issuedAt, ackedAt: last.ackedAt };
+  });
   var count = state.live.drycRuleCount ? Number(state.live.drycRuleCount.value) : null;
   if (pending) {
     if (Date.now() - (pending.issuedAt || 0) > DAY_MS) {
@@ -213,14 +259,21 @@ function syncState() {
   if (lastRules && !lastRules.ok) {
     return { s: 'drift', short: t('dryc.refused', 'Refused'), sent: lastRules.issuedAt, text: t('dryc.syncRefused', 'The device refused the last rules sent. Send again.') };
   }
-  if (lastRules && JSON.stringify(lastRules.commands[0].records) !== want) {
+  if (lastRules && JSON.stringify(recordsOf(lastRules.cmd)) !== want) {
     return { s: 'changed', short: t('dryc.sendNeeded', 'Send needed'), sent: lastRules.issuedAt, confirmed: lastRules.ackedAt,
              text: t('dryc.syncChanged', 'The rules changed since they were sent. The device still runs the previous ones.') };
   }
-  // With the checksum the device's own rules are compared; without it, only their number.
-  var cap = capability(), crc = state.client['status.drycRulesCrc16'];
-  if (cap.crc && crc !== undefined && Number(crc) !== recordsCrc(JSON.parse(want))) {
+  // With the checksum the device's own rules are compared to those sent; without it, only their number. 0 is unknown.
+  var cap = capability();
+  var crc = nano() ? (state.live.drycRulesCrc16 ? Number(state.live.drycRulesCrc16.value) : 0) : Number(state.client['status.drycRulesCrc16'] || 0);
+  var sentCrc = lastRules && lastRules.cmd.rules_crc16 !== undefined ? lastRules.cmd.rules_crc16 : recordsCrc(JSON.parse(want));
+  if (cap.crc && crc && crc !== sentCrc) {
     return { s: 'drift', short: t('dryc.sendNeeded', 'Send needed'), text: t('dryc.syncOtherRules', 'The device holds other rules than these. Send them.') };
+  }
+  if (cap.crc && crc) {
+    return { s: 'insync', short: t('dryc.onDevice', 'On the device'), sent: lastRules && lastRules.issuedAt,
+             confirmed: (lastRules && lastRules.ackedAt) || (state.live.drycRulesCrc16 || state.live.drycRuleCount || {}).ts || null,
+             text: t('dryc.syncCrc', 'The device runs these rules: its rules checksum matches.') };
   }
   if (count !== null && count !== n) {
     return { s: 'drift', short: t('dryc.sendNeeded', 'Send needed'), text: count === 1
@@ -260,11 +313,11 @@ function stationsOf(deviceId) {
   });
 }
 
-/** The station's LOGR2, else null. */
+/** The station's LOGR2 or LOGR4, else null. */
 function findDevice(station) {
   return devicesOf(station.id).then(function (ids) {
     return Promise.all(ids.map(function (id) { return tb.get('/api/device/' + id); }));
-  }).then(function (devices) { return devices.filter(function (d) { return d.type === 'logr2'; })[0] || null; });
+  }).then(function (devices) { return devices.filter(function (d) { return DEVICE_TYPES.indexOf(String(d.type).toLowerCase()) >= 0; })[0] || null; });
 }
 
 /** The station's rules, and its device's state and the other stations holding rules for it. */
@@ -278,20 +331,24 @@ function load() {
       }));
     }) : [],
     dev ? tb.attrsMap(dev, 'SERVER_SCOPE') : {},
-    dev ? tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.map(function (key) { return LIVE_PREFIX + key; }).join(',') })
-      .catch(function () { return {}; }) : {},
     dev ? tb.attrsMap(dev, 'CLIENT_SCOPE').catch(function () { return {}; }) : {}
   ]).then(function (got) {
-    state.client = got[4] || {};
+    state.client = got[3] || {};
     var raw = parseJson(got[0]['dryc.rules']);
     state.saved = JSON.stringify(raw || null);
     state.rules = normalise(raw);
+    state.position = drycPosition(raw);
     state.others = got[1].filter(Boolean).sort(function (a, b) { return a.name.localeCompare(b.name); });
     state.server = got[2] || {};
+    var prefix = livePrefix();
+    return dev && prefix ? tb.get('/api/plugins/telemetry/DEVICE/' + dev.id + '/values/timeseries', { keys: LIVE_KEYS.map(function (key) { return prefix + key; }).join(',') })
+      .catch(function () { return {}; }) : {};
+  }).then(function (series) {
+    var prefix = livePrefix();
     state.live = {};
-    Object.keys(got[3] || {}).forEach(function (key) {
-      var p = got[3][key] && got[3][key][0];
-      if (p && p.value !== null && p.value !== undefined) { state.live[key.slice(LIVE_PREFIX.length)] = { ts: Number(p.ts), value: p.value }; }
+    Object.keys(series || {}).forEach(function (key) {
+      var p = series[key] && series[key][0];
+      if (p && p.value !== null && p.value !== undefined) { state.live[key.slice(prefix.length)] = { ts: Number(p.ts), value: p.value }; }
     });
   });
 }
@@ -311,7 +368,7 @@ function stationWrites(set, stationAttrs) {
   var entries = resolver.mapEntries(stationAttrs['config.channelMap']);
   var channels = {}, others = {};
   Object.keys(entries).forEach(function (c) {
-    var mine = !entries[c].device || entries[c].device === me || /^(dryc|drycRule)\./.test(entries[c].key);
+    var mine = !entries[c].device || entries[c].device === me || /^(dryc|drycRule)\./.test(entries[c].key) || DRYC_SOURCE.test(entries[c].key);
     if (mine) { channels[c] = entries[c].key; } else { others[c] = entries[c]; }
   });
   var byRule = {};
@@ -360,23 +417,27 @@ function stationWrites(set, stationAttrs) {
 /** The DRYC's readings on the station (DRYC.md §3): each labelled input, both
  * outputs and the supply voltage, each named after its input or relay. */
 function readingChannels(set, channels, stationAttrs, write, remove) {
+  var prefix = livePrefix();
+  if (!prefix) { return; }
   function named(key, target, label) {
     channels[key] = target;
     if (label) { write['channel.' + key + '.label'] = label; } else if (('channel.' + key + '.label') in stationAttrs) { remove.push('channel.' + key + '.label'); }
   }
   for (var i = 1; i <= INPUTS; i++) {
     var key = 'drycInput' + i, label = ((set.inputs || [])[i - 1] || {}).label;
-    if (label) { named(key, LIVE_PREFIX + key, label); } else if (channels[key] === LIVE_PREFIX + key) {
+    if (label) { named(key, prefix + key, label); } else if (DRYC_SOURCE.test(channels[key] || '')) {
       delete channels[key];
       if (('channel.' + key + '.label') in stationAttrs) { remove.push('channel.' + key + '.label'); }
     }
   }
-  for (var r = 1; r <= RELAYS; r++) { named('drycOutput' + r, LIVE_PREFIX + 'drycOutput' + r, ((set.relays || [])[r - 1] || {}).label); }
-  channels.drycVoltage = LIVE_PREFIX + 'drycVoltage';
+  for (var r = 1; r <= RELAYS; r++) { named('drycOutput' + r, prefix + 'drycOutput' + r, ((set.relays || [])[r - 1] || {}).label); }
+  channels.drycVoltage = prefix + 'drycVoltage';
 }
 
 function save(set) {
   var body = clone(set);
+  delete body.position;
+  if (nano() && state.position) { body.position = state.position; }
   body.rules = body.rules.map(function (r) {
     var out = { id: r.id, name: r.name, condition: { mask: r.condition.mask, state: r.condition.state & r.condition.mask } };
     if (r.condition.voltage) { out.condition.voltage = r.condition.voltage; }
@@ -402,7 +463,9 @@ function sendRules() {
     : t('dryc.sendConfirmMany', 'Send {n} records to the dry contact interface of <b>{device}</b>? They replace the rules it runs now, after the logger’s next uplink.', { n: recs.length, device: device }),
     t('common.send', 'Send')).then(function (ok) {
     if (!ok) { return; }
-    var request = { commands: [{ op: 'DRYC_RULES', records: recs }], by: (state.me && state.me.email) || null, issuedAt: Date.now() };
+    var command = nano() ? { op: 'PERIPHERAL_OP', target: { mode: 'POSITION', position: state.position }, dryc_rules: drycRules(recs) }
+      : { op: 'DRYC_RULES', records: recs };
+    var request = { commands: [command], by: (state.me && state.me.email) || null, issuedAt: Date.now() };
     return tb.saveAttrs(deviceEntity(), { 'cmd.request': request }).then(function () {
       ui.toast(t('dryc.sent', 'Sent: the device takes them at its next uplink'));
       setTimeout(refresh, 1500);
@@ -492,7 +555,9 @@ function firmwareBanners() {
   function version(v) { return v ? '<b>' + esc(v) + '</b>' : esc(t('dryc.notReported', 'not reported yet')); }
   if (!cap.loggerOk) {
     banner('warn', 'logger-fw', t('dryc.loggerFw', 'Logger firmware {version}. Update it to {min} or later to confirm the rules the device holds and to use supply-voltage conditions. Until then the view compares only the number of rules.',
-      { version: version(cap.logger), min: LOGGER_FW_MIN }));
+      { version: version(cap.logger), min: loggerMin() }));
+  } else if (nano() && blocked) {
+    banner('warn', 'dryc-fw-unknown', esc(t('dryc.drycFwUnknown', 'A supply-voltage condition needs dry contact interface firmware {min} or later, which this logger does not report. An older interface refuses the rules, and this view then shows Refused.', { min: DRYC_FW_MIN })));
   } else if (!cap.drycOk) {
     banner('warn', 'dryc-fw', t('dryc.drycFw', 'Dry contact interface firmware {version}. Update it to {min} or later to confirm the rules it holds and to use supply-voltage conditions.',
       { version: version(cap.dryc), min: DRYC_FW_MIN }));
@@ -725,7 +790,7 @@ function ruleDrawer(idx) {
     ? t('dryc.voltHint', 'Checked by the device together with the inputs. It reacts once the voltage has stayed past the threshold for a few seconds.')
     : !state.device ? t('dryc.voltNeedsDevice', 'Needs a device on this station that runs logger firmware {loggerMin} and dry contact interface firmware {drycMin}.', { loggerMin: LOGGER_FW_MIN, drycMin: DRYC_FW_MIN })
     : t('dryc.voltNeedsFw', 'Needs logger firmware {loggerMin} and dry contact interface firmware {drycMin}. This device reports {logger} and {dryc}.', {
-      loggerMin: LOGGER_FW_MIN, drycMin: DRYC_FW_MIN,
+      loggerMin: loggerMin(), drycMin: DRYC_FW_MIN,
       logger: cap.logger || t('dryc.noLoggerVersion', 'no logger version'), dryc: cap.dryc || t('dryc.noDrycVersion', 'no interface version') });
   volt.hidden = !cap.voltage && !curV;
   vseg.addEventListener('click', function (e) {
