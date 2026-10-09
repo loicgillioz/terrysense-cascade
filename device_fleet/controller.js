@@ -532,13 +532,15 @@ function powerUnread(c) { return (parseJson(c['status.healthFaults']) || []).ind
 
 function batteryLine(link) {
   var c = link.client, lat = link.latest, parts = [], unread = powerUnread(c);
-  var soc = c['status.soc'] !== undefined && !unread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  // A STATUS field the LOGR sent unknown holds no reading either (ATTRIBUTES.md §2).
+  var socUnread = unread || c['status.soc'] === 'unknown';
+  var soc = c['status.soc'] !== undefined && !socUnread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   var charging = c['status.charging'];
   if (soc !== undefined) { parts.push(Math.round(Number(soc)) + ' %'); }
-  else if (unread) { parts.push(t('fleet.chargeUnread', 'charge not reported')); }
+  else if (socUnread) { parts.push(t('fleet.chargeUnread', 'charge not reported')); }
   if (volt) { parts.push(Math.round(Number(volt.value) * 100) / 100 + ' V, ' + t.ago(volt.ts)); }
-  if (charging !== undefined) { parts.push(flag(charging) ? t('fleet.charging', 'charging') : t('fleet.notCharging', 'not charging')); }
+  if (charging !== undefined && charging !== 'unknown') { parts.push(flag(charging) ? t('fleet.charging', 'charging') : t('fleet.notCharging', 'not charging')); }
   if (!unread && Number(c['status.battRuntimeSeconds']) > 0) { parts.push(t('fleet.lasts', 'lasts about {time}', { time: fmtDuration(c['status.battRuntimeSeconds']) })); }
   return parts.join(' · ');
 }

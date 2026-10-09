@@ -69,6 +69,8 @@ function powerSources() {
 }
 // A STATUS carrying the POWERBOARD fault holds no power reading: soc, sources and estimates are not reported (TRX_NANO.md §8).
 function powerUnread(c) { return (parseJson(c['status.healthFaults']) || []).indexOf('POWERBOARD') >= 0; }
+// A STATUS field the LOGR sent unknown holds no reading either (ATTRIBUTES.md §2).
+var UNKNOWN = 'unknown';
 function sdStates() { return { ready: t('device.sdReady', 'ready'), fault: t('device.sdFault', 'fault'), not_inserted: t('device.sdNoCard', 'no card') }; }
 var NEW_STATION = '__new';
 // A source is silent past this many of its intervals (HEALTH.md §2).
@@ -1674,11 +1676,12 @@ function statusSection() {
       metric('SNR ' + c['status.dlSnr'] + ' dB', snrLevel(c['status.dlSnr']))])]);
   }
   var unread = hasStatus && powerUnread(c);
-  var soc = c['status.soc'] !== undefined && !unread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
+  var socUnread = unread || c['status.soc'] === UNKNOWN;
+  var soc = c['status.soc'] !== undefined && !socUnread ? c['status.soc'] : (lat['p0.percent'] ? lat['p0.percent'].value : undefined);
   var batt = [];
   var volt = BATTERY_VOLTAGE.map(function (k) { return lat[k]; }).filter(Boolean)[0];
   if (soc !== undefined) { batt.push(t('device.charge', 'Charge {v} %', { v: fmtValue(soc) })); }
-  else if (unread) { batt.push(t('device.chargeUnread', 'Charge not reported: the power board did not answer')); }
+  else if (socUnread) { batt.push(t('device.chargeUnread', 'Charge not reported: the power board did not answer')); }
   if (volt) { batt.push(fmtValue(volt.value) + ' V, ' + t.ago(volt.ts)); }
   if (!hasStatus && c['status.charging'] !== undefined) { batt.push(truthyFlag(c['status.charging']) ? t('device.charging', 'Charging') : t('device.notCharging', 'Not charging')); }
   if (!unread && Number(c['status.battRuntimeSeconds']) > 0) { batt.push(t('device.runtime', 'Lasts about {d}, the LOGR’s own estimate', { d: fmtDuration(c['status.battRuntimeSeconds']) })); }
@@ -1686,10 +1689,11 @@ function statusSection() {
   if (hasStatus) {
     var present = parseJson(c['status.sourcesPresent']) || [], powerNames = powerSources(), source = c['status.activeSource'];
     // active_source is the charge path: with none the LOGR runs on its battery.
-    var power = unread ? [t('device.powerUnread', 'Power inputs not reported: the power board did not answer')]
+    var powerUnknown = unread || source === UNKNOWN;
+    var power = powerUnknown ? [t('device.powerUnread', 'Power inputs not reported: the power board did not answer')]
       : [source === 'none' ? t('device.runningOnBattery', 'Running on battery') : t('device.runningOn', 'Running on {source}', { source: powerNames[source] || source }),
          t('device.connected', 'Connected: {list}', { list: present.length ? present.map(function (x) { return powerNames[x] || x; }).join(', ') : t('common.none', 'none') })];
-    if (!unread && truthyFlag(c['status.charging'])) {
+    if (!powerUnknown && truthyFlag(c['status.charging'])) {
       power.push(Number(c['status.ttfSeconds']) > 0 ? t('device.chargingFullIn', 'Charging, full in {d}', { d: fmtDuration(c['status.ttfSeconds']) }) : t('device.charging', 'Charging'));
     }
     card('Power', t('device.statPower', 'Power'), DEVICE, power);
@@ -1703,6 +1707,9 @@ function statusSection() {
     card('Location', t('common.location', 'Location'), DEVICE, fix && fix.lat !== undefined
       ? [Number(fix.lat).toFixed(5) + ', ' + Number(fix.lon).toFixed(5) + ' \u00b7 ' + t('device.satellites', '{n} satellites', { n: fix.sats })]
       : [t('device.noFix', 'No GNSS fix reported')]);
+  }
+  if (hasStatus && c['status.reportedAt'] !== undefined) {
+    sec.appendChild(h('<div class="ts-field-hint"></div>')).textContent = t('device.statusReported', 'Last STATUS report {ago}', { ago: t.ago(Number(c['status.reportedAt'])) });
   }
   if (bus && !hasStatus) {
     sec.appendChild(h('<div class="ts-field-hint"></div>')).textContent = state.writable
