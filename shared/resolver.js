@@ -327,7 +327,8 @@ function expandContacts(raw, io, book) {
   if (!Array.isArray(list)) { return Promise.resolve([]); }
   return Promise.all(list.map(function (c) {
     if (!c || typeof c !== 'object') { return null; }
-    var severities = (c.severities || []).filter(function (x) { return SEVERITIES.indexOf(x) >= 0; });
+    var severities = (c.severities || []).map(function (x) { return String(x).toLowerCase(); })
+      .filter(function (x, i, all) { return SEVERITIES.indexOf(x) >= 0 && all.indexOf(x) === i; });
     var user = c.type === 'user'
       ? (io.fetchUser ? Promise.resolve(io.fetchUser(String(c.userId || ''))).catch(function () { return null; }) : Promise.resolve(null))
       : Promise.resolve(undefined);
