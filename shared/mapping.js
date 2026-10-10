@@ -29,6 +29,8 @@ var NOT_READINGS = ['rssi', 'snr', 'uplinkCause', 'uplinkLatest', 'dryc.drycRule
 var RULE_SOURCE = /^drycRule\./;
 // A LOGR4 DRYC's fields sit under its position (`p1.drycInput3`), its status under `p1.drycStatus`.
 var DRYC_KEY = /^(dryc|drycRule)\.|^p\d+\.dryc[A-Z]/;
+// The readings unpacked from a LOGR4 DRYC's `p<POS>.drycStatus`: readings, not subscribed sources.
+var DRYC_FIELD = /^p\d+\.dryc(Input\d|Output\d|Voltage|RuleCount|RulesSynced|RulesCrc16)$/;
 // The sensors a LOGR2 can carry, by the peripheral prefix of its device keys
 // (`cond.temperature`): cloud-integrations/sources/logr2.json, kept equal by
 // smoke_test_config_widgets.py. `logr` is the LOGR itself.
@@ -83,7 +85,7 @@ function sources(m) {
     var s = t && add(t[1]);
     if (s) { s[t[2]] = m.client[key]; }
   });
-  Object.keys(m.latest).forEach(function (key) { add(key.replace(/\.status$/, '')); });
+  Object.keys(m.latest).forEach(function (key) { if (!DRYC_FIELD.test(key)) { add(key.replace(/\.status$/, '')); } });
   Object.keys(m.faults).forEach(add);
   return Object.keys(out).map(function (k) { return out[k]; });
 }
@@ -112,8 +114,8 @@ function readings(m) {
   }).sort(function (a, b) { return labelOf(m, a).localeCompare(labelOf(m, b)); });
 }
 
-/** The channel name a reading carries: a LOGR2 key after its peripheral prefix, any other key whole. */
-function nameOf(m, key) { return isLogr2(m) ? key.slice(key.indexOf('.') + 1) : key; }
+/** The channel name a reading carries: a LOGR2 key or a LOGR4 DRYC field after its prefix, any other key whole. */
+function nameOf(m, key) { return isLogr2(m) || DRYC_FIELD.test(key) ? key.slice(key.indexOf('.') + 1) : key; }
 function entryOf(m, key) { return m.names[resolver.splitChannelKey(nameOf(m, key)).name] || null; }
 function labelOf(m, key) {
   var e = entryOf(m, key);
@@ -317,7 +319,7 @@ function storeOne(entries, deviceId, key, from, target) {
 }
 
 root.TerrySenseMapping = {
-  SOURCE_KEY_RE: SOURCE_KEY_RE, NOT_READINGS: NOT_READINGS, RULE_SOURCE: RULE_SOURCE, DRYC_KEY: DRYC_KEY,
+  SOURCE_KEY_RE: SOURCE_KEY_RE, NOT_READINGS: NOT_READINGS, RULE_SOURCE: RULE_SOURCE, DRYC_KEY: DRYC_KEY, DRYC_FIELD: DRYC_FIELD,
   LOGR2_SENSORS: LOGR2_SENSORS, NETWORK_KEYS: NETWORK_KEYS,
   parseSource: parseSource, latestKeys: latestKeys, topology: topology, sources: sources, measureOf: measureOf,
   sourceLabel: sourceLabel, unitOf: unitOf, readings: readings, nameOf: nameOf, entryOf: entryOf, labelOf: labelOf,

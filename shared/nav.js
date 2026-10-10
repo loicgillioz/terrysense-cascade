@@ -9,8 +9,8 @@
  *   firmware  the Fleet dashboard's firmware view
  *   device    the device view of the bound device
  *   relays    the Dry contact interface view of the bound station, when it
- *             keeps DRYC rules or contains a LOGR2 that has reported a DRYC
- *             reading
+ *             keeps DRYC rules or contains a LOGR2 or LOGR4 that has reported
+ *             a DRYC reading
  *   projects  the Projects dashboard's landing view; never on a public link
  *   project   *Project:* and the name of the project above the bound
  *             station, or of each project the bound device feeds: its project
@@ -99,14 +99,14 @@ root.TerrySenseNav = function (ctx, tb, ui, card, opts) {
       var go = function () { button('relays', ICON_RELAY, t('common.dryc', 'Dry contact interface'), function () { tb.openDashboard(opts.projectDashboardId, 'dryc', e); }); };
       return tb.attrsMap(e).then(function (attrs) {
         if (attrs['dryc.rules']) { go(); return null; }
-        // A LOGR2 has a DRYC once it has reported a `dryc.` reading.
+        // A device has a DRYC once it has reported a reading of one: `dryc.` on a LOGR2, `p<POS>.dryc…` on a LOGR4.
         return tb.post('/api/relations', { parameters: { rootId: e.id, rootType: 'ASSET', direction: 'FROM', relationTypeGroup: 'COMMON', maxLevel: 1 },
           filters: [{ relationType: 'Contains', entityTypes: ['DEVICE'] }] }).then(function (rels) {
           return Promise.all((rels || []).map(function (r) {
             return tb.get('/api/plugins/telemetry/DEVICE/' + r.to.id + '/keys/timeseries').catch(function () { return []; });
           }));
         }).then(function (lists) {
-          if (lists.some(function (keys) { return (keys || []).some(function (k) { return k.indexOf('dryc.') === 0; }); })) { go(); }
+          if (lists.some(function (keys) { return (keys || []).some(function (k) { return /^dryc\.|^p\d+\.dryc[A-Z]/.test(k); }); })) { go(); }
         });
       });
     },

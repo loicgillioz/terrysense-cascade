@@ -15,7 +15,8 @@
  *   bus    LOGR3, LOGR4: positions from `topology.p<POS>.*`, position 0 from
  *          the LOGR's own catalog entry; sources from `subscriptions.*` and
  *          the stored telemetry keys, each with its interval and whether it
- *          is enabled, or *not subscribed*; configurable by command.
+ *          is enabled, or *not subscribed*; configurable by command. A DRYC
+ *          adds the readings unpacked from its status and its rules state.
  *   logr2  the LOGR and its one or two sensors, fixed in its firmware:
  *          readings grouped by their peripheral prefix; the data of a sensor
  *          no longer used can be deleted; the register.
@@ -1598,7 +1599,9 @@ function positionCard(pos, node, srcs) {
   var p = node && state.peripherals[node.type];
   box.querySelector('.ts-pos-name').textContent = pos === 0 ? t('mapping.logrItself', 'LOGR itself') : (p ? p.displayName : node ? node.type : t('mapping.unknownPeripheral', 'Unknown peripheral'));
   box.querySelector('.ts-pos-head .ts-mono').textContent = node ? node.type + (node.version !== undefined && node.version !== null ? ' · v' + node.version : '') : '';
-  box.querySelector('.ts-pos-count').textContent = countText(own.length);
+  var dryc = pos !== 0 && !!node && /^dryc/.test(node.type);
+  var fields = dryc ? drycFields(pos) : [];
+  box.querySelector('.ts-pos-count').textContent = countText(own.length + fields.length);
   if (!node) { flags.appendChild(h('<span class="ts-chip warn"></span>')).textContent = t('device.notInTopology', 'not in the topology report'); }
   else if (!p && pos !== 0) { flags.appendChild(h('<span class="ts-chip warn"></span>')).textContent = t('device.notInCatalog', 'not in the catalog'); }
   if (bad.length) { flags.appendChild(h('<span class="ts-chip fault"></span>')).textContent = t('device.faultingCount', '{n} faulting', { n: bad.length }); }
@@ -1608,20 +1611,69 @@ function positionCard(pos, node, srcs) {
     avail.title = t('device.availableTip', 'Measurements this peripheral offers that the LOGR does not subscribe, from the catalog');
     avail.textContent = t('device.available', '+{n} available', { n: more });
   }
-  if (pos !== 0 && !own.some(function (x) { return state.wiring[x.sourceKey]; })) {
+  if (pos !== 0 && !own.concat(fields).some(function (x) { return state.wiring[x.sourceKey || x]; })) {
     flags.appendChild(h('<span class="ts-chip warn" data-unwired="1"></span>')).textContent = t('device.notWired', 'not wired to any station');
   }
   if (state.writable && more) {
     headButton(box, '<button type="button" class="ts-btn ts-add">' + ICON.plus + esc(t('device.addSubscription', 'Add subscription')) + '</button>', function () { addDrawer(pos, node, own); });
   }
   if (!flags.childNodes.length) { flags.remove(); }
+  if (dryc) { drycNote(box); }
 
-  if (!own.length) {
+  if (!own.length && !fields.length) {
     box.appendChild(h('<div class="ts-tsrc"><span class="ts-empty"></span></div>')).firstChild.textContent = t('device.positionEmpty', 'No subscription and no reading from this position.');
   } else {
     own.forEach(function (s) { box.appendChild(sourceRow(s, node)); });
+    fields.forEach(function (key) { box.appendChild(readingRow(key, false)); });
+    if (dryc) { box.appendChild(drycRulesRow(pos)); }
   }
   return box;
+}
+
+/** A LOGR4 DRYC's inputs, outputs and supply voltage, unpacked from its status (ATTRIBUTES.md §1). */
+function drycFields(pos) {
+  var prefix = 'p' + pos + '.';
+  return Object.keys(state.latest).filter(function (k) {
+    return k.indexOf(prefix) === 0 && M.DRYC_FIELD.test(k) && !/(RuleCount|RulesSynced|RulesCrc16)$/.test(k);
+  }).sort(function (a, b) { return labelOf(a).localeCompare(labelOf(b)); });
+}
+
+/** Where a LOGR4 DRYC's rules stand against the last rules set sent to its position (DRYC.md §5); null when nothing compares. */
+function drycSync(pos) {
+  function isRules(c) { return c.op === 'PERIPHERAL_OP' && !!c.dryc_rules && (c.target || {}).position === pos; }
+  var queued = pending();
+  if (queued && queued.commands.some(isRules)) {
+    return queued.unanswered ? { cls: 'warn', text: t('dryc.notConfirmed', 'Not confirmed') } : { cls: 'warn', text: t('dryc.waiting', 'Waiting for the device') };
+  }
+  var last = parseValue(state.server['cmd.lastResult']), sent = null;
+  ((last && last.commands) || []).forEach(function (c, i) {
+    if (isRules(c)) { sent = { cmd: c, ok: ((last.results || [])[i] || {}).status === 'OK' }; }
+  });
+  if (sent && !sent.ok) { return { cls: 'fault', text: t('dryc.refused', 'Refused') }; }
+  var crc = Number((state.latest['p' + pos + '.drycRulesCrc16'] || {}).value) || 0;
+  if (!crc) { return { cls: '', text: t('dryc.noStatus', 'No status yet') }; }
+  if (!sent || sent.cmd.rules_crc16 === undefined) { return null; }
+  return sent.cmd.rules_crc16 === crc ? { cls: 'ok', text: t('dryc.onDevice', 'On the device') } : { cls: 'warn', text: t('dryc.sendNeeded', 'Send needed') };
+}
+
+/** The rule records a LOGR4 DRYC holds, its rules checksum and whether it matches the rules sent. */
+function drycRulesRow(pos) {
+  var count = state.latest['p' + pos + '.drycRuleCount'], crc = state.latest['p' + pos + '.drycRulesCrc16'];
+  var row = h('<div class="ts-tsrc" data-dryc-rules="1"><div class="ts-tsrc-top"><div class="ts-row-label"></div><div class="ts-tsrc-value"><b></b><span class="ts-row-meta"></span></div><span class="ts-tsrc-state"></span></div>' +
+    '<div class="ts-tsrc-meta"><span class="ts-mono"></span></div></div>');
+  row.querySelector('.ts-row-label').textContent = t('device.drycRecords', 'Rule records');
+  row.querySelector('b').textContent = count ? fmtValue(count.value) : '–';
+  row.querySelector('.ts-tsrc-value .ts-row-meta').textContent = count ? t.ago(count.ts) : '';
+  var crcValue = crc ? Number(crc.value) || 0 : 0;
+  row.querySelector('.ts-mono').textContent = 'p' + pos + '.drycRulesCrc16 ' + (crcValue ? '0x' + ('000' + crcValue.toString(16).toUpperCase()).slice(-4) : '–');
+  var sync = drycSync(pos);
+  if (sync) {
+    var chip = row.querySelector('.ts-tsrc-state').appendChild(h('<span class="ts-chip"></span>'));
+    if (sync.cls) { chip.classList.add(sync.cls); }
+    chip.dataset.drycSync = sync.cls || 'unknown';
+    chip.textContent = sync.text;
+  }
+  return row;
 }
 
 /** TC-6 / TC-7: the unit's operational status, each value tagged with where it
