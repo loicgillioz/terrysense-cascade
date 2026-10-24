@@ -26,7 +26,7 @@ function load() {
   return loading;
 }
 
-/** The tag form of a version: `1.24.1-dev+16` is `1.24.1-dev16`, `1.24.1+0` is `1.24.1`. */
+/** The tag form of a version: `1.0.1-dev+16` is `1.0.1-dev16`, `1.0.1+0` is `1.0.1`. */
 function tagForm(v) {
   return String(v || '').trim().replace(/^v/, '').replace(/-(dev|rc)\+(\d+)$/, '-$1$2').replace(/\+\d+$/, '');
 }

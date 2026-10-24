@@ -39,8 +39,8 @@ var INPUTS = 8, RELAYS = 2, MAX_RECORDS = 16, DAY_MS = 86400000;
 // The firmware the rules checksum and supply-voltage conditions need (DRYC.md §5);
 // an older logger or DRYC keeps today's behaviour and the view says what to update.
 var LOGGER_FW_MIN = '0.44.0', DRYC_FW_MIN = '1.3.0';
-// A LOGR4 runs supply-voltage records from logr-logic 1.19.0 and reports the DRYC firmware in PERIPHERAL_INFO (TRX_NANO.md §6.2).
-var NANO_FW_MIN = '1.19.0';
+// A LOGR4 runs supply-voltage records and reports the DRYC firmware in PERIPHERAL_INFO (TRX_NANO.md §6.2).
+var NANO_FW_MIN = '1.0.0';
 var VOLT_OPS = { below: 1, above: 2 };
 var POLL_MS = opts.pollMs || 15000;
 var RULE_CHANNEL = 'drycRule';
